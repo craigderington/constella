@@ -40,6 +40,10 @@ independently.
 - `docker compose up --build` on real Docker: all services came up and the
   explorer's ledger check matched the node.
 - Explorer UI reviewed in a browser and approved as-is. Keep the star-chart design.
+- Chain id in the tx signing domain, live on a fresh testnet: all 5 nodes log
+  `chain=352fcee542df9981`, and a signed transfer went through end to end
+  (sender -1.25 -0.002 fee, recipient +1.25, nonce 0->1, explorer `txs 1` with
+  `ledger ok`, 6 accounts cross-checked). Mainnet's id is `d4436b99b3070284`.
 - Thermal controller live on this laptop, 300 s traces at 1 Hz, 5 nodes x 1
   thread. It regulates exactly on target (die mean 82.2 C against a target of
   82). Fixing the cap and spike-proofing the stop took useful work from 0.263
@@ -74,9 +78,17 @@ independently.
   controller shape, not for absolute work numbers.
 
 ## Backlog
-- Next: Craig's call on the 88/82 cap (see "Not yet verified"), then the list.
-- Ledger snapshots (node and explorer both replay the full chain per tip)
-- Chain ID in the tx signing domain (cross-network replay)
-- Mempool: fee priority; return reorged txs
-- Science lane: first plugin (integer workload first: Goldbach/Collatz ranges)
-- Mainnet params: BLOCK_K=6 (sextuplets)
+- Next: the science lane. 70% of every block reward escrows to it and there is
+  no way to pay it out; `docs/science-lane.md` is still a draft. Architectural
+  work - spec before code.
+- Ledger snapshots. `node.c` calls `ledger_build()` on every tip change and it
+  replays genesis..tip, so cost is O(n) per share. Invisible at these heights,
+  a real ceiling later.
+- Mempool: fee priority; return reorged txs. Low value until the mempool
+  actually holds more than one tx.
+- Mainnet params: BLOCK_K=6. One constant, but it makes blocks ~77x rarer
+  (measured 4->5 ratio), so the economics need thinking through first.
+- Open: Craig's call on the 88/82 thermal cap (see "Not yet verified").
+- Follow-up: mirror the chain id in the Go explorer for display, so an operator
+  can see node and explorer agree on the network. It validates no signatures,
+  so nothing it derives depends on this.
