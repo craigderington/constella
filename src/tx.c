@@ -2,7 +2,6 @@
 #include "blake2b.h"
 #include "params.h"
 #include "vendor/monocypher.h"
-#include <stdlib.h>
 #include <string.h>
 
 /* TX2: the domain carries a chain id now, and the version bump means no
@@ -69,13 +68,4 @@ void tx_id(uint8_t id[32], const tx_t *t) {
     uint8_t b[TX_SIZE];
     tx_ser(b, t);
     blake2b(id, 32, b, TX_SIZE);
-}
-
-void tx_root(uint8_t root[32], const tx_t *txs, int n) {
-    if (n <= 0) { memset(root, 0, 32); return; }
-    uint8_t *b = malloc((size_t)n * TX_SIZE);
-    if (!b) { memset(root, 0xff, 32); return; }
-    for (int i = 0; i < n; i++) tx_ser(b + i * TX_SIZE, &txs[i]);
-    blake2b(root, 32, b, (size_t)n * TX_SIZE);
-    free(b);
 }

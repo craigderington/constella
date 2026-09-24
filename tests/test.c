@@ -120,7 +120,7 @@ static void t_tx(void) {
     bad = t; memcpy(bad.from, b.pk, 32);       CHECK(tx_check_sig(&bad) != 0);   /* wrong key */
     uint8_t raw[TX_SIZE]; tx_t back;
     tx_ser(raw, &t); tx_deser(&back, raw);     CHECK(!memcmp(&back, &t, sizeof t));
-    tx_root(r1, &t, 1); tx_root(r2, NULL, 0);  CHECK(memcmp(r1, r2, 32));
+    share_root(r1, &t, 1, NULL, 0); share_root(r2, NULL, 0, NULL, 0); CHECK(memcmp(r1, r2, 32));
 
     ledger_t L = {0};
     CHECK(ledger_apply_tx(&L, &t, miner) == -1);                  /* no funds */
@@ -150,6 +150,39 @@ static void t_tx(void) {
     mempool_revalidate(&L);
     CHECK(mempool_count() == 1);
     ledger_free(&L);
+}
+
+static void t_share_root(void) {
+    wallet_t a;
+    uint8_t sa[32] = {5};
+    wallet_from_seed(&a, sa);
+    tx_t t = {0};
+    memcpy(t.from, a.pk, 32); memcpy(t.to, a.pk, 32);
+    t.amount = COIN; t.nonce = 0;
+    tx_sign(&t, a.sk);
+    sci_t c = {.k = 950, .g = 776};
+    uint8_t r0[32], rt[32], rs[32], rb[32], again[32];
+
+    share_root(r0, NULL, 0, NULL, 0);
+    uint8_t zero[32] = {0};
+    CHECK(!memcmp(r0, zero, 32));            /* empty stays all-zero */
+
+    share_root(rt, &t, 1, NULL, 0);
+    share_root(rs, NULL, 0, &c, 1);
+    share_root(rb, &t, 1, &c, 1);
+    CHECK(memcmp(rt, r0, 32) && memcmp(rs, r0, 32));
+    CHECK(memcmp(rt, rs, 32) && memcmp(rb, rt, 32) && memcmp(rb, rs, 32));
+    share_root(again, &t, 1, &c, 1);
+    CHECK(!memcmp(rb, again, 32));           /* deterministic */
+
+    /* Domain separation: without the tags, a tx list and a claim list whose
+     * bytes concatenate identically would collide. The tags must make the
+     * split unambiguous, so two different splits differ. */
+    sci_t two[2] = {{.k = 950, .g = 776}, {.k = 1726, .g = 400}};
+    uint8_t x1[32], x2[32];
+    share_root(x1, NULL, 0, two, 2);
+    share_root(x2, NULL, 0, two, 1);
+    CHECK(memcmp(x1, x2, 32));
 }
 
 static void t_serial(void) {
@@ -337,7 +370,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_sci_basics(); t_sci_region(); t_sci_check();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_sci_basics(); t_sci_region(); t_sci_check();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

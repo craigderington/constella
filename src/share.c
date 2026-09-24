@@ -77,3 +77,14 @@ uint64_t share_work(unsigned bits) {
     uint64_t b = bits;
     return (b * b * b * b) >> 16;
 }
+
+void share_root(uint8_t root[32], const tx_t *txs, int ntx, const sci_t *sci, int nsci) {
+    if (!ntx && !nsci) { memset(root, 0, 32); return; }
+    uint8_t buf[8 + SHARE_MAX_TX * TX_SIZE + 8 + SHARE_MAX_SCI * SCI_SIZE];
+    size_t o = 0;
+    memcpy(buf + o, "CSTL-TXR", 8); o += 8;
+    for (int i = 0; i < ntx; i++) { tx_ser(buf + o, &txs[i]); o += TX_SIZE; }
+    memcpy(buf + o, "CSTL-SCI", 8); o += 8;
+    for (int i = 0; i < nsci; i++) { sci_ser(buf + o, &sci[i]); o += SCI_SIZE; }
+    blake2b(root, 32, buf, o);
+}
