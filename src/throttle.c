@@ -25,13 +25,25 @@
 #define FILTER_TAU 2.0     /* s */
 #define KP         0.6     /* % duty per °C of error change */
 #define KI         0.15    /* % duty per °C·s of error */
+#define HOT_RUNS   3       /* consecutive windows at the hard limit before stopping */
+#define EMERG_OVER 4.0     /* °C past the hard limit: stop at once, no persistence */
 
 double ctl_step(ctl_t *c, const ctl_cfg *k, double t, double dt) {
     if (!c->init) {
         c->ema = t; c->duty = k->duty_max * 0.25; c->prev_err = k->target - t; c->init = 1;
     }
     c->ema += (1.0 - exp(-dt / FILTER_TAU)) * (t - c->ema);
-    if (t >= k->hard) { c->duty = 0; c->prev_err = k->target - c->ema; return 0; }
+    /* The hard limit stops the node, but only once the heat persists. Our
+     * workers run SCHED_IDLE, so a die spike from somebody else's burst is
+     * already being yielded to; stopping on it just throws away the duty we
+     * had. Each window above the limit still multiplies duty down below. */
+    if (t >= k->hard) {
+        if (++c->hot_run >= HOT_RUNS || t >= k->hard + EMERG_OVER) {
+            c->duty = 0; c->prev_err = k->target - c->ema; return 0;
+        }
+    } else {
+        c->hot_run = 0;
+    }
     double e = k->target - c->ema;
     c->duty += KP * (e - c->prev_err) + KI * e * dt;
     c->prev_err = e;
@@ -77,6 +89,28 @@ static void add_sensor(const char *path, const char *name) {
     if (nsens == 1) snprintf(sens_name, sizeof sens_name, "%s", name);
 }
 
+/* hwmon by driver name (Intel coretemp, AMD k10temp): returns the highest
+ * critical temperature published, and optionally adds the inputs as sensors. */
+static int hwmon_scan(int add_inputs) {
+    char path[300], buf[64];
+    int crit = 0;
+    DIR *h = opendir("/sys/class/hwmon");
+    struct dirent *e;
+    while (h && (e = readdir(h))) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(path, sizeof path, "/sys/class/hwmon/%s/name", e->d_name);
+        if (read_line(path, buf, sizeof buf) || !is_cpu_zone(buf)) continue;
+        if (add_inputs) {
+            snprintf(path, sizeof path, "/sys/class/hwmon/%s/temp1_input", e->d_name);
+            add_sensor(path, buf);
+        }
+        snprintf(path, sizeof path, "/sys/class/hwmon/%s/temp1_crit", e->d_name);
+        if (!read_line(path, buf, sizeof buf) && atoi(buf) / 1000 > crit) crit = atoi(buf) / 1000;
+    }
+    if (h) closedir(h);
+    return crit;
+}
+
 /* CPU sensors first (thermal zones by type, then hwmon by driver name); if none,
  * every zone that isn't obviously something else. Returns the critical trip in °C. */
 static int discover(void) {
@@ -103,21 +137,13 @@ static int discover(void) {
                 if (!read_line(tp, ty, sizeof ty) && atoi(ty) / 1000 > crit) crit = atoi(ty) / 1000;
             }
         }
-        if (pass == 0 && nsens == 0) {                 /* hwmon: AMD k10temp, Intel coretemp */
-            DIR *h = opendir("/sys/class/hwmon");
-            while (h && (e = readdir(h))) {
-                if (e->d_name[0] == '.') continue;
-                snprintf(path, sizeof path, "/sys/class/hwmon/%s/name", e->d_name);
-                if (read_line(path, buf, sizeof buf) || !is_cpu_zone(buf)) continue;
-                snprintf(path, sizeof path, "/sys/class/hwmon/%s/temp1_input", e->d_name);
-                add_sensor(path, buf);
-                snprintf(path, sizeof path, "/sys/class/hwmon/%s/temp1_crit", e->d_name);
-                if (!read_line(path, buf, sizeof buf) && atoi(buf) / 1000 > crit) crit = atoi(buf) / 1000;
-            }
-            if (h) closedir(h);
-        }
+        if (pass == 0 && nsens == 0) { int c = hwmon_scan(1); if (c > crit) crit = c; }
     }
     if (d) closedir(d);
+    /* x86_pkg_temp commonly publishes only passive trips, leaving crit unset.
+     * coretemp/k10temp still carry the chip's real limit, so ask hwmon even
+     * when a thermal zone supplied the reading. */
+    if (crit == 0) crit = hwmon_scan(0);
     return crit;
 }
 
@@ -158,10 +184,10 @@ void throttle_init(int dmax, int cap_c, int pause_batt) {
     int crit = discover();
     read_battery(&has_batt);
     batt_pause = pause_batt;
-    if (cap_c <= 0) {                                   /* auto: 20 °C under critical */
-        cap_c = crit > 0 ? crit - 20 : 80;
+    if (cap_c <= 0) {                                   /* auto: 12 °C under critical */
+        cap_c = crit > 0 ? crit - 12 : 80;
         if (cap_c < 60) cap_c = 60;
-        if (cap_c > 85) cap_c = 85;
+        if (cap_c > 90) cap_c = 90;
     }
     cfg.cap = cap_c;
     cfg.target = cap_c - 6;               /* margin for sensor spikes around the median */
@@ -204,7 +230,8 @@ static void *sampler(void *arg) {
         n = 0;
         atomic_store(&temp_now, (int)(m * 1000));
         atomic_store(&duty, (int)(d + 0.5));
-        atomic_store(&reason, m >= cfg.hard ? TH_HOT : d < cfg.duty_max - 0.5 ? TH_THERMAL : TH_RUN);
+        atomic_store(&reason, d <= 0 && m >= cfg.hard ? TH_HOT
+                              : d < cfg.duty_max - 0.5 ? TH_THERMAL : TH_RUN);
     }
     return NULL;
 }

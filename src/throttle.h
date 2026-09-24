@@ -14,7 +14,7 @@ typedef struct {
     double duty_max;     /* % */
 } ctl_cfg;
 
-typedef struct { double ema, duty, prev_err; int init; } ctl_t;
+typedef struct { double ema, duty, prev_err; int init, hot_run; } ctl_t;
 
 double ctl_step(ctl_t *c, const ctl_cfg *k, double temp_c, double dt);
 
