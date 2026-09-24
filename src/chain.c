@@ -93,7 +93,7 @@ static int accept(const share_t *s, const tx_t *txs, int ntx, const uint8_t *msg
     if (s->bits != chain_next_bits(par)) return CH_INVALID;
     if (now && (int64_t)s->time > now + MAX_FUTURE) return CH_INVALID;
     if (s->time + 600 < p->s.time) return CH_INVALID;
-    tx_root(root, txs, ntx);
+    share_root(root, txs, ntx, NULL, 0);
     if (memcmp(root, s->tx_root, 32)) return CH_INVALID;
     for (int i = 0; i < ntx; i++) if (tx_check_sig(&txs[i])) return CH_INVALID;
     int tl = share_verify(s, NULL);

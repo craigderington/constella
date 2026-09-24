@@ -45,7 +45,7 @@ static void update_job(void) {
     tmpl_t *tm = &T[tnext];
     tnext = (tnext + 1) % TMPL_RING;
     tm->ntx = mempool_select(tm->txs, SHARE_MAX_TX);
-    tx_root(tm->root, tm->txs, tm->ntx);
+    share_root(tm->root, tm->txs, tm->ntx, NULL, 0);
     share_t s = {0};
     s.version = SHARE_VERSION;
     s.height = t->height + 1;

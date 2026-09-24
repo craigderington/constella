@@ -26,5 +26,4 @@ void tx_sign(tx_t *t, const uint8_t sk[64]);        /* signs for this chain */
 void tx_sign_with(tx_t *t, const uint8_t sk[64], const uint8_t tag[8]);
 int  tx_check_sig(const tx_t *t);                   /* 0 = valid, on this chain */
 void tx_id(uint8_t id[32], const tx_t *t);
-void tx_root(uint8_t root[32], const tx_t *txs, int n);  /* zeros when n == 0 */
 #endif

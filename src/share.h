@@ -35,4 +35,9 @@ void share_base(bn *B, const uint8_t seed[32], unsigned bits);
 int  tuple_len(const bn *p, int n);          /* leading primes in the pattern */
 int  share_verify(const share_t *s, bn *p_out); /* tuple length, -1 if malformed */
 uint64_t share_work(unsigned bits);              /* expected-effort weight */
+/* The share's commitment, carried in the header's tx_root field. Domain tags
+ * make the split between the two lists unambiguous: without them a crafted tx
+ * list and claim list could produce the root of a different split of the same
+ * bytes. All-zero when the share carries neither. */
+void share_root(uint8_t root[32], const tx_t *txs, int ntx, const sci_t *sci, int nsci);
 #endif
