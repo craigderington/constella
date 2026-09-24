@@ -1,0 +1,80 @@
+# Local 5-node testnet + explorer. Published on localhost only:
+#   node1 P2P 7043, explorer http://127.0.0.1:3071, postgres 5439.
+# Each node generates its own key in its volume (/data/wallet.key).
+#   docker compose up --build -d && docker compose logs -f
+#   docker compose exec node1 /constella wallet addr /data/wallet.key
+x-node: &node
+  image: constella:dev
+  restart: unless-stopped
+  cpus: 1.0
+  networks: [constella]
+
+x-env: &env
+  CONSTELLA_PORT: "7043"
+  CONSTELLA_THREADS: "1"
+  CONSTELLA_DUTY: "50"
+  CONSTELLA_TEMP_MAX: "70"
+  CONSTELLA_BATTERY_PAUSE: "1"
+
+services:
+  node1:
+    <<: *node
+    build: .
+    ports: ["127.0.0.1:7043:7043"]
+    environment: { <<: *env }
+    volumes: [node1:/data]
+  node2:
+    <<: *node
+    depends_on: [node1]
+    environment: { <<: *env, CONSTELLA_PEERS: "node1:7043" }
+    volumes: [node2:/data]
+  node3:
+    <<: *node
+    depends_on: [node1]
+    environment: { <<: *env, CONSTELLA_PEERS: "node1:7043,node2:7043" }
+    volumes: [node3:/data]
+  node4:
+    <<: *node
+    depends_on: [node1]
+    environment: { <<: *env, CONSTELLA_PEERS: "node1:7043,node3:7043" }
+    volumes: [node4:/data]
+  node5:
+    <<: *node
+    depends_on: [node1]
+    environment: { <<: *env, CONSTELLA_PEERS: "node1:7043,node4:7043" }
+    volumes: [node5:/data]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: constella
+      POSTGRES_PASSWORD: constella
+      POSTGRES_DB: explorer
+    ports: ["127.0.0.1:5439:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [constella]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U constella -d explorer"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  explorer:
+    build: ./explorer
+    image: constella-explorer:dev
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      node1: { condition: service_started }
+    environment:
+      EXPLORER_NODE: node1:7043
+      EXPLORER_DB: postgres://constella:constella@postgres:5432/explorer?sslmode=disable
+      EXPLORER_HTTP: ":3071"
+    ports: ["127.0.0.1:3071:3071"]
+    networks: [constella]
+
+networks:
+  constella: {}
+
+volumes: { node1: {}, node2: {}, node3: {}, node4: {}, node5: {}, pgdata: {} }

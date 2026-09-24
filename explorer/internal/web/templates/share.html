@@ -1,0 +1,58 @@
+{{define "main"}}{{with .Data}}{{$s := .S}}
+<section class="hero">
+  <h1>{{if $s.IsBlock}}Block{{else}}Share{{end}} {{num $s.Height}}</h1>
+  <p class="lede" style="margin:0">
+    {{if $s.IsBlock}}A prime {{tuple $s.TLen}}{{else}}A prime {{tuple $s.TLen}} (a share: {{tuple blockK}} needed for a block){{end}},
+    {{$s.Bits}} bits, mined by <a class="mono" href="/address/{{hex $s.Miner}}">{{short $s.Miner}}</a> {{ago $s.Time}}.
+    {{if not $s.OnMain}}<span class="pulse bad">Not on the main chain.</span>{{end}}
+  </p>
+  {{constellation $s.P $s.TLen}}
+</section>
+
+<div class="cols">
+<div>
+  <h2>Members</h2>
+  <p class="lede">Consensus uses a base-2 Fermat test. The explorer re-checks each member with Baillie-PSW and 20 Miller-Rabin rounds.</p>
+  <div class="scroll"><table>
+    <tr><th>Offset</th><th>Consensus</th><th>Strong test</th><th>Value</th></tr>
+    {{range members $s.P}}<tr>
+      <td class="mono">p+{{.Offset}}</td>
+      <td>{{if .PRP}}prime{{else}}composite{{end}}</td>
+      <td>{{if .Certified}}<span class="cert">prime</span>{{else if .PRP}}<span class="pulse bad">pseudoprime</span>{{else}}–{{end}}</td>
+      <td class="mono">{{clip .N.String}}</td></tr>{{end}}
+  </table></div>
+
+  <h2>p in full</h2>
+  <div class="pdigits">{{range digits $s.P}}<span>{{.}}</span>{{end}}</div>
+
+  {{if .Payouts}}<h2>Payouts</h2>
+  <p class="lede">Thirty percent of the reward, split by work across the last 256 shares. The rest goes to the science escrow.</p>
+  <table>
+    {{range .Payouts}}<tr><td class="mono"><a href="/address/{{hex .Addr}}">{{short .Addr}}</a></td><td class="n">{{coins .Amount}}</td></tr>{{end}}
+  </table>{{end}}
+
+  <h2>Transactions</h2>
+  {{if .Txs}}<div class="scroll"><table>
+    <tr><th>From</th><th>To</th><th class="n">Amount</th><th class="n">Fee</th><th>Status</th></tr>
+    {{range .Txs}}<tr>
+      <td class="mono"><a href="/address/{{hex .From}}">{{short .From}}</a></td>
+      <td class="mono"><a href="/address/{{hex .To}}">{{short .To}}</a></td>
+      <td class="n">{{coins .Amount}}</td><td class="n">{{coins .Fee}}</td>
+      <td class="status {{.Status}}">{{.Status}}</td></tr>{{end}}
+  </table></div>{{else}}<p class="empty">This share carries no transactions.</p>{{end}}
+</div>
+
+<aside>
+  <h2>Details</h2>
+  <dl class="facts wide">
+    <dt>Id</dt><dd>{{hex $s.ID}}</dd>
+    <dt>Parent</dt><dd><a href="/share/{{hex $s.Prev}}">{{short $s.Prev}}</a></dd>
+    <dt>Time</dt><dd>{{iso $s.Time}}</dd>
+    <dt>Offset k</dt><dd>{{num $s.K}}</dd>
+    <dt>Digits</dt><dd>{{ndigits $s.P}}</dd>
+    <dt>Main chain</dt><dd>{{if $s.OnMain}}yes{{else}}no{{end}}</dd>
+  </dl>
+  <p><a href="/height/{{add $s.Height -1}}">Previous height</a> &nbsp; <a href="/height/{{add $s.Height 1}}">Next height</a></p>
+</aside>
+</div>
+{{end}}{{end}}

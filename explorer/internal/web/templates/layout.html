@@ -1,0 +1,122 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · Constella</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='4' fill='%23F4D35E'/%3E%3C/svg%3E">
+<style>
+:root {
+  --ink: #16324F; --deep: #0E2540; --chalk: #E8EEF2; --faded: #9FB4C7;
+  --star: #F4D35E; --alarm: #F28482; --rule: rgba(232, 238, 242, .14);
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  --mono: "Iosevka", "JetBrains Mono", "Berkeley Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html { background: var(--ink); color: var(--chalk); }
+body { margin: 0; font: 17px/1.55 var(--serif); }
+a { color: inherit; text-decoration-color: var(--rule); text-underline-offset: 3px; }
+a:hover { text-decoration-color: var(--star); }
+:focus-visible { outline: 2px solid var(--star); outline-offset: 2px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+header.top { border-bottom: 1px solid var(--rule); }
+header.top .wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 28px; padding-block: 14px; }
+.brand { font-size: 1.35rem; letter-spacing: .01em; text-decoration: none; display: flex; align-items: center; gap: 10px; }
+.brand svg { width: 34px; height: 12px; }
+nav { display: flex; gap: 20px; }
+nav a { color: var(--faded); text-decoration: none; }
+nav a:hover, nav a[aria-current] { color: var(--chalk); }
+form.search { flex: 1; min-width: 220px; }
+form.search input {
+  width: 100%; background: var(--deep); color: var(--chalk); border: 1px solid var(--rule);
+  border-radius: 4px; padding: 8px 12px; font: 15px var(--mono);
+}
+form.search input::placeholder { color: var(--faded); opacity: .7; }
+.pulse { font-size: .9rem; color: var(--faded); }
+.pulse.bad { color: var(--alarm); }
+.pulse b { font: 500 .9rem var(--mono); color: var(--chalk); }
+
+main { padding: 32px 0 64px; }
+h1 { font-weight: normal; font-size: 2rem; line-height: 1.2; margin: 0 0 6px; }
+h2 { font-weight: normal; font-size: 1.25rem; margin: 40px 0 12px; }
+.lede { color: var(--faded); margin: 0 0 24px; max-width: 64ch; }
+.mono, td.n, code { font-family: var(--mono); font-size: .88rem; }
+
+/* the chart: the one bold thing on the page */
+.hero { background: var(--deep); border: 1px solid var(--rule); border-radius: 6px; padding: 24px 28px 20px; }
+.chart { width: 100%; height: auto; display: block; margin: 8px 0 4px; }
+.chart .grat { stroke: var(--rule); stroke-width: 1; }
+.chart .link { stroke: var(--star); stroke-width: 1.5; stroke-dasharray: 400; stroke-dashoffset: 0;
+  animation: draw 900ms ease-out both; animation-delay: calc(var(--i) * 180ms); opacity: .8; }
+.chart .star { fill: var(--star); }
+.chart .halo { fill: var(--star); opacity: .12; }
+.chart .void { fill: none; stroke: var(--faded); stroke-width: 1.3; stroke-dasharray: 2 3; }
+.chart .lbl { fill: var(--faded); font: 13px var(--mono); text-anchor: middle; }
+@keyframes draw { from { stroke-dashoffset: 400; } to { stroke-dashoffset: 0; } }
+.settled .chart .link { animation: none; }
+@media (prefers-reduced-motion: reduce) { .chart .link { animation: none; } }
+.pdigits { font: 15px/1.7 var(--mono); color: var(--faded); display: flex; flex-wrap: wrap; gap: 0 1ch; margin: 14px 0 0; word-break: break-all; }
+.pdigits span:first-child { color: var(--chalk); }
+.cert { color: var(--star); }
+
+.cols { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 48px; }
+@media (max-width: 880px) { .cols { grid-template-columns: 1fr; gap: 8px; } }
+
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-weight: normal; color: var(--faded); font-size: .85rem; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--rule); }
+td { padding: 7px 10px 7px 0; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+td.n, th.n { text-align: right; }
+tr.blk td:first-child { color: var(--star); }
+.scroll { overflow-x: auto; }
+.glyph { width: 70px; height: 10px; display: block; }
+.glyph .on { fill: var(--star); }
+.glyph .off { fill: none; stroke: var(--faded); stroke-width: 1; }
+
+dl.facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; }
+dl.facts dt { color: var(--faded); }
+dl.facts dd { margin: 0; font: .9rem/1.9 var(--mono); text-align: right; }
+.facts.wide dd { text-align: left; word-break: break-all; }
+
+.status { font-size: .85rem; color: var(--faded); }
+.status.applied { color: var(--chalk); }
+.status.skipped, .status.orphaned { color: var(--alarm); }
+.empty { color: var(--faded); padding: 24px 0; max-width: 60ch; }
+footer { border-top: 1px solid var(--rule); color: var(--faded); font-size: .85rem; padding: 18px 0 32px; }
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="/">{{glyph 6}}Constella</a>
+  <nav><a href="/">Overview</a><a href="/records">Records</a></nav>
+  <form class="search" action="/search" role="search">
+    <input name="q" aria-label="Search" placeholder="Height, share id or address" autocomplete="off">
+  </form>
+  {{with .Stats.Meta}}
+    {{if eq .check "ok"}}<span class="pulse">Ledger matches node at <b>{{num .check_height}}</b></span>
+    {{else if .check}}<span class="pulse bad">Ledger differs from node: {{.check}}</span>
+    {{else}}<span class="pulse">Cross-checking ledger with node</span>{{end}}
+  {{end}}
+</div></header>
+<main class="wrap" id="live">{{template "main" .}}</main>
+<footer><div class="wrap">
+  Explorer state rebuilt independently from raw shares.
+  {{with .Stats.Meta}}{{if eq .peer "false"}}<span class="pulse bad">Not connected to a node.</span>{{end}}{{end}}
+  JSON at <a href="/api/stats">/api/stats</a>. Try <code>curl</code> on this address.
+</div></footer>
+<script>
+// Refresh live pages in place every 10 s; the chart only animates on first load.
+(() => {
+  if (!document.querySelector('[data-live]')) return;
+  document.documentElement.classList.add('armed');
+  setInterval(async () => {
+    if (document.hidden || document.activeElement?.name === 'q') return;
+    try {
+      const r = await fetch(location.href, { headers: { 'X-Partial': '1' } });
+      if (r.ok) { document.documentElement.classList.add('settled'); document.getElementById('live').innerHTML = await r.text(); }
+    } catch {}
+  }, 10000);
+})();
+</script>
+</body>
+</html>{{end}}
