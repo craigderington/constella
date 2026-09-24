@@ -197,9 +197,11 @@ int node_run(void) {
     int port = atoi(env("CONSTELLA_PORT", "7043"));
     int threads = atoi(env("CONSTELLA_THREADS", "0"));
     if (threads <= 0) threads = default_threads();
-    throttle_init(atoi(env("CONSTELLA_DUTY", "50")), atoi(env("CONSTELLA_TEMP_MAX", "70")),
+    throttle_init(atoi(env("CONSTELLA_DUTY", "50")), atoi(env("CONSTELLA_TEMP_MAX", "0")),
                   atoi(env("CONSTELLA_BATTERY_PAUSE", "1")));
-    throttle_update();
+    throttle_start();
+    log_msg("throttle: sensor=%s cap=%dC target=%dC%s", throttle_sensor(), throttle_cap_c(),
+            throttle_target_c(), throttle_has_battery() ? " (laptop)" : "");
 
     if (chain_init(data, on_accept)) { log_msg("fatal: cannot open data dir %s", data); return 1; }
 
@@ -213,8 +215,8 @@ int node_run(void) {
 
     char a[65];
     hex_enc(a, payout, 32);
-    log_msg("constella: payout=%s%s threads=%d duty=%d%% port=%d", a,
-            wr == 1 ? " (new key)" : "", threads, throttle_duty(), port);
+    log_msg("constella: payout=%s%s threads=%d duty<=%d%% port=%d", a,
+            wr == 1 ? " (new key)" : "", threads, atoi(env("CONSTELLA_DUTY", "50")), port);
 
     rebuild_state();
     live = 1;
@@ -228,7 +230,7 @@ int node_run(void) {
     miner_start(threads, pfd[1], &running);
     update_job();
 
-    int64_t t_throttle = 0, t_status = now_sec() + 30;
+    int64_t t_status = now_sec() + 30;
     uint64_t last_scan = 0;
     uint32_t last_blocks = L.blocks;
     struct pollfd pf[64];
@@ -247,17 +249,17 @@ int node_run(void) {
         if (job_dirty) { update_job(); job_dirty = 0; }
         int64_t t = now_sec();
         net_tick();
-        if (t >= t_throttle) { throttle_update(); t_throttle = t + 2; }
         if (t >= t_status) {
             uint64_t sc = atomic_load(&miner_scanned);
             const entry_t *tp = chain_entry(chain_tip());
             int tc = throttle_temp_c();
             char tid[9], tb[16];
             sh(tid, tp->id);
-            if (tc < 0) snprintf(tb, sizeof tb, "n/a"); else snprintf(tb, sizeof tb, "%dC", tc);
-            log_msg("status: h=%u tip=%s bits=%u peers=%d mempool=%d orphans=%d duty=%d%% temp=%s%s found=%llu %.0f cand/s",
+            if (tc < 0) snprintf(tb, sizeof tb, "n/a");
+            else snprintf(tb, sizeof tb, "%dC/%dC", tc, throttle_target_c());
+            log_msg("status: h=%u tip=%s bits=%u peers=%d mempool=%d orphans=%d duty=%d%% temp=%s (%s) found=%llu %.0f cand/s",
                     tp->height, tid, chain_next_bits(chain_tip()), net_peers(), mempool_count(),
-                    chain_orphans(), throttle_duty(), tb, throttle_on_battery() ? " battery" : "",
+                    chain_orphans(), throttle_duty(), tb, throttle_reason_str(),
                     (unsigned long long)found, (double)(sc - last_scan) / 30.0);
             last_scan = sc;
             t_status = t + 30;
@@ -274,6 +276,7 @@ int bench_run(unsigned bits, int secs, int threads) {
     fcntl(pfd[0], F_SETFL, O_NONBLOCK);
     signal(SIGINT, on_sig);
     throttle_init(100, 200, 0);
+    throttle_fixed(100);
     miner_start(threads, pfd[1], &running);
     share_t s = {0};
     s.version = SHARE_VERSION; s.bits = (uint16_t)bits; s.time = (uint64_t)now_sec();
