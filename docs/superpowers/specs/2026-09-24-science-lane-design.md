@@ -186,6 +186,11 @@ gap at `SCI_BITS = 256`. This mirrors the consensus lane, which already
 approximates work as `share_work(bits) = bits^4 >> 16` rather than computing it
 exactly.
 
+This is a deliberate deviation from the linear `weight = g` agreed during design.
+It was raised against the simpler alternative and the exponential weight was
+ratified: linear weight pays a 7x-harder find only 2x. Both forms are
+integer-only, so neither carries the float-fork hazard.
+
 **Release.** At each block, after escrow accrues:
 
 ```
