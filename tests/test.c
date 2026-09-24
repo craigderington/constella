@@ -1,0 +1,179 @@
+/* Unit tests + stdin modes used by crosscheck.py. */
+#include "blake2b.h"
+#include "bn.h"
+#include "ledger.h"
+#include "mempool.h"
+#include "tx.h"
+#include "wallet.h"
+#include "share.h"
+#include "sieve.h"
+#include "util.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int fails, runs;
+#define CHECK(c) do { runs++; if (!(c)) { fails++; fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #c); } } while (0)
+
+static void t_blake2b(void) {
+    uint8_t h[32]; char x[65];
+    blake2b(h, 32, "", 0); hex_enc(x, h, 32);
+    CHECK(!strcmp(x, "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8"));
+    blake2b(h, 32, "abc", 3); hex_enc(x, h, 32);
+    CHECK(!strcmp(x, "bddd813c634239723171ef3fee98579b94964e3bb1cb3e427262c8c068d52319"));
+}
+
+static int prp_hex(const char *hx) { bn a; int n = bn_from_hex(&a, hx); return bn_is_prp2(&a, n); }
+
+static void t_prp(void) {
+    CHECK(prp_hex("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed"));  /* 2^255-19 */
+    CHECK(prp_hex("7fffffffffffffffffffffffffffffff"));                                  /* 2^127-1 */
+    CHECK(prp_hex("1" "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                  "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                  "ff"));                                                               /* 2^521-1 */
+    CHECK(!prp_hex("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffef"));
+    CHECK(!prp_hex("ffffffffffffffffffffffffffffffff"));                                 /* 2^128-1 */
+    CHECK(prp_hex("3"));  CHECK(prp_hex("61"));  CHECK(!prp_hex("1")); CHECK(!prp_hex("63"));
+}
+
+static void t_tuple(void) {
+    bn p; bn_zero(&p); p.d[0] = 97;      CHECK(tuple_len(&p, 1) == 6);   /* 97..113 */
+    p.d[0] = 16057;                      CHECK(tuple_len(&p, 1) == 6);
+    p.d[0] = 307;                        CHECK(tuple_len(&p, 1) == 4);   /* 307,311,313,317 */
+    p.d[0] = 517;                        CHECK(tuple_len(&p, 1) == 0);   /* 11*47 */
+}
+
+static void t_dec(void) {
+    bn a; char s[400];
+    int n = bn_from_hex(&a, "ffffffffffffffffffffffffffffffff");
+    bn_to_dec(s, sizeof s, &a, n);
+    CHECK(!strcmp(s, "340282366920938463463374607431768211455"));
+}
+
+static void t_pplns(void) {
+    ledger_t L = {0};
+    uint8_t m[3][32] = {{1}, {2}, {1}}, f[32] = {2};
+    uint64_t eq[3] = {1, 1, 1}, wt[3] = {3, 1, 0};
+    pplns_pay(&L, (const uint8_t (*)[32])m, eq, 3, f, 100);
+    CHECK(ledger_acct(&L, m[0], 0)->amt == 66);          /* 2 of 3 equal shares */
+    CHECK(ledger_acct(&L, m[1], 0)->amt == 34);          /* 33 + remainder as finder */
+    ledger_free(&L);
+    pplns_pay(&L, (const uint8_t (*)[32])m, wt, 3, f, 1000);   /* work-weighted */
+    CHECK(ledger_acct(&L, m[0], 0)->amt == 750);
+    CHECK(ledger_acct(&L, m[1], 0)->amt == 250);
+    ledger_free(&L);
+    pplns_pay(&L, NULL, NULL, 0, f, 7);
+    CHECK(ledger_acct(&L, f, 0)->amt == 7);
+    ledger_free(&L);
+    CHECK(share_work(512) > share_work(448));
+}
+
+static void t_amount(void) {
+    uint64_t v; char s[32];
+    CHECK(!parse_amount(&v, "1.5") && v == 150000000ULL);
+    CHECK(!parse_amount(&v, "0.00000001") && v == 1);
+    CHECK(!parse_amount(&v, "42") && v == 42 * COIN);
+    CHECK(parse_amount(&v, "1.000000001")); CHECK(parse_amount(&v, "abc")); CHECK(parse_amount(&v, ""));
+    fmt_amount(s, 150000001ULL); CHECK(!strcmp(s, "1.50000001"));
+}
+
+static void t_tx(void) {
+    wallet_t a, b;
+    uint8_t sa[32] = {1}, sb[32] = {2}, miner[32] = {9}, r1[32], r2[32];
+    wallet_from_seed(&a, sa); wallet_from_seed(&b, sb);
+    tx_t t = {0};
+    memcpy(t.from, a.pk, 32); memcpy(t.to, b.pk, 32);
+    t.amount = 10 * COIN; t.fee = 1000; t.nonce = 0;
+    tx_sign(&t, a.sk);
+    CHECK(tx_check_sig(&t) == 0);
+    tx_t bad = t; bad.amount++;                CHECK(tx_check_sig(&bad) != 0);   /* tamper */
+    bad = t; memcpy(bad.from, b.pk, 32);       CHECK(tx_check_sig(&bad) != 0);   /* wrong key */
+    uint8_t raw[TX_SIZE]; tx_t back;
+    tx_ser(raw, &t); tx_deser(&back, raw);     CHECK(!memcmp(&back, &t, sizeof t));
+    tx_root(r1, &t, 1); tx_root(r2, NULL, 0);  CHECK(memcmp(r1, r2, 32));
+
+    ledger_t L = {0};
+    CHECK(ledger_apply_tx(&L, &t, miner) == -1);                  /* no funds */
+    ledger_credit(&L, a.pk, 20 * COIN);
+    CHECK(ledger_apply_tx(&L, &t, miner) == 0);
+    CHECK(ledger_acct(&L, b.pk, 0)->amt == 10 * COIN);
+    CHECK(ledger_acct(&L, miner, 0)->amt == 1000);
+    CHECK(ledger_acct(&L, a.pk, 0)->amt == 10 * COIN - 1000);
+    CHECK(ledger_acct(&L, a.pk, 0)->nonce == 1);
+    CHECK(ledger_apply_tx(&L, &t, miner) == -1);                  /* replay */
+    t.nonce = 1; t.amount = 10 * COIN; tx_sign(&t, a.sk);
+    CHECK(ledger_apply_tx(&L, &t, miner) == -1);                  /* overspend by fee */
+
+    /* mempool: contiguous nonces, cumulative spend */
+    tx_t m0 = {0}, m1, m2;
+    memcpy(m0.from, a.pk, 32); memcpy(m0.to, b.pk, 32);
+    m0.amount = 4 * COIN; m0.nonce = 1; tx_sign(&m0, a.sk);
+    m1 = m0; m1.nonce = 2; tx_sign(&m1, a.sk);
+    m2 = m0; m2.nonce = 3; tx_sign(&m2, a.sk);                    /* 12 > ~10 available */
+    CHECK(mempool_add(&m1, &L) == MP_BADSTATE);                   /* gap */
+    CHECK(mempool_add(&m0, &L) == MP_ADDED);
+    CHECK(mempool_add(&m0, &L) == MP_DUP);
+    CHECK(mempool_add(&m1, &L) == MP_ADDED);
+    CHECK(mempool_add(&m2, &L) == MP_BADSTATE);
+    CHECK(mempool_next_nonce(&L, a.pk) == 3);
+    ledger_apply_tx(&L, &m0, miner);                              /* m0 mined */
+    mempool_revalidate(&L);
+    CHECK(mempool_count() == 1);
+    ledger_free(&L);
+}
+
+static void t_serial(void) {
+    share_t s = {0}, t; uint8_t r[SHARE_SIZE], a[32], b[32];
+    s.version = 2; s.height = 42; s.time = 123456789; s.bits = 300; s.k = 0xdeadbeefULL; s.prev[3] = 9; s.miner[31] = 7; s.tx_root[5] = 3;
+    share_ser(r, &s); share_deser(&t, r);
+    share_id(a, &s); share_id(b, &t);
+    CHECK(!memcmp(a, b, 32) && t.k == s.k && t.bits == 300 && t.height == 42 && t.tx_root[5] == 3);
+}
+
+static int keep_all(void *c) { (void)c; return 1; }
+
+/* Mine a real share and check the independent verifier agrees. */
+static void t_mine(unsigned bits, int print) {
+    share_t s = {0}; s.version = SHARE_VERSION; s.bits = (uint16_t)bits; s.time = 1790121600ULL + bits;
+    job_t *j = job_new(&s, 1);
+    uint64_t *bm = malloc(SIEVE_W / 8);
+    search_out o; int r = 0;
+    for (uint64_t w = 0; w < 4096 && r != 1; w++) r = job_search(j, w, bm, &o, keep_all, NULL);
+    CHECK(r == 1);
+    if (r == 1) {
+        s.k = o.k; bn p;
+        int tl = share_verify(&s, &p);
+        CHECK(tl == o.tlen && tl >= SHARE_K);
+        CHECK(bn_bitlen(&p, bn_limbs(bits)) == (int)bits);
+        if (print) { char d[400]; bn_to_dec(d, sizeof d, &p, bn_limbs(bits)); printf("%s %d\n", d, tl); }
+    }
+    free(bm); job_put(j);
+}
+
+int main(int argc, char **argv) {
+    if (sieve_init()) return 1;
+    char line[1024];
+    if (argc > 1 && !strcmp(argv[1], "--prp")) {          /* hex per line -> 0/1 */
+        while (fgets(line, sizeof line, stdin)) {
+            line[strcspn(line, "\n")] = 0;
+            printf("%d\n", prp_hex(line));
+        }
+        return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "--b2")) {           /* hex bytes per line -> digest */
+        static uint8_t buf[512]; uint8_t h[32]; char x[65];
+        while (fgets(line, sizeof line, stdin)) {
+            line[strcspn(line, "\n")] = 0;
+            size_t n = strlen(line) / 2;
+            if (n && hex_dec(buf, n, line)) return 1;
+            blake2b(h, 32, buf, n); hex_enc(x, h, 32); puts(x);
+        }
+        return 0;
+    }
+    if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
+
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_tx();
+    t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
+    printf("%d/%d checks passed\n", runs - fails, runs);
+    return fails != 0;
+}

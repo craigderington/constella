@@ -1,0 +1,42 @@
+{{define "main"}}{{with .Data}}
+<h1>Address</h1>
+<p class="mono" style="word-break:break-all; color: var(--faded); margin-top:0">{{hex .Addr}}</p>
+{{if not .Acct}}
+<p class="empty">This address has no activity yet. It becomes active when it mines a share or receives a transfer.</p>
+{{else}}{{$a := .Acct}}
+<div class="cols">
+<div>
+  <h2>Transactions</h2>
+  {{if .Txs}}<div class="scroll"><table>
+    <tr><th>Height</th><th>Direction</th><th>Counterparty</th><th class="n">Amount</th><th>Status</th></tr>
+    {{range .Txs}}{{$out := eq (hex .From) (hex $.Data.Addr)}}<tr>
+      <td class="n"><a href="/share/{{hex .ShareID}}">{{num .Height}}</a></td>
+      <td>{{if $out}}Sent{{else}}Received{{end}}</td>
+      <td class="mono">{{if $out}}<a href="/address/{{hex .To}}">{{short .To}}</a>{{else}}<a href="/address/{{hex .From}}">{{short .From}}</a>{{end}}</td>
+      <td class="n">{{if $out}}−{{end}}{{coins .Amount}}</td>
+      <td class="status {{.Status}}">{{.Status}}</td></tr>{{end}}
+  </table></div>{{else}}<p class="empty">No transfers yet.</p>{{end}}
+
+  <h2>Block payouts</h2>
+  {{if .Payouts}}<table>
+    <tr><th>Block</th><th>When</th><th class="n">Amount</th></tr>
+    {{range .Payouts}}<tr><td class="n"><a href="/share/{{hex .Block}}">{{num .Height}}</a></td><td>{{ago .Time}}</td><td class="n">{{coins .Amount}}</td></tr>{{end}}
+  </table>{{else}}<p class="empty">No payouts yet. Shares in the window of the next block earn a slice of it.</p>{{end}}
+
+  <h2>Recent shares</h2>
+  {{if .Shares}}<table>
+    {{range .Shares}}<tr{{if .IsBlock}} class="blk"{{end}}><td class="n"><a href="/share/{{hex .ID}}">{{num .Height}}</a></td><td>{{ago .Time}}</td><td>{{glyph .TLen}}</td><td class="n">{{.Bits}}</td></tr>{{end}}
+  </table>{{else}}<p class="empty">This address has not mined.</p>{{end}}
+</div>
+<aside>
+  <h2>Balance</h2>
+  <dl class="facts">
+    <dt>Balance</dt><dd>{{coins $a.Balance}}</dd>
+    <dt>Earned mining</dt><dd>{{coins $a.Earned}}</dd>
+    <dt>Shares</dt><dd>{{num $a.Shares}}</dd>
+    <dt>Blocks found</dt><dd>{{num $a.Blocks}}</dd>
+    <dt>Next nonce</dt><dd>{{$a.Nonce}}</dd>
+  </dl>
+</aside>
+</div>
+{{end}}{{end}}{{end}}

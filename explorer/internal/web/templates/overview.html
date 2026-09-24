@@ -1,0 +1,57 @@
+{{define "main"}}{{$m := .Stats.Meta}}{{with .Data}}
+<div data-live></div>
+{{with .Latest}}
+<section class="hero" aria-labelledby="latest">
+  <h1 id="latest"><a href="/share/{{hex .ID}}">Block {{num .Height}}</a></h1>
+  <p class="lede" style="margin:0">A prime {{tuple .TLen}} at {{.Bits}} bits, found {{ago .Time}} by <a class="mono" href="/address/{{hex .Miner}}">{{short .Miner}}</a>.
+    {{if .Certified.Bool}}<span class="cert">Every member also passes a strong primality test.</span>{{end}}</p>
+  {{constellation .P .TLen}}
+  <div class="pdigits" aria-label="p, {{ndigits .P}} digits">{{range digits .P}}<span>{{.}}</span>{{end}}</div>
+</section>
+{{else}}
+<section class="hero">
+  <h1>Waiting for the first block</h1>
+  <p class="lede">Shares are prime quadruplets and arrive every few seconds. A block needs a prime {{tuple blockK}}, which takes a few minutes of network effort.</p>
+</section>
+{{end}}
+
+<div class="cols">
+<div>
+  <h2>Recent blocks</h2>
+  {{if .Blocks}}<div class="scroll"><table>
+    <tr><th>Height</th><th>Found</th><th>Finder</th><th>Tuple</th><th class="n">Bits</th><th>p</th></tr>
+    {{range .Blocks}}<tr class="blk">
+      <td class="n"><a href="/share/{{hex .ID}}">{{num .Height}}</a></td><td>{{ago .Time}}</td>
+      <td class="mono"><a href="/address/{{hex .Miner}}">{{short .Miner}}</a></td>
+      <td>{{glyph .TLen}}</td><td class="n">{{.Bits}}</td><td class="mono">{{clip .P}}</td></tr>{{end}}
+  </table></div>{{else}}<p class="empty">No blocks yet.</p>{{end}}
+
+  <h2>Recent shares</h2>
+  <div class="scroll"><table>
+    <tr><th>Height</th><th>Time</th><th>Miner</th><th>Tuple</th><th class="n">Txs</th><th class="n">Bits</th></tr>
+    {{range .Shares}}<tr{{if .IsBlock}} class="blk"{{end}}>
+      <td class="n"><a href="/share/{{hex .ID}}">{{num .Height}}</a></td><td>{{ago .Time}}</td>
+      <td class="mono"><a href="/address/{{hex .Miner}}">{{short .Miner}}</a></td>
+      <td>{{glyph .TLen}}</td><td class="n">{{.NTx}}</td><td class="n">{{.Bits}}</td></tr>{{end}}
+  </table></div>
+</div>
+
+<aside>
+  <h2>Network</h2>
+  <dl class="facts">
+    <dt>Height</dt><dd>{{num $m.height}}</dd>
+    <dt>Share size</dt><dd>{{$m.bits}} bits</dd>
+    <dt>Shares per minute</dt><dd>{{printf "%.1f" $.Stats.SharesPerMin}}</dd>
+    <dt>Blocks</dt><dd>{{num $m.blocks}}</dd>
+    <dt>Transactions</dt><dd>{{num $m.txs}}</dd>
+    <dt>Miners</dt><dd>{{$.Stats.Miners}}</dd>
+    <dt>Science escrow</dt><dd>{{with $m.escrow}}{{coins (atoi .)}}{{end}}</dd>
+  </dl>
+
+  <h2>Largest balances</h2>
+  <table>
+    {{range .Top}}<tr><td class="mono"><a href="/address/{{hex .Addr}}">{{short .Addr}}</a></td><td class="n">{{coins .Balance}}</td></tr>{{end}}
+  </table>
+</aside>
+</div>
+{{end}}{{end}}

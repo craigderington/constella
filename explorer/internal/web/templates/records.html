@@ -1,0 +1,13 @@
+{{define "main"}}
+<h1>Records</h1>
+<p class="lede">Every block is a prime constellation found by the network. Longest tuples come first, then the largest numbers.</p>
+{{if .Data}}<div class="scroll"><table>
+  <tr><th>Tuple</th><th class="n">Bits</th><th class="n">Digits</th><th>Strong test</th><th>Height</th><th>Finder</th><th>p</th></tr>
+  {{range .Data}}<tr>
+    <td>{{glyph .TLen}}</td><td class="n">{{.Bits}}</td><td class="n">{{ndigits .P}}</td>
+    <td>{{if .Certified.Bool}}<span class="cert">all prime</span>{{else}}<span class="pulse bad">not certified</span>{{end}}</td>
+    <td class="n"><a href="/share/{{hex .ID}}">{{num .Height}}</a></td>
+    <td class="mono"><a href="/address/{{hex .Miner}}">{{short .Miner}}</a></td>
+    <td class="mono">{{clip .P}}</td></tr>{{end}}
+</table></div>{{else}}<p class="empty">No blocks yet. The first one will appear here.</p>{{end}}
+{{end}}
