@@ -934,9 +934,15 @@ static void t_sci_payout(void) {
     for (int i = 0; i < 2000; i++) { esc += in; esc -= sci_release(esc); }
     uint64_t settled = esc;
     for (int i = 0; i < 2000; i++) { esc += in; esc -= sci_release(esc); }
-    CHECK(esc == settled);                                   /* fixed point */
-    CHECK(esc > 300 * COIN && esc < 400 * COIN);             /* near 350 */
-    CHECK(sci_release(esc) > in * 9 / 10 && sci_release(esc) < in * 11 / 10);
+    CHECK(esc == settled);                                   /* a true fixed point */
+    /* Accrue-then-release means the steady state solves e = 0.9*(e + in),
+     * so the *stored* escrow settles at 9*in = 315 coins. The escrow at the
+     * moment of release is 9*in + in = 350, and it pays exactly `in`. The
+     * spec's "settles near 350" measures at the release point; both are the
+     * same equilibrium seen from either side of the payout. */
+    CHECK(settled == 9 * in);
+    CHECK(settled == 315 * COIN);
+    CHECK(sci_release(settled + in) == in);   /* pays exactly inflow, forever */
 
     /* Review Focus 1: with no claims, pplns_pay would hand the whole release
      * to the finder. The release must be skipped outright. */
