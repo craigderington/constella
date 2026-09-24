@@ -252,6 +252,69 @@ static void t_sci_region(void) {
     CHECK(np > 20000 && pr[0] == 11);
 }
 
+static void t_sci_check(void) {
+    uint8_t a0[32] = {0}, m1[32], m2[32];
+    memset(m1, 1, 32); memset(m2, 2, 32);
+    bn base, other;
+    sci_region(&base, a0, m1);
+    sci_region(&other, a0, m2);
+
+    sci_t ok = {.k = 950, .g = 776};        /* merit 4.37, a genuine find */
+    CHECK(sci_check(&base, &ok) == 0);
+
+    sci_t inside  = {.k = 950, .g = 846};   /* p+776 is prime inside the gap */
+    sci_t badend  = {.k = 950, .g = 777};   /* p+g composite                 */
+    sci_t badp    = {.k = 951, .g = 776};   /* p composite                   */
+    sci_t toosmall= {.k = 746, .g = 176};   /* a real gap, below the floor   */
+    sci_t toobig  = {.k = 950, .g = SCI_G_MAX + 1};
+    sci_t koob    = {.k = SCI_K_MAX, .g = 776};
+    CHECK(sci_check(&base, &inside)   != 0);
+    CHECK(sci_check(&base, &badend)   != 0);
+    CHECK(sci_check(&base, &badp)     != 0);
+    CHECK(sci_check(&base, &toosmall) != 0);
+    CHECK(sci_check(&base, &toobig)   != 0);
+    CHECK(sci_check(&base, &koob)     != 0);
+
+    /* unstealable: the same claim in another miner's region is not valid */
+    CHECK(sci_check(&other, &ok) != 0);
+
+    /* rule 6, "the claim's epoch equals the share's epoch", needs no separate
+     * check: a different epoch means a different anchor means a different
+     * region, so a stale claim simply fails verification. */
+    uint8_t a1[32];
+    memset(a1, 0xaa, 32);
+    bn epoch2;
+    sci_region(&epoch2, a1, m1);
+    CHECK(sci_check(&epoch2, &ok) != 0);
+
+    /* Review Focus 4: the largest legal claim must not wrap the bignum */
+    sci_t edge = {.k = SCI_K_MAX - 1, .g = SCI_G_MAX};
+    int n = bn_limbs(SCI_BITS);
+    bn p, q;
+    bn_add_u64(&p, &base, edge.k, n);
+    bn_add_u64(&q, &p, edge.g, n);
+    CHECK(bn_bitlen(&q, n) == SCI_BITS);
+    CHECK(sci_check(&base, &edge) != 0);    /* not a real gap, but no wrap */
+
+    /* a list is valid only if every claim is, and no k repeats (rule 7) */
+    sci_t one[1] = {ok};
+    sci_t dup[2] = {ok, ok};
+    sci_t mixed[2] = {ok, badp};
+    CHECK(sci_check_list(&base, one, 1) == 0);
+    CHECK(sci_check_list(&base, NULL, 0) == 0);
+    CHECK(sci_check_list(&base, dup, 2) != 0);
+    CHECK(sci_check_list(&base, mixed, 2) != 0);
+
+    /* the searcher finds a gap the verifier then accepts */
+    sci_t found;
+    int r = sci_search(&base, 0, 1u << 16, &found, keep_all, NULL);
+    CHECK(r == 1);
+    if (r == 1) {
+        CHECK(sci_check(&base, &found) == 0);
+        CHECK(found.k == 950 && found.g == 776);   /* first gap in the region */
+    }
+}
+
 int main(int argc, char **argv) {
     if (sieve_init()) return 1;
     char line[1024];
@@ -274,7 +337,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_sci_basics(); t_sci_region();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_sci_basics(); t_sci_region(); t_sci_check();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
