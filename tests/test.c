@@ -7,6 +7,7 @@
 #include "wallet.h"
 #include "share.h"
 #include "sieve.h"
+#include "science.h"
 #include "util.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -88,8 +89,8 @@ static void t_chain_id(void) {
     CHECK(memcmp(testnet, mainnet, 8) != 0);              /* networks must differ */
     tx_chain_tag(again, SHARE_VERSION, 5, GENESIS_BITS, GENESIS_TIME);
     CHECK(!memcmp(testnet, again, 8));                    /* and be deterministic */
-    hex_enc(x, testnet, 8); CHECK(!strcmp(x, "352fcee542df9981"));
-    hex_enc(x, mainnet, 8); CHECK(!strcmp(x, "d4436b99b3070284"));
+    hex_enc(x, testnet, 8); CHECK(!strcmp(x, "a8f4562e57e74f9d"));
+    hex_enc(x, mainnet, 8); CHECK(!strcmp(x, "a2da89e8309ab40b"));
 
     tx_chain_tag(mine, SHARE_VERSION, BLOCK_K, GENESIS_BITS, GENESIS_TIME);
     tx_chain_tag(other, SHARE_VERSION, BLOCK_K == 5 ? 6 : 5, GENESIS_BITS, GENESIS_TIME);
@@ -159,6 +160,42 @@ static void t_serial(void) {
     CHECK(!memcmp(a, b, 32) && t.k == s.k && t.bits == 300 && t.height == 42 && t.tx_root[5] == 3);
 }
 
+static void t_sci_basics(void) {
+    /* serialisation round-trip */
+    sci_t c = {.k = 0x0123456789abULL, .g = 776}, d;
+    uint8_t raw[SCI_SIZE];
+    sci_ser(raw, &c); sci_deser(&d, raw);
+    CHECK(d.k == c.k && d.g == c.g);
+    CHECK(SCI_SIZE == 12);
+
+    /* weight: floor at 1, monotonic, and doubling per SCI_G_STEP to within 1.
+     * It is not exact doubling: the interpolation term floors. */
+    CHECK(sci_work(SCI_G_MIN) == 1);
+    CHECK(sci_work(776) == 9);
+    CHECK(sci_work(SCI_G_MAX) == 1265793207ULL);
+    for (uint32_t g = SCI_G_MIN; g < SCI_G_MAX; g++)
+        if (sci_work(g) > sci_work(g + 1)) { CHECK(0); break; }
+    int bad = 0;
+    for (uint32_t g = SCI_G_MIN; g + SCI_G_STEP <= SCI_G_MAX; g++) {
+        uint64_t lo = 2 * sci_work(g), hi = lo + 1, w = sci_work(g + SCI_G_STEP);
+        if (w < lo || w > hi) { bad = 1; break; }
+    }
+    CHECK(!bad);
+
+    /* a full window of maximum-weight claims must not overflow u64 */
+    CHECK(sci_work(SCI_G_MAX) < UINT64_MAX / (SCI_WINDOW * SHARE_MAX_SCI));
+
+    /* epoch: always a strict ancestor's height, never the share's own.
+     * Review Focus 2 — the spec's formula is circular at the boundary. */
+    CHECK(sci_epoch(1) == 0);
+    CHECK(sci_epoch(SCI_EPOCH) == 0);
+    CHECK(sci_epoch(SCI_EPOCH + 1) == SCI_EPOCH);
+    CHECK(sci_epoch(2 * SCI_EPOCH) == SCI_EPOCH);
+    CHECK(sci_epoch(2 * SCI_EPOCH + 1) == 2 * SCI_EPOCH);
+    for (uint32_t h = 1; h < 4 * SCI_EPOCH; h++)
+        if (sci_epoch(h) >= h) { CHECK(0); break; }
+}
+
 static int keep_all(void *c) { (void)c; return 1; }
 
 /* Mine a real share and check the independent verifier agrees. */
@@ -201,7 +238,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_sci_basics();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

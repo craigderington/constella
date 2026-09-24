@@ -6,11 +6,12 @@
 #include "bn.h"
 #include "params.h"
 #include "tx.h"
+#include "science.h"
 
 #define SHARE_HDR  116
 #define SHARE_SIZE 124
 #define SHARE_MAX_TX 16
-#define SHARE_MSG_MAX (SHARE_SIZE + 2 + SHARE_MAX_TX * TX_SIZE)
+#define SHARE_MSG_MAX (SHARE_SIZE + 2 + SHARE_MAX_TX * TX_SIZE + 2 + SHARE_MAX_SCI * SCI_SIZE)
 
 typedef struct {
     uint32_t version;
