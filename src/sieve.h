@@ -24,6 +24,10 @@ typedef struct { uint64_t k; int tlen; uint64_t tests; } search_out;
 typedef int (*keep_fn)(void *ctx);
 
 int    sieve_init(void);
+/* The sieving primes, ascending, starting at 11: the constellation search gets
+ * 2,3,5,7 from the 210-wheel, so they are not in the table. Any caller without
+ * a wheel must sieve them itself. */
+const uint32_t *sieve_primes(int *n);
 job_t *job_new(const share_t *tmpl, uint64_t gen);
 void   job_ref(job_t *j);
 void   job_put(job_t *j);

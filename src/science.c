@@ -22,3 +22,18 @@ uint64_t sci_work(uint32_t g) {
 uint32_t sci_epoch(uint32_t height) {
     return height ? (height - 1) / SCI_EPOCH * SCI_EPOCH : 0;
 }
+
+/* base = 2^(SCI_BITS-1) | the seed's first 24 bytes, big-endian, at bits 0..191.
+ * That leaves 62 clear bits below the top bit, so p = base + k + g can never
+ * reach 2^SCI_BITS for k < SCI_K_MAX and g <= SCI_G_MAX. */
+void sci_region(bn *B, const uint8_t anchor[32], const uint8_t miner[32]) {
+    uint8_t buf[9 + 64], seed[32];
+    memcpy(buf, "CSTL-SCI1", 9);
+    memcpy(buf + 9, anchor, 32);
+    memcpy(buf + 41, miner, 32);
+    blake2b(seed, 32, buf, sizeof buf);
+    bn_zero(B);
+    bn_setbit(B, SCI_BITS - 1);
+    for (int i = 0; i < 24; i++)
+        B->d[(23 - i) / 8] |= (uint64_t)seed[i] << (8 * ((23 - i) % 8));
+}

@@ -216,6 +216,42 @@ static void t_mine(unsigned bits, int print) {
     free(bm); job_put(j);
 }
 
+/* Vectors computed independently in Python (hashlib + int.from_bytes) and
+ * re-derived by tests/crosscheck.py on every run. */
+static void t_sci_region(void) {
+    uint8_t a0[32] = {0}, aa[32], m1[32], m2[32];
+    memset(aa, 0xaa, 32); memset(m1, 1, 32); memset(m2, 2, 32);
+    bn b1, b2, b3, again;
+    char dec[100];
+
+    sci_region(&b1, a0, m1);
+    sci_region(&again, a0, m1);
+    CHECK(!memcmp(&b1, &again, sizeof b1));               /* deterministic */
+
+    sci_region(&b2, a0, m2);
+    CHECK(memcmp(&b1, &b2, sizeof b1));                   /* per miner: unstealable */
+
+    sci_region(&b3, aa, m1);
+    CHECK(memcmp(&b1, &b3, sizeof b1));                   /* per anchor: unprecomputable */
+
+    int n = bn_limbs(SCI_BITS);
+    CHECK(bn_bitlen(&b1, n) == SCI_BITS);                 /* top bit always set */
+
+    /* base + SCI_K_MAX + SCI_G_MAX must stay below 2^SCI_BITS (Review Focus 4) */
+    bn hi;
+    bn_add_u64(&hi, &b1, SCI_K_MAX + SCI_G_MAX, n);
+    CHECK(bn_bitlen(&hi, n) == SCI_BITS);
+
+    bn_to_dec(dec, sizeof dec, &b1, n);   /* 77 digits at SCI_BITS */
+    CHECK(!strcmp(dec,
+      "57896044618658097717844470654618080987917958140235527976662332837664355562291"));
+
+    /* the small-prime table must be reachable and must start at 11:
+     * science.c has no 210-wheel, so it sieves 2,3,5,7 itself. */
+    int np; const uint32_t *pr = sieve_primes(&np);
+    CHECK(np > 20000 && pr[0] == 11);
+}
+
 int main(int argc, char **argv) {
     if (sieve_init()) return 1;
     char line[1024];
@@ -238,7 +274,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_sci_basics();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_sci_basics(); t_sci_region();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

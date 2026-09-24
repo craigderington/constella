@@ -33,6 +33,8 @@ int sieve_init(void) {
     return 0;
 }
 
+const uint32_t *sieve_primes(int *n) { *n = nprimes; return primes; }
+
 job_t *job_new(const share_t *tmpl, uint64_t gen) {
     job_t *j = calloc(1, sizeof *j);
     if (!j) return NULL;
