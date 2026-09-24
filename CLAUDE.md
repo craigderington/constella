@@ -40,21 +40,41 @@ independently.
 - `docker compose up --build` on real Docker: all services came up and the
   explorer's ledger check matched the node.
 - Explorer UI reviewed in a browser and approved as-is. Keep the star-chart design.
+- Thermal controller live on this laptop, 300 s traces at 1 Hz, 5 nodes x 1
+  thread. It regulates exactly on target (die mean 82.2 C against a target of
+  82). Fixing the cap and spike-proofing the stop took useful work from 0.263
+  to 0.486 cores (+85%), shares/min from 11.8 to 23.8, and hard stops from
+  near-constant to 2 of 80 status lines.
 
 ## Not yet verified
-- [ ] The new thermal controller live on real hardware: take a 1 s-resolution
-      temperature trace and compare it against `tests/thermal_sim.c`.
+- [ ] Whether 82 C mean / 100 C peak die temperature is acceptable to Craig on
+      this laptop. The controller holds the target exactly; the target is the
+      only knob that trades heat for work, and 88/82 is where it sits now.
 
 ## Tuning (i7-8850H, 6C/12T)
 - Default threads = physical cores - 1. HT buys ~7% for a lot more heat.
 - ~42M cand/s sustained on 6 threads at 448 bits.
 - `-march=native` was *slower* than the portable `-Os` build. Keep `-Os`.
-- Thermal controller: median of 10 Hz samples -> PI, auto cap = crit - 20,
-  jitter across co-located nodes. `tests/thermal_sim.c` models this laptop and
-  runs in `make test`; keep it passing.
+- Measured plant, from a 300 s trace regressed on 30 s load EMAs:
+  `die = 65.2 + 15.7*constella_cores + 15.4*background_cores` (RMSE 5.8 C).
+  A core is a core - constella heats the chip at the same rate as anything
+  else, so the only lever is how many cores it is allowed to run.
+- This machine's background load alone (browser, Docker, an agent) holds the
+  die near any sane target, so constella's throughput *is* the headroom the
+  target leaves. Raising the target is the only way to buy work here.
+- Thermal controller: median of 10 Hz samples -> PI, jitter across co-located
+  nodes. Auto cap = crit - 12, clamped 60-90; `crit` comes from the thermal
+  zone's critical trip, falling back to hwmon `temp1_crit` because
+  `x86_pkg_temp` publishes only passive trips here (coretemp says 100 -> cap 88,
+  target 82, hard 95). The hard stop needs 3 consecutive windows: a single die
+  spike is almost always another process's, and SCHED_IDLE already yields to it.
+- `tests/thermal_sim.c` models this laptop and runs in `make test`; keep it
+  passing. Its plant is optimistic - measured against a 300 s live trace it runs
+  6.4 C RMSE and never predicts the 90s that actually occur, so trust it for
+  controller shape, not for absolute work numbers.
 
 ## Backlog
-- Next: confirm the new thermal controller live (see above), then work the list.
+- Next: Craig's call on the 88/82 cap (see "Not yet verified"), then the list.
 - Ledger snapshots (node and explorer both replay the full chain per tip)
 - Chain ID in the tx signing domain (cross-network replay)
 - Mempool: fee priority; return reorged txs
