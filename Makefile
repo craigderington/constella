@@ -6,7 +6,7 @@ OPT     ?= -Os
 CFLAGS  += -std=c11 $(OPT) -Wall -Wextra -D_GNU_SOURCE -pthread \
            -flto -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables \
            -fno-stack-protector
-LDFLAGS += -static -flto -pthread -Wl,--gc-sections -s
+LDFLAGS += -static -flto -pthread -Wl,--gc-sections -s -lm
 SIZE_MAX_BYTES ?= 153600
 
 CORE := src/blake2b.c src/bn.c src/share.c src/tx.c src/wallet.c src/sieve.c src/throttle.c \
@@ -24,8 +24,12 @@ fast:
 test_constella: $(CORE) tests/test.c src/*.h
 	$(CC) $(CFLAGS) -Isrc -o $@ $(CORE) tests/test.c $(LDFLAGS)
 
-unit: test_constella
+thermal_sim: src/throttle.c src/util.c tests/thermal_sim.c src/throttle.h
+	$(CC) $(CFLAGS) -Isrc -o $@ src/throttle.c src/util.c tests/thermal_sim.c $(LDFLAGS)
+
+unit: test_constella thermal_sim
 	./test_constella
+	./thermal_sim
 
 test: unit
 	python3 tests/crosscheck.py ./test_constella
@@ -41,6 +45,6 @@ explorer:
 	cd explorer && CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o ../constella-explorer ./cmd/explorer
 
 clean:
-	rm -f constella test_constella constella-explorer
+	rm -f constella test_constella thermal_sim constella-explorer
 
 .PHONY: all fast unit test size explorer explorer-test clean

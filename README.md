@@ -5,14 +5,14 @@ Idle-compute cryptocurrency node in C. Work is a search for **prime constellatio
 block lands, P2Pool-style, instead of racing for blocks.
 
 - 137 KB static binary (musl, `-Os`, LTO, gc-sections), including EdDSA
-- `SCHED_IDLE` workers with a duty cycle, thermal backoff, and battery pause
+- `SCHED_IDLE` workers, jittered duty cycle, a median-filtered PI thermal controller, battery pause
 - Sharechain + PPLNS: every quadruplet share earns a slice of every block in its window
 - Signed account-model transactions, a mempool, and a wallet CLI that speaks P2P directly
 - One vendored dependency: Monocypher (EdDSA + BLAKE2b). Bignums are in-tree
 
 ## Build & test
     make            # static binary (uses musl-gcc if present)
-    make test       # 59 unit checks + Python cross-checks (prp, blake2b, mined primes)
+    make test       # 59 unit checks + thermal controller sim + Python cross-checks
     make size       # fails above 150 KB
     ./constella bench 448 30 1    # bits, seconds, threads
 
@@ -33,7 +33,7 @@ block lands, P2Pool-style, instead of racing for blocks.
 | `CONSTELLA_ADDR` | node key | 64-hex payout override (e.g. a cold wallet) |
 | `CONSTELLA_THREADS` | physical cores − 1 | hyperthreads add ~7% for much more heat |
 | `CONSTELLA_DUTY` | 50 | max % of each 100 ms slice |
-| `CONSTELLA_TEMP_MAX` | 70 | °C; hard stop at, back off within 5° |
+| `CONSTELLA_TEMP_MAX` | auto | °C cap; auto = chip critical − 20 (60–85). Settles 6° under it |
 | `CONSTELLA_BATTERY_PAUSE` | 1 | pause on battery |
 | `CONSTELLA_DATA` | ./constella-data | append-only `shares.v2` + key |
 
