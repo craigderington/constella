@@ -187,7 +187,6 @@ static void drain_found(int fd) {
 }
 
 int node_run(void) {
-    long np = sysconf(_SC_NPROCESSORS_ONLN);
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
     signal(SIGPIPE, SIG_IGN);
@@ -197,7 +196,7 @@ int node_run(void) {
     snprintf(keypath, sizeof keypath, "%s/wallet.key", data);
     int port = atoi(env("CONSTELLA_PORT", "7043"));
     int threads = atoi(env("CONSTELLA_THREADS", "0"));
-    if (threads <= 0) threads = np > 2 ? (int)np - 2 : 1;
+    if (threads <= 0) threads = default_threads();
     throttle_init(atoi(env("CONSTELLA_DUTY", "50")), atoi(env("CONSTELLA_TEMP_MAX", "70")),
                   atoi(env("CONSTELLA_BATTERY_PAUSE", "1")));
     throttle_update();

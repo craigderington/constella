@@ -31,7 +31,7 @@ block lands, P2Pool-style, instead of racing for blocks.
 | `CONSTELLA_PEERS` | – | `host:port,...` |
 | `CONSTELLA_KEY` | $DATA/wallet.key | node key, auto-created |
 | `CONSTELLA_ADDR` | node key | 64-hex payout override (e.g. a cold wallet) |
-| `CONSTELLA_THREADS` | nproc−2 | |
+| `CONSTELLA_THREADS` | physical cores − 1 | hyperthreads add ~7% for much more heat |
 | `CONSTELLA_DUTY` | 50 | max % of each 100 ms slice |
 | `CONSTELLA_TEMP_MAX` | 70 | °C; hard stop at, back off within 5° |
 | `CONSTELLA_BATTERY_PAUSE` | 1 | pause on battery |
