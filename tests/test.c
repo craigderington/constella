@@ -216,8 +216,8 @@ static void t_mine(unsigned bits, int print) {
     free(bm); job_put(j);
 }
 
-/* Vectors computed independently in Python (hashlib + int.from_bytes) and
- * re-derived by tests/crosscheck.py on every run. */
+/* Region base computed independently in Python (hashlib + int.from_bytes);
+ * pinned here until Task 9 adds it to the crosscheck suite. */
 static void t_sci_region(void) {
     uint8_t a0[32] = {0}, aa[32], m1[32], m2[32];
     memset(aa, 0xaa, 32); memset(m1, 1, 32); memset(m2, 2, 32);
