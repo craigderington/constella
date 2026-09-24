@@ -77,6 +77,35 @@ static void t_amount(void) {
     fmt_amount(s, 150000001ULL); CHECK(!strcmp(s, "1.50000001"));
 }
 
+/* Chain id: the signing domain must separate networks, so a transaction signed
+ * for one chain cannot be replayed on another. Tags cross-checked against
+ * hashlib in tests/crosscheck.py territory; pinned here to catch param drift. */
+static void t_chain_id(void) {
+    uint8_t testnet[8], mainnet[8], again[8], mine[8], other[8];
+    char x[17];
+    tx_chain_tag(testnet, SHARE_VERSION, 5, GENESIS_BITS, GENESIS_TIME);
+    tx_chain_tag(mainnet, SHARE_VERSION, 6, GENESIS_BITS, GENESIS_TIME);
+    CHECK(memcmp(testnet, mainnet, 8) != 0);              /* networks must differ */
+    tx_chain_tag(again, SHARE_VERSION, 5, GENESIS_BITS, GENESIS_TIME);
+    CHECK(!memcmp(testnet, again, 8));                    /* and be deterministic */
+    hex_enc(x, testnet, 8); CHECK(!strcmp(x, "352fcee542df9981"));
+    hex_enc(x, mainnet, 8); CHECK(!strcmp(x, "d4436b99b3070284"));
+
+    tx_chain_tag(mine, SHARE_VERSION, BLOCK_K, GENESIS_BITS, GENESIS_TIME);
+    tx_chain_tag(other, SHARE_VERSION, BLOCK_K == 5 ? 6 : 5, GENESIS_BITS, GENESIS_TIME);
+
+    wallet_t a, b;
+    uint8_t sa[32] = {3}, sb[32] = {4};
+    wallet_from_seed(&a, sa); wallet_from_seed(&b, sb);
+    tx_t t = {0};
+    memcpy(t.from, a.pk, 32); memcpy(t.to, b.pk, 32);
+    t.amount = COIN; t.fee = 1000; t.nonce = 0;
+
+    tx_sign_with(&t, a.sk, other);   CHECK(tx_check_sig(&t) != 0);  /* foreign chain */
+    tx_sign_with(&t, a.sk, mine);    CHECK(tx_check_sig(&t) == 0);  /* ours, explicit */
+    tx_sign(&t, a.sk);               CHECK(tx_check_sig(&t) == 0);  /* ours, default */
+}
+
 static void t_tx(void) {
     wallet_t a, b;
     uint8_t sa[32] = {1}, sb[32] = {2}, miner[32] = {9}, r1[32], r2[32];
@@ -172,7 +201,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_tx();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
