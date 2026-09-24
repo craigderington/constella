@@ -213,10 +213,13 @@ int node_run(void) {
     if (ov && *ov && hex_dec(payout, 32, ov)) { log_msg("fatal: CONSTELLA_ADDR must be 64 hex chars"); return 1; }
     memset(&w, 0, sizeof w);                    /* the node never signs */
 
-    char a[65];
+    char a[65], cid[17];
+    uint8_t tag[8];
     hex_enc(a, payout, 32);
-    log_msg("constella: payout=%s%s threads=%d duty<=%d%% port=%d", a,
-            wr == 1 ? " (new key)" : "", threads, atoi(env("CONSTELLA_DUTY", "50")), port);
+    tx_chain_id(tag);
+    hex_enc(cid, tag, 8);
+    log_msg("constella: payout=%s%s threads=%d duty<=%d%% port=%d chain=%s", a,
+            wr == 1 ? " (new key)" : "", threads, atoi(env("CONSTELLA_DUTY", "50")), port, cid);
 
     rebuild_state();
     live = 1;

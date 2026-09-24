@@ -35,7 +35,13 @@ Share message on the wire and on disk: `share | u16 ntx | ntx × tx`, with `ntx 
 ## Transaction (152 bytes)
 `from[32] | to[32] | amount u64 | fee u64 | nonce u64 | sig[64]`
 
-- Signature: EdDSA over curve25519 with BLAKE2b (Monocypher), on `"CSTL-TX1" || bytes 0..88`.
+- Signature: EdDSA over curve25519 with BLAKE2b (Monocypher), on
+  `"CSTL-TX2" || chain_id[8] || bytes 0..88`.
+- `chain_id = BLAKE2b-256(u32 SHARE_VERSION | u32 BLOCK_K | u32 GENESIS_BITS | u64 GENESIS_TIME)[0..8]`,
+  all little-endian. Networks that differ in any of those constants get
+  different ids, so a transaction signed for one cannot be replayed on another.
+  Testnet (`BLOCK_K=5`) is `352fcee542df9981`; mainnet (`BLOCK_K=6`) is
+  `d4436b99b3070284`. The node logs its id at startup.
 - Addresses are public keys.
 - **Stateless (share validity):** every signature must verify, or the share is rejected.
 - **Stateful (ledger replay):** `nonce == account.nonce`, `amount > 0`, `balance ≥ amount + fee`.
