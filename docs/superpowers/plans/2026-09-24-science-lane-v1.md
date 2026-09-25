@@ -1315,6 +1315,32 @@ def sci_work(g):
     e = min(d // SCI_G_STEP, 40)
     return (1 << e) + ((1 << e) * (d % SCI_G_STEP) // SCI_G_STEP)
 
+# share_root: the commitment C and Go must agree on byte for byte
+def sci_ser(k, g):
+    return k.to_bytes(8, "little") + g.to_bytes(4, "little")
+
+def share_root(txs, claims):
+    if not txs and not claims:
+        return bytes(32)
+    buf = b"CSTL-TXR" + b"".join(txs) + b"CSTL-SCI" + b"".join(sci_ser(k, g) for k, g in claims)
+    return hashlib.blake2b(buf, digest_size=32).digest()
+
+root_vectors = [
+    ([], bytes(32).hex()),
+    ([(950, 776)], "ed71d999b7eac9a786db8c2876b73a5f776bc238c887bcc9f5e6a31805586d9e"),
+    ([(950, 776), (1726, 400)], "984e182436e7b5c9c892305c84f15f13748f04b9b020a259df021fc86e4697b5"),
+]
+rbad = sum(share_root([], c).hex() != want for c, want in root_vectors)
+print(f"root:    {len(root_vectors) - rbad}/{len(root_vectors)} share_root vectors match python")
+
+# domain separation: 3*152 == 38*12 == 456, so the same bytes split two ways
+flat = bytes((i * 7 + 3) % 256 for i in range(456))
+as_tx = share_root([flat[i * 152:(i + 1) * 152] for i in range(3)], [])
+as_sci = share_root([], [(int.from_bytes(flat[i * 12:i * 12 + 8], "little"),
+                          int.from_bytes(flat[i * 12 + 8:i * 12 + 12], "little")) for i in range(38)])
+dbad = as_tx == as_sci
+print(f"root:    domain tags separate the split: {'ok' if not dbad else 'FAIL'}")
+
 cases = [(bytes(32), bytes([1]) * 32, 950, 776),     # the real gap: merit 4.37
          (bytes(32), bytes([1]) * 32, 950, 846),     # a prime sits inside
          (bytes(32), bytes([1]) * 32, 950, 777),     # p+g composite
@@ -1334,7 +1360,13 @@ for i, (a, m, k, g) in enumerate(cases):
 print(f"sci:     {len(cases) - sbad}/{len(cases)} match python")
 ```
 
-and include `sbad` in the exit status.
+and include `sbad`, `rbad` and `dbad` in the exit status.
+
+Then update the comment above `t_sci_region()` in `tests/test.c`. It currently
+reads "pinned here until Task 9 adds it to the crosscheck suite" — as of this
+task the cross-check exists, so the comment should say the vector *is*
+re-derived in Python on every run. That claim was deliberately not made
+earlier, because it was not true until now.
 
 - [ ] **Step 3: Run it**
 
@@ -1419,18 +1451,58 @@ func TestScienceMatchesC(t *testing.T) {
 Add a root test that pins the C/Go agreement on `tx_root` with claims:
 
 ```go
+// The pinned digests below were produced by the C share_root() itself and
+// cross-checked against an independent Python model. They are what actually
+// stops C and Go diverging: without them every assertion here passes even if
+// Go used a different tag order, claim byte layout, or endianness, and the
+// explorer would then reject every share carrying a claim.
 func TestShareRootWithClaims(t *testing.T) {
-	c := []proto.Claim{{K: 950, G: 776}}
 	empty := proto.ShareRoot(nil, nil)
 	if empty != (proto.Hash{}) {
 		t.Error("empty root must be all zero")
 	}
-	if proto.ShareRoot(nil, c) == empty {
-		t.Error("claims must change the root")
-	}
+
+	one := []proto.Claim{{K: 950, G: 776}}
 	two := []proto.Claim{{K: 950, G: 776}, {K: 1726, G: 400}}
-	if proto.ShareRoot(nil, two) == proto.ShareRoot(nil, two[:1]) {
-		t.Error("the claim count must be unambiguous")
+
+	// serialisation must match sci_ser(): k as u64 LE, then g as u32 LE
+	if got := hex.EncodeToString(one[0].Bytes()); got != "b60300000000000008030000" {
+		t.Errorf("claim bytes: %s", got)
+	}
+	if got := hex.EncodeToString(two[1].Bytes()); got != "be0600000000000090010000" {
+		t.Errorf("claim bytes: %s", got)
+	}
+
+	// and the commitment itself, byte for byte against the C node
+	for _, tc := range []struct {
+		claims []proto.Claim
+		want   string
+	}{
+		{one, "ed71d999b7eac9a786db8c2876b73a5f776bc238c887bcc9f5e6a31805586d9e"},
+		{two, "984e182436e7b5c9c892305c84f15f13748f04b9b020a259df021fc86e4697b5"},
+	} {
+		r := proto.ShareRoot(nil, tc.claims)
+		if got := hex.EncodeToString(r[:]); got != tc.want {
+			t.Errorf("ShareRoot(%d claims) = %s, want %s", len(tc.claims), got, tc.want)
+		}
+	}
+
+	// domain separation: 3*TxSize == 38*SciSize == 456, so the same bytes can
+	// be presented either way. Untagged the two preimages collide exactly.
+	flat := make([]byte, 456)
+	for i := range flat {
+		flat[i] = byte(i*7 + 3)
+	}
+	ftx := make([]proto.Tx, 3)
+	for i := range ftx {
+		ftx[i] = proto.ParseTx(flat[i*proto.TxSize:])
+	}
+	fsci := make([]proto.Claim, 38)
+	for i := range fsci {
+		fsci[i] = proto.ParseClaim(flat[i*proto.SciSize:])
+	}
+	if proto.ShareRoot(ftx, nil) == proto.ShareRoot(nil, fsci) {
+		t.Error("domain tags must disambiguate the split")
 	}
 }
 ```
