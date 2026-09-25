@@ -3,6 +3,7 @@ package proto
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"io"
 
@@ -104,6 +105,47 @@ func (s *Share) ID() Hash   { return blake2b.Sum256(s.Bytes()) }
 func (s *Share) Seed() Hash { return blake2b.Sum256(s.Bytes()[:ShareHdr]) }
 
 func Genesis() Share { return Share{Version: ShareVersion, Time: GenesisTime, Bits: GenesisBits} }
+
+// ChainTag mirrors tx_chain_tag in src/tx.c: BLAKE2b-256 over the four
+// consensus constants packed little-endian as
+// u32 version | u32 block_k | u32 genesis_bits | u64 genesis_time (20
+// bytes), truncated to the first 8 bytes.
+func ChainTag(version, blockK, genesisBits uint32, genesisTime uint64) [8]byte {
+	var blob [20]byte
+	binary.LittleEndian.PutUint32(blob[0:], version)
+	binary.LittleEndian.PutUint32(blob[4:], blockK)
+	binary.LittleEndian.PutUint32(blob[8:], genesisBits)
+	binary.LittleEndian.PutUint64(blob[12:], genesisTime)
+	h := blake2b.Sum256(blob[:])
+	var out [8]byte
+	copy(out[:], h[:8])
+	return out
+}
+
+// ChainID is this build's chain id (tx_chain_id in src/tx.c), derived from
+// this package's own consensus constants so it always matches what the
+// node running the same build logs at startup as "chain=<hex>".
+func ChainID() [8]byte {
+	return ChainTag(ShareVersion, BlockK, GenesisBits, GenesisTime)
+}
+
+// ChainIDHex is ChainID as lowercase hex, for display.
+func ChainIDHex() string {
+	id := ChainID()
+	return hex.EncodeToString(id[:])
+}
+
+// NetworkName is derived from BlockK — the one constant that distinguishes
+// testnet (quintuplet blocks, BLOCK_K=5) from mainnet (sextuplet blocks,
+// BLOCK_K=6) — so it can never drift independently of the consensus
+// parameters it describes. If BlockK is ever changed to mainnet's value,
+// this flips on its own.
+func NetworkName() string {
+	if BlockK == 6 {
+		return "mainnet"
+	}
+	return "testnet"
+}
 
 type Tx struct {
 	From, To           Hash

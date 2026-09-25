@@ -9,6 +9,7 @@
 :root {
   --ink: #16324F; --deep: #0E2540; --chalk: #E8EEF2; --faded: #9FB4C7;
   --star: #F4D35E; --alarm: #F28482; --rule: rgba(232, 238, 242, .14);
+  --band: #C9A6FF; --band-bg: rgba(160, 118, 249, .16); --band-rule: rgba(201, 166, 255, .3);
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
   --mono: "Iosevka", "JetBrains Mono", "Berkeley Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
@@ -20,10 +21,29 @@ a:hover { text-decoration-color: var(--star); }
 :focus-visible { outline: 2px solid var(--star); outline-offset: 2px; }
 .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
 
+/* network band: full-width status strip above the header, not a decoration.
+   Its hue (--band, violet) is kept distinct from .pulse's (--star/--alarm)
+   so the two never blur together. */
+.netband { background: var(--band-bg); border-bottom: 1px solid var(--band-rule); }
+.netband .wrap {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+  padding: 7px 24px; font-size: .85rem; line-height: 1.4;
+}
+.netband .net-name {
+  color: var(--band); font: 600 .78rem var(--mono); letter-spacing: .07em; text-transform: uppercase;
+}
+.netband .net-note { color: var(--chalk); }
+.netband .net-id { margin-left: auto; color: var(--faded); }
+.netband .net-id code { font: .82rem var(--mono); color: var(--band); }
+
 header.top { border-bottom: 1px solid var(--rule); }
 header.top .wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 28px; padding-block: 14px; }
 .brand { font-size: 1.35rem; letter-spacing: .01em; text-decoration: none; display: flex; align-items: center; gap: 10px; }
 .brand svg { width: 34px; height: 12px; }
+.netsel select {
+  background: var(--deep); color: var(--faded); border: 1px solid var(--rule); border-radius: 4px;
+  padding: 4px 8px; font: .8rem var(--mono);
+}
 nav { display: flex; gap: 20px; }
 nav a { color: var(--faded); text-decoration: none; }
 nav a:hover, nav a[aria-current] { color: var(--chalk); }
@@ -86,8 +106,33 @@ footer { border-top: 1px solid var(--rule); color: var(--faded); font-size: .85r
 </style>
 </head>
 <body>
+<div class="netband" role="status"><div class="wrap">
+  {{with .Stats.Meta}}
+    {{if eq .network "mainnet"}}
+      <span class="net-name">Mainnet</span>
+      <span class="net-note">production network — verify the chain id shown here against your node before trusting this data.</span>
+    {{else}}
+      <span class="net-name">Testnet</span>
+      <span class="net-note">coins have no value and the chain is reset without notice.</span>
+    {{end}}
+    {{if .chain_id}}<span class="net-id">chain <code>{{.chain_id}}</code></span>{{end}}
+  {{else}}
+    <span class="net-name">Testnet</span>
+    <span class="net-note">coins have no value and the chain is reset without notice.</span>
+  {{end}}
+</div></div>
 <header class="top"><div class="wrap">
   <a class="brand" href="/">{{glyph 6}}Constella</a>
+  <!-- indicator only: shows which network this explorer is following, not a
+       navigation control. There is nowhere else here to go, so it is not
+       wired to anything. -->
+  <div class="netsel">
+    {{$net := "testnet"}}{{with .Stats.Meta}}{{if eq .network "mainnet"}}{{$net = "mainnet"}}{{end}}{{end}}
+    <select aria-label="Network shown by this explorer">
+      <option value="testnet" {{if eq $net "mainnet"}}disabled{{else}}selected{{end}}>Testnet{{if eq $net "mainnet"}} — not connected{{end}}</option>
+      <option value="mainnet" {{if eq $net "mainnet"}}selected{{else}}disabled{{end}}>Mainnet{{if ne $net "mainnet"}} — not launched{{end}}</option>
+    </select>
+  </div>
   <nav><a href="/">Overview</a><a href="/records">Records</a></nav>
   <form class="search" action="/search" role="search">
     <input name="q" aria-label="Search" placeholder="Height, share id or address" autocomplete="off">
