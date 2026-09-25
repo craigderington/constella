@@ -46,12 +46,24 @@
     <dt>Transactions</dt><dd>{{num $m.txs}}</dd>
     <dt>Miners</dt><dd>{{$.Stats.Miners}}</dd>
     <dt>Science escrow</dt><dd>{{with $m.escrow}}{{coins (atoi .)}}{{end}}</dd>
+    <dt>Science paid</dt><dd>{{with $m.sci_paid}}{{coins (atoi .)}}{{end}} over {{num $m.sci_claims}} claims</dd>
   </dl>
 
   <h2>Largest balances</h2>
   <table>
     {{range .Top}}<tr><td class="mono"><a href="/address/{{hex .Addr}}">{{short .Addr}}</a></td><td class="n">{{coins .Balance}}</td></tr>{{end}}
   </table>
+
+  {{if .Claims}}
+  <h2>Best recent finds</h2>
+  <table>
+    <tr><th>Miner</th><th class="n">Gap</th><th class="n">Merit</th><th>Payable</th></tr>
+    {{range .Claims}}<tr>
+      <td class="mono"><a href="/address/{{hex .Miner}}">{{short .Miner}}</a></td>
+      <td class="n">{{.G}}</td><td class="n">{{printf "%.3f" .Merit}}</td>
+      <td>{{if .Payable}}yes{{else}}no{{end}}</td></tr>{{end}}
+  </table>
+  {{end}}
 </aside>
 </div>
 {{end}}{{end}}

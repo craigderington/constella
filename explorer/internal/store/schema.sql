@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS shares (
     k          BIGINT NOT NULL,
     tlen       SMALLINT NOT NULL,
     ntx        SMALLINT NOT NULL,
+    nsci       SMALLINT NOT NULL DEFAULT 0,
     is_block   BOOLEAN NOT NULL,
     p          TEXT NOT NULL,
     certified  BOOLEAN,
@@ -36,6 +37,30 @@ CREATE TABLE IF NOT EXISTS txs (
 CREATE INDEX IF NOT EXISTS txs_from ON txs (from_addr);
 CREATE INDEX IF NOT EXISTS txs_to ON txs (to_addr);
 CREATE INDEX IF NOT EXISTS txs_id ON txs (id);
+
+CREATE TABLE IF NOT EXISTS claims (
+    uid       BYTEA PRIMARY KEY,           -- share id || idx
+    share_id  BYTEA NOT NULL REFERENCES shares(id),
+    idx       SMALLINT NOT NULL,
+    miner     BYTEA NOT NULL,
+    epoch     INTEGER NOT NULL,
+    k         BIGINT NOT NULL,
+    g         INTEGER NOT NULL,
+    p         TEXT NOT NULL,
+    merit     REAL NOT NULL,               -- display only, never consensus
+    work      BIGINT NOT NULL,
+    certified BOOLEAN,
+    payable   BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS claims_miner ON claims (miner);
+CREATE INDEX IF NOT EXISTS claims_g ON claims (g DESC);
+
+CREATE TABLE IF NOT EXISTS sci_payouts (
+    block_id BYTEA NOT NULL,
+    addr     BYTEA NOT NULL,
+    amount   BIGINT NOT NULL,
+    PRIMARY KEY (block_id, addr)
+);
 
 CREATE TABLE IF NOT EXISTS accounts (
     addr    BYTEA PRIMARY KEY,

@@ -35,6 +35,7 @@ type Ledger struct {
 	SciPaid    uint64
 	SciClaims  uint32
 	SciPayouts []Payout
+	SciPayable map[TxKey]bool // one entry per (share, claim index), set once, never cleared
 }
 
 func (l *Ledger) acct(a proto.Hash) *Account {
@@ -114,7 +115,7 @@ func splitPay(l *Ledger, owners []proto.Hash, w []uint64, finder proto.Hash, poo
 }
 
 func Build(path []*Node) *Ledger {
-	l := &Ledger{Accounts: map[proto.Hash]*Account{}, Applied: map[TxKey]bool{}}
+	l := &Ledger{Accounts: map[proto.Hash]*Account{}, Applied: map[TxKey]bool{}, SciPayable: map[TxKey]bool{}}
 	pool := uint64(proto.BlockReward) * proto.ConsensusPct / 100
 
 	// Payable flags are computed once per (share, claim) in this forward pass
@@ -149,6 +150,7 @@ func Build(path []*Node) *Ledger {
 					seen[key] = true
 					pay[c] = true
 				}
+				l.SciPayable[TxKey{e.ID, c}] = pay[c]
 			}
 			payable[j] = pay
 		}

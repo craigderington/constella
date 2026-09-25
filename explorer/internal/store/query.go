@@ -12,12 +12,27 @@ import (
 type ShareRow struct {
 	ID, Prev, Miner []byte
 	Height, Bits    int
-	TLen, NTx       int
+	TLen, NTx, NSci int
 	K               int64
 	Time            time.Time
 	IsBlock, OnMain bool
 	P               string
 	Certified       sql.NullBool
+}
+
+type ClaimRow struct {
+	ShareID, Miner []byte
+	Idx            int
+	Epoch          int
+	K              int64
+	G              int
+	P              string
+	Merit          float64
+	Work           int64
+	Certified      sql.NullBool
+	Payable        bool
+	Height         int
+	Time           time.Time
 }
 
 type AccountRow struct {
@@ -49,7 +64,7 @@ type Stats struct {
 	LastBlockTime time.Time
 }
 
-const shareCols = `id, prev, miner, height, bits, tlen, ntx, k, time, is_block, on_main, p, certified`
+const shareCols = `id, prev, miner, height, bits, tlen, ntx, nsci, k, time, is_block, on_main, p, certified`
 
 func scanShares(rows *sql.Rows, err error) ([]ShareRow, error) {
 	if err != nil {
@@ -59,13 +74,39 @@ func scanShares(rows *sql.Rows, err error) ([]ShareRow, error) {
 	var out []ShareRow
 	for rows.Next() {
 		var r ShareRow
-		if err := rows.Scan(&r.ID, &r.Prev, &r.Miner, &r.Height, &r.Bits, &r.TLen, &r.NTx, &r.K,
+		if err := rows.Scan(&r.ID, &r.Prev, &r.Miner, &r.Height, &r.Bits, &r.TLen, &r.NTx, &r.NSci, &r.K,
 			&r.Time, &r.IsBlock, &r.OnMain, &r.P, &r.Certified); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+const claimCols = `c.share_id, c.miner, c.idx, c.epoch, c.k, c.g, c.p, c.merit, c.work, c.certified, c.payable, sh.height, sh.time`
+
+func scanClaims(rows *sql.Rows, err error) ([]ClaimRow, error) {
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ClaimRow
+	for rows.Next() {
+		var r ClaimRow
+		if err := rows.Scan(&r.ShareID, &r.Miner, &r.Idx, &r.Epoch, &r.K, &r.G, &r.P, &r.Merit, &r.Work,
+			&r.Certified, &r.Payable, &r.Height, &r.Time); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// TopClaims returns the best recent finds on the main chain, ranked by merit.
+func (s *Store) TopClaims(ctx context.Context, limit int) ([]ClaimRow, error) {
+	return scanClaims(s.DB.QueryContext(ctx, `SELECT `+claimCols+` FROM claims c
+		JOIN shares sh ON sh.id = c.share_id
+		WHERE sh.on_main ORDER BY c.merit DESC, sh.height DESC LIMIT $1`, limit))
 }
 
 func (s *Store) Stats(ctx context.Context) (*Stats, error) {

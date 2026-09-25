@@ -12,10 +12,12 @@ import (
 func writeText(w io.Writer, st *store.Stats, d *overviewData) {
 	m := st.Meta
 	esc, _ := strconv.ParseInt(m["escrow"], 10, 64)
+	paid, _ := strconv.ParseInt(m["sci_paid"], 10, 64)
 	fmt.Fprintf(w, "constella explorer\n\n")
 	fmt.Fprintf(w, "  height      %s   tip %.8s   %s bits\n", num(m["height"]), m["tip"], m["bits"])
 	fmt.Fprintf(w, "  shares/min  %.1f   miners %d   blocks %s   txs %s\n", st.SharesPerMin, st.Miners, num(m["blocks"]), num(m["txs"]))
-	fmt.Fprintf(w, "  escrow      %s (science lane)\n", coins(esc))
+	fmt.Fprintf(w, "  escrow      %s (science lane, %s paid over %s claims)\n",
+		coins(esc), coins(paid), num(m["sci_claims"]))
 	fmt.Fprintf(w, "  ledger      %s at height %s (%s accounts checked against the node)\n\n",
 		orDash(m["check"]), orDash(m["check_height"]), orDash(m["check_count"]))
 	if d.Latest != nil {
@@ -29,6 +31,13 @@ func writeText(w io.Writer, st *store.Stats, d *overviewData) {
 	fmt.Fprintf(w, "\n  %-9s %20s %8s %7s\n", "miner", "balance", "shares", "blocks")
 	for _, a := range d.Top {
 		fmt.Fprintf(w, "  %-9s %20s %8d %7d\n", short(a.Addr), coins(a.Balance), a.Shares, a.Blocks)
+	}
+	if len(d.Claims) > 0 {
+		fmt.Fprintf(w, "\n  %-8s %-10s %-9s %6s %10s %8s\n", "height", "when", "miner", "gap", "merit", "payable")
+		for _, c := range d.Claims {
+			fmt.Fprintf(w, "  %-8s %-10s %-9s %6d %10.3f %8v\n",
+				num(c.Height), ago(c.Time), short(c.Miner), c.G, c.Merit, c.Payable)
+		}
 	}
 }
 

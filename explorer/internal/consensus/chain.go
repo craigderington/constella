@@ -3,18 +3,20 @@ package consensus
 import (
 	"bytes"
 	"errors"
+	"math/big"
 
 	"github.com/craig/constella/explorer/internal/proto"
 )
 
 type Node struct {
-	Msg    *proto.Msg
-	ID     proto.Hash
-	Parent *Node
-	Height uint32
-	Work   uint64 // cumulative
-	TLen   int
-	P      string // decimal candidate, cached
+	Msg     *proto.Msg
+	ID      proto.Hash
+	Parent  *Node
+	Height  uint32
+	Work    uint64 // cumulative
+	TLen    int
+	P       string   // decimal candidate, cached
+	SciBase *big.Int // this share's claim region, nil when it carries no claims
 }
 
 func (n *Node) IsBlock() bool { return n.TLen >= proto.BlockK }
@@ -56,6 +58,7 @@ func (c *Chain) accept(m *proto.Msg, id proto.Hash, par *Node) (*Node, error) {
 	if tl < proto.ShareK {
 		return nil, ErrInvalid
 	}
+	var base *big.Int
 	if len(m.Claims) > 0 {
 		anchor := par
 		for anchor != nil && anchor.Height > SciEpoch(s.Height) {
@@ -64,7 +67,7 @@ func (c *Chain) accept(m *proto.Msg, id proto.Hash, par *Node) (*Node, error) {
 		if anchor == nil {
 			return nil, ErrInvalid
 		}
-		base := SciRegion(anchor.ID, s.Miner)
+		base = SciRegion(anchor.ID, s.Miner)
 		seen := map[uint64]bool{}
 		for _, c := range m.Claims {
 			if seen[c.K] || !SciCheck(base, c) {
@@ -74,7 +77,7 @@ func (c *Chain) accept(m *proto.Msg, id proto.Hash, par *Node) (*Node, error) {
 		}
 	}
 	n := &Node{Msg: m, ID: id, Parent: par, Height: par.Height + 1,
-		Work: par.Work + Work(s.Bits), TLen: tl, P: p.String()}
+		Work: par.Work + Work(s.Bits), TLen: tl, P: p.String(), SciBase: base}
 	c.nodes[id] = n
 	if n.Work > c.Tip.Work || (n.Work == c.Tip.Work && bytes.Compare(id[:], c.Tip.ID[:]) < 0) {
 		c.Tip = n
