@@ -21,6 +21,8 @@
 
 typedef struct { uint8_t root[32]; int ntx; tx_t txs[SHARE_MAX_TX]; int nsci; sci_t sci[SHARE_MAX_SCI]; } tmpl_t;
 
+#define SCI_POOL 16
+
 static volatile sig_atomic_t running = 1;
 static uint8_t payout[32];
 static int cur_src = -1, live, tip_dirty, job_dirty;
@@ -29,6 +31,9 @@ static ledger_t L;
 static tmpl_t T[TMPL_RING];
 static int tnext;
 static struct { uint8_t id[32]; int64_t at; } lastreq[64];
+static sci_t scipool[SCI_POOL];
+static int nscipool;
+static uint32_t sci_epoch_cur = 0xffffffffu;
 
 static void on_sig(int s) { (void)s; running = 0; }
 static const char *env(const char *k, const char *d) { const char *v = getenv(k); return v && *v ? v : d; }
@@ -40,12 +45,38 @@ static void rebuild_state(void) {
     mempool_revalidate(&L);
 }
 
+/* Mirrors chain.c's (static) epoch_anchor: walk parent links from `par` up to
+ * the ancestor at the epoch height for `height`. Not exported by chain.h, so
+ * duplicated here rather than widening that interface for one caller. */
+static void epoch_anchor(int par, uint32_t height, uint8_t out[32]) {
+    uint32_t want = sci_epoch(height);
+    const entry_t *e = chain_entry(par);
+    int a = par;
+    while (a >= 0 && e->height > want) { a = e->parent; e = chain_entry(a); }
+    memcpy(out, chain_entry(a < 0 ? 0 : a)->id, 32);
+}
+
 static void update_job(void) {
-    const entry_t *t = chain_entry(chain_tip());
+    int tip = chain_tip();
+    const entry_t *t = chain_entry(tip);
+    uint32_t ep = sci_epoch(t->height + 1);
+    if (ep != sci_epoch_cur) {
+        /* a claim found under the old anchor derives from a different region
+         * and every peer's accept() -- including our own -- would reject it. */
+        sci_epoch_cur = ep;
+        nscipool = 0;
+        uint8_t anchor[32];
+        epoch_anchor(tip, t->height + 1, anchor);
+        miner_set_sci(anchor, payout);
+    }
     tmpl_t *tm = &T[tnext];
     tnext = (tnext + 1) % TMPL_RING;
     tm->ntx = mempool_select(tm->txs, SHARE_MAX_TX);
-    tm->nsci = 0;                          /* claim selection arrives in Task 8 */
+    /* tm->nsci bounds every read of tm->sci downstream (share_root here,
+     * drain_found's rebuild), so the unused tail of tm->sci never needs an
+     * explicit zero -- it mirrors Task 5's nsci==0 gating for ntx/txs. */
+    tm->nsci = nscipool < SHARE_MAX_SCI ? nscipool : SHARE_MAX_SCI;
+    memcpy(tm->sci, scipool, (size_t)tm->nsci * sizeof *tm->sci);
     share_root(tm->root, tm->txs, tm->ntx, tm->sci, tm->nsci);
     share_t s = {0};
     s.version = SHARE_VERSION;
@@ -53,23 +84,33 @@ static void update_job(void) {
     memcpy(s.prev, t->id, 32);
     s.time = (uint64_t)now_sec();
     memcpy(s.miner, payout, 32);
-    s.bits = (uint16_t)chain_next_bits(chain_tip());
+    s.bits = (uint16_t)chain_next_bits(tip);
     memcpy(s.tx_root, tm->root, 32);
     miner_set_job(&s);
 }
 
 static void report_balance(void) {
     const acct_t *a = ledger_acct(&L, payout, 0);
-    char m[32], e[32];
+    char m[32], e[32], sp[32];
     fmt_amount(m, a ? a->amt : 0);
     fmt_amount(e, L.escrow);
-    log_msg("ledger: blocks=%u txs=%llu mine=%s (%u shares) science-escrow=%s",
-            L.blocks, (unsigned long long)L.txs, m, a ? a->shares : 0, e);
+    fmt_amount(sp, L.sci_paid);
+    log_msg("ledger: blocks=%u txs=%llu mine=%s (%u shares) science-escrow=%s "
+            "science-paid=%s claims=%u",
+            L.blocks, (unsigned long long)L.txs, m, a ? a->shares : 0, e, sp, L.sci_claims);
 }
 
 static void on_accept(int idx, int is_tip) {
     const entry_t *e = chain_entry(idx);
     if (is_tip) tip_dirty = 1;
+    /* a claim of ours that just landed is spent: keeping it around would only
+     * re-offer it in a later share, where the ledger's dedup refuses to pay
+     * it twice and it would just waste share space. */
+    if (e->nsci && !memcmp(e->s.miner, payout, 32)) {
+        for (int i = 0; i < e->nsci; i++)
+            for (int j = 0; j < nscipool; j++)
+                if (scipool[j].k == e->sci[i].k) { scipool[j] = scipool[--nscipool]; break; }
+    }
     if (!live) return;
     int recent = (int64_t)e->s.time + 600 >= now_sec();
     if (recent) {
@@ -86,12 +127,12 @@ static void on_accept(int idx, int is_tip) {
         char dec[400];
         share_verify(&e->s, &p);
         bn_to_dec(dec, sizeof dec, &p, bn_limbs(e->s.bits));
-        log_msg("*** BLOCK h=%u id=%s finder=%s%s tuple=%d bits=%u txs=%d", e->height, id, m, us,
-                e->tlen, e->s.bits, e->ntx);
+        log_msg("*** BLOCK h=%u id=%s finder=%s%s tuple=%d bits=%u txs=%d sci=%d", e->height, id, m, us,
+                e->tlen, e->s.bits, e->ntx, e->nsci);
         log_msg("    p = %s", dec);
     } else {
-        log_msg("share h=%u id=%s miner=%s%s tuple=%d bits=%u txs=%d", e->height, id, m, us,
-                e->tlen, e->s.bits, e->ntx);
+        log_msg("share h=%u id=%s miner=%s%s tuple=%d bits=%u txs=%d sci=%d", e->height, id, m, us,
+                e->tlen, e->s.bits, e->ntx, e->nsci);
     }
 }
 
@@ -187,6 +228,22 @@ static void drain_found(int fd) {
     }
 }
 
+/* A claim found mid-job can't join the in-flight template (its root is
+ * already sealed into the seed the workers are searching against), so it
+ * only needs to land in the pool and mark the next template dirty. */
+static void drain_sci(int fd) {
+    uint8_t raw[SCI_SIZE];
+    while (read(fd, raw, SCI_SIZE) == SCI_SIZE) {
+        sci_t c;
+        sci_deser(&c, raw);
+        int dup = 0;
+        for (int i = 0; i < nscipool; i++) if (scipool[i].k == c.k) { dup = 1; break; }
+        if (dup || nscipool >= SCI_POOL) continue;
+        scipool[nscipool++] = c;
+        job_dirty = 1;
+    }
+}
+
 int node_run(void) {
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
@@ -224,14 +281,15 @@ int node_run(void) {
 
     rebuild_state();
     live = 1;
-    int pfd[2];
-    if (pipe(pfd)) return 1;
+    int pfd[2], spfd[2];
+    if (pipe(pfd) || pipe(spfd)) return 1;
     fcntl(pfd[0], F_SETFL, O_NONBLOCK);
+    fcntl(spfd[0], F_SETFL, O_NONBLOCK);
     if (net_init((uint16_t)port, getenv("CONSTELLA_PEERS"), on_msg, send_hello)) {
         log_msg("fatal: cannot listen on %d", port);
         return 1;
     }
-    miner_start(threads, pfd[1], &running);
+    miner_start(threads, pfd[1], spfd[1], &running);
     update_job();
 
     int64_t t_status = now_sec() + 30;
@@ -240,10 +298,12 @@ int node_run(void) {
     struct pollfd pf[64];
     while (running) {
         pf[0].fd = pfd[0]; pf[0].events = POLLIN;
-        int n = net_pollfds(pf + 1, 63);
-        if (poll(pf, (nfds_t)n + 1, 500) < 0 && !running) break;
+        pf[1].fd = spfd[0]; pf[1].events = POLLIN;
+        int n = net_pollfds(pf + 2, 62);
+        if (poll(pf, (nfds_t)n + 2, 500) < 0 && !running) break;
         if (pf[0].revents & POLLIN) drain_found(pfd[0]);
-        net_process(pf + 1, n);
+        if (pf[1].revents & POLLIN) drain_sci(spfd[0]);
+        net_process(pf + 2, n);
         if (tip_dirty) {
             rebuild_state();
             if (L.blocks != last_blocks) { report_balance(); last_blocks = L.blocks; }
@@ -261,10 +321,11 @@ int node_run(void) {
             sh(tid, tp->id);
             if (tc < 0) snprintf(tb, sizeof tb, "n/a");
             else snprintf(tb, sizeof tb, "%dC/%dC", tc, throttle_target_c());
-            log_msg("status: h=%u tip=%s bits=%u peers=%d mempool=%d orphans=%d duty=%d%% temp=%s (%s) found=%llu %.0f cand/s",
+            log_msg("status: h=%u tip=%s bits=%u peers=%d mempool=%d orphans=%d duty=%d%% temp=%s (%s) found=%llu %.0f cand/s sci=%llu/%d",
                     tp->height, tid, chain_next_bits(chain_tip()), net_peers(), mempool_count(),
                     chain_orphans(), throttle_duty(), tb, throttle_reason_str(),
-                    (unsigned long long)found, (double)(sc - last_scan) / 30.0);
+                    (unsigned long long)found, (double)(sc - last_scan) / 30.0,
+                    (unsigned long long)atomic_load(&miner_sci_found), nscipool);
             last_scan = sc;
             t_status = t + 30;
         }
@@ -275,13 +336,15 @@ int node_run(void) {
 }
 
 int bench_run(unsigned bits, int secs, int threads) {
-    int pfd[2];
-    if (pipe(pfd)) return 1;
+    int pfd[2], spfd[2];
+    if (pipe(pfd) || pipe(spfd)) return 1;
     fcntl(pfd[0], F_SETFL, O_NONBLOCK);
     signal(SIGINT, on_sig);
     throttle_init(100, 200, 0);
     throttle_fixed(100);
-    miner_start(threads, pfd[1], &running);
+    /* bench never calls miner_set_sci, so the science worker (if any) just
+     * idles on sci_gen==0; spfd only needs to be a valid write end. */
+    miner_start(threads, pfd[1], spfd[1], &running);
     share_t s = {0};
     s.version = SHARE_VERSION; s.bits = (uint16_t)bits; s.time = (uint64_t)now_sec();
     miner_set_job(&s);
