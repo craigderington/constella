@@ -97,6 +97,10 @@ static void epoch_anchor(int par, uint32_t height, uint8_t out[32]) {
     uint32_t want = sci_epoch(height);
     int a = par;
     while (a >= 0 && E[a].height > want) a = E[a].parent;
+    /* a<0 fallback is unreachable in practice: accept() enforces
+     * height == parent->height + 1 on every entry, so the walk always halts
+     * exactly at the entry whose height equals `want` (genesis, height 0,
+     * halts it in every case since want >= 0). Kept as a guard anyway. */
     memcpy(out, E[a < 0 ? 0 : a].id, 32);
 }
 
@@ -111,6 +115,12 @@ static int accept(const share_t *s, const tx_t *txs, int ntx, const sci_t *sci, 
     if (s->time + 600 < p->s.time) return CH_INVALID;
     share_root(root, txs, ntx, sci, nsci);
     if (memcmp(root, s->tx_root, 32)) return CH_INVALID;
+    /* Cheapest rejection first: a garbage candidate dies in one Fermat test,
+     * so never pay for signatures or claims to reject it. Validity is a
+     * conjunction of independent checks, so reordering them changes only the
+     * cost of rejecting a bad share, never which shares are accepted. */
+    int tl = share_verify(s, NULL);
+    if (tl < SHARE_K) return CH_INVALID;
     for (int i = 0; i < ntx; i++) if (tx_check_sig(&txs[i])) return CH_INVALID;
     if (nsci) {
         uint8_t anchor[32];
@@ -119,8 +129,6 @@ static int accept(const share_t *s, const tx_t *txs, int ntx, const sci_t *sci, 
         sci_region(&sbase, anchor, s->miner);
         if (sci_check_list(&sbase, sci, nsci)) return CH_INVALID;
     }
-    int tl = share_verify(s, NULL);
-    if (tl < SHARE_K) return CH_INVALID;
 
     tx_t *own = NULL;
     if (ntx) {
