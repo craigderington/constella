@@ -60,7 +60,13 @@ services:
       retries: 20
 
   explorer:
-    build: ./explorer
+    # Build context is the repo root, not ./explorer: the params.h drift
+    # guard needs src/params.h and src/science.h reachable inside the image
+    # (see explorer/Dockerfile). Building from ./explorer alone left those
+    # headers unreachable and the guard silently skipped in the shipped build.
+    build:
+      context: .
+      dockerfile: explorer/Dockerfile
     image: constella-explorer:dev
     restart: unless-stopped
     depends_on:

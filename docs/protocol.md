@@ -53,8 +53,11 @@ serve as either.
 - `chain_id = BLAKE2b-256(u32 SHARE_VERSION | u32 BLOCK_K | u32 GENESIS_BITS | u64 GENESIS_TIME)[0..8]`,
   all little-endian. Networks that differ in any of those constants get
   different ids, so a transaction signed for one cannot be replayed on another.
-  Testnet (`BLOCK_K=5`) is `352fcee542df9981`; mainnet (`BLOCK_K=6`) is
-  `d4436b99b3070284`. The node logs its id at startup.
+  Testnet (`BLOCK_K=5`) is `a8f4562e57e74f9d`; mainnet (`BLOCK_K=6`) is
+  `a2da89e8309ab40b`. The node logs its id at startup. (These ids moved when
+  `SHARE_VERSION` went 2 → 3 for the science lane; the old testnet id
+  `352fcee542df9981` and mainnet id `d4436b99b3070284` belong to version 2
+  and no longer verify against this chain.)
 - Addresses are public keys.
 - **Stateless (share validity):** every signature must verify, or the share is rejected.
 - **Stateful (ledger replay):** `nonce == account.nonce`, `amount > 0`, `balance ≥ amount + fee`.
@@ -90,6 +93,23 @@ the ancestor on **that share's own chain of parents** whose height equals
 validation can never be circular. Two nodes that disagree about the best tip
 still agree on this anchor, because the walk follows parent links, not the
 current best chain.
+
+**Validity (seven rules).** A claim `(k, g)` is valid against a region `base`
+(itself a pure function of `(anchor, miner)`, see above) iff:
+1. `base + k` passes PRP2.
+2. `base + k + g` passes PRP2.
+3. No integer strictly between `base + k` and `base + k + g` passes PRP2.
+4. `SCI_G_MIN ≤ g ≤ SCI_G_MAX`.
+5. `k < SCI_K_MAX`.
+6. The claim's epoch matches the share's — not checked directly: a claim
+   computed against a different epoch anchor derives a different `region`
+   and simply fails rules 1-3, so this needs no separate check.
+7. Within one share's claim list, no two claims repeat `k` (a list-level
+   rule, not a per-claim one).
+
+Rules 1-5 and 7 are checked directly (`sci_check` and `sci_check_list` in the
+C node, mirrored in `explorer/internal/consensus`); rule 6 is a consequence
+of `region`'s derivation, not a separate code path, on either side.
 
 **Payout.** 70% of each block's reward accrues to a persistent escrow
 (`escrow += BLOCK_REWARD - pool`, run *before* any release that block). Every
