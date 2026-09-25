@@ -159,6 +159,16 @@ h3{font-size:22px;margin-bottom:8px}
 .fact p{font-size:15.5px;color:var(--slate);margin-bottom:0}
 .fact .num{font-family:var(--mono);color:var(--brass);font-size:15px}
 
+/* ---- cost meter ---- */
+.meter{display:grid;gap:1px;background:var(--rule);border:1px solid var(--rule);margin-top:34px}
+@media(min-width:680px){.meter{grid-template-columns:1fr 1fr}}
+.m{background:var(--ink);padding:24px 24px 26px}
+.mv{font-family:var(--mono);font-size:clamp(26px,4vw,34px);color:var(--brass);line-height:1;font-variant-numeric:tabular-nums}
+.mk{font-family:var(--display);font-style:italic;color:var(--slate);font-size:16px;margin:8px 0 12px}
+.m p{font-size:14.5px;color:var(--slate);margin:0;line-height:1.6}
+.m p b{color:var(--chalk);font-weight:500}
+.m .mono{color:var(--chalk)}
+
 /* ---- split: two lanes ---- */
 .lanes{display:grid;gap:1px;background:var(--rule);border:1px solid var(--rule);margin-top:34px}
 @media(min-width:780px){.lanes{grid-template-columns:3fr 7fr}}
@@ -205,6 +215,7 @@ footer p{max-width:62ch}
       <a href="#eratosthenes">Eratosthenes</a>
       <a href="#sieve">The sieve</a>
       <a href="#pattern">The pattern</a>
+      <a href="#cost">What it costs</a>
       <a href="#science">The science lane</a>
       <a href="#run">Run a node</a>
       <a class="live" href="https://explorer.catasterism.xyz">Explorer</a>
@@ -377,11 +388,55 @@ footer p{max-width:62ch}
       </div>
       <div class="fact">
         <h3>It runs on the machine you have</h3>
-        <p>A single static binary under <span class="num">150 KB</span>, at idle scheduling
-          priority, governed by a controller that holds the die at a target temperature and
-          yields the moment you need the cores back.</p>
+        <p>One static binary, under a megabyte of memory, at idle scheduling priority — the
+          next section is the whole budget.</p>
       </div>
     </div>
+  </section>
+
+  <section class="rule-top" id="cost">
+    <p class="kicker">Idle means idle</p>
+    <h2>The entire cost<br>of running a node.</h2>
+    <div class="col">
+      <p>"Spare capacity" is easy to claim and rarely true — most of it arrives as a runtime,
+        a daemon, a gigabyte of resident memory and a fan that never stops. These are measured
+        figures from a node on a laptop, not targets.</p>
+    </div>
+
+    <div class="meter">
+      <div class="m">
+        <div class="mv">141 KB</div>
+        <div class="mk">the whole binary</div>
+        <p>Statically linked against <b>musl</b> and stripped. <span class="mono">ldd</span>
+          reports “not a dynamic executable” — there is no libc to install, no runtime, no
+          interpreter. It is one file, and a build gate fails if it grows past 150 KB.</p>
+      </div>
+      <div class="m">
+        <div class="mv">916 KB</div>
+        <div class="mk">resident memory</div>
+        <p>A running node with two mining threads, peaking at 1.5 MB. The sieve works in a
+          32 KB bitmap per worker; nothing else is large enough to matter.</p>
+      </div>
+      <div class="m">
+        <div class="mv">SCHED_IDLE</div>
+        <div class="mk">and nice 19</div>
+        <p>Workers run at the kernel's lowest scheduling class. Anything else that wants the
+          CPU takes it immediately — the miner is not competing with your machine, it is
+          consuming what is left after everything else has finished.</p>
+      </div>
+      <div class="m">
+        <div class="mv">82&#8201;°C</div>
+        <div class="mk">held, not hoped for</div>
+        <p>A controller samples the die at 10 Hz, medians the noise out, and drives duty cycle
+          against a target. It gives back throughput rather than heat, and stops entirely if
+          something else is already cooking the chip.</p>
+      </div>
+    </div>
+
+    <p class="plate-cap" style="margin-top:26px">One detail for the people who will enjoy it:
+      musl deliberately stubs the <span class="mono">sched_setscheduler</span> wrapper, so the
+      throttle reaches for the raw syscall instead. That is the kind of thing you find out
+      when you refuse to link against anything.</p>
   </section>
 
   <section class="rule-top" id="science">
@@ -448,13 +503,25 @@ footer p{max-width:62ch}
         key on first run and starts searching.</p>
     </div>
 
+    <div class="col">
+      <p>You can look at the live chain before installing anything. The explorer serves the
+        same page two ways — HTML to a browser, plain text to a terminal:</p>
+    </div>
+
+    <pre><span class="c"># the live network, right now</span>
+curl explorer.catasterism.xyz</pre>
+
+    <div class="col">
+      <p>Then run your own:</p>
+    </div>
+
     <pre><span class="c"># build and start a node</span>
 docker compose up --build -d
 
 <span class="c"># watch it work</span>
 docker compose logs -f node1
 
-<span class="c"># the explorer's text dashboard</span>
+<span class="c"># your own explorer, same dashboard</span>
 curl 127.0.0.1:3071</pre>
 
     <div class="col">
@@ -470,7 +537,8 @@ curl 127.0.0.1:3071</pre>
       <div><dt>Share spacing</dt><dd>4 s</dd></div>
       <div><dt>Payout</dt><dd>PPLNS over 256 shares</dd></div>
       <div><dt>Reward split</dt><dd>30% chain · 70% science</dd></div>
-      <div><dt>Node binary</dt><dd>&lt; 150 KB, static</dd></div>
+      <div><dt>Node binary</dt><dd>141 KB, static, musl</dd></div>
+      <div><dt>Resident memory</dt><dd>~1 MB</dd></div>
       <div><dt>P2P · explorer · database</dt><dd>7043 · 3071 · 5439</dd></div>
     </dl>
   </section>
