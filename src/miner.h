@@ -5,9 +5,15 @@
 #include <stdatomic.h>
 #include "share.h"
 
-extern atomic_uint_fast64_t miner_scanned, miner_tests;
+extern atomic_uint_fast64_t miner_scanned, miner_tests, miner_sci_found;
 
-int  miner_start(int nthreads, int out_fd, volatile sig_atomic_t *running);
+/* out_fd: found constellation shares (SHARE_SIZE records). sci_fd: found
+ * science claims (SCI_SIZE records, science.h). One worker goes to science
+ * when nthreads >= 2, leaving nthreads - 1 on constellations. */
+int  miner_start(int nthreads, int out_fd, int sci_fd, volatile sig_atomic_t *running);
 void miner_set_job(const share_t *tmpl);
+/* Bumps the science generation, invalidating in-flight search, and installs
+ * the region this share's science lane searches: sci_region(anchor, payout). */
+void miner_set_sci(const uint8_t anchor[32], const uint8_t payout[32]);
 void miner_stop(void);
 #endif
