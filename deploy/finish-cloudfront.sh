@@ -9,6 +9,14 @@
 
 set -euo pipefail
 
+# Work in a private directory rather than predictable /tmp paths. These files
+# carry an S3 bucket policy and a DNS change set; a symlink planted at a
+# guessable path could redirect the write, or be swapped between the write and
+# the read so `aws` applies something other than what was generated here.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/catasterism.XXXXXXXX")"
+chmod 700 "$WORK"
+trap 'rm -rf "$WORK"' EXIT
+
 ZONE_ID="Z07364351Y9Z8HB4HY25A"
 BUCKET="catasterism-xyz-site"
 DOMAIN="catasterism.xyz"
@@ -45,7 +53,7 @@ else
     || aws cloudfront list-origin-access-controls \
          --query "OriginAccessControlList.Items[?Name=='catasterism-oac'].Id" --output text)
 
-  cat > /tmp/cf-catasterism.json <<JSON
+  cat > "$WORK"/cf.json <<JSON
 {
   "CallerReference": "catasterism-$(date +%s)",
   "Aliases": { "Quantity": 2, "Items": ["$DOMAIN", "www.$DOMAIN"] },
@@ -73,7 +81,7 @@ else
   "HttpVersion": "http2and3"
 }
 JSON
-  DIST_ID=$(aws cloudfront create-distribution --distribution-config file:///tmp/cf-catasterism.json \
+  DIST_ID=$(aws cloudfront create-distribution --distribution-config file://"$WORK"/cf.json \
     --query 'Distribution.Id' --output text)
   echo "  created $DIST_ID"
 fi
@@ -81,7 +89,7 @@ fi
 DIST_DOMAIN=$(aws cloudfront get-distribution --id "$DIST_ID" --query 'Distribution.DomainName' --output text)
 
 say "4/5  Letting CloudFront read the bucket"
-cat > /tmp/bucket-policy.json <<JSON
+cat > "$WORK"/bucket-policy.json <<JSON
 { "Version": "2012-10-17", "Statement": [{
   "Sid": "AllowCloudFrontRead",
   "Effect": "Allow",
@@ -92,11 +100,11 @@ cat > /tmp/bucket-policy.json <<JSON
     "AWS:SourceArn": "arn:aws:cloudfront::$ACCOUNT:distribution/$DIST_ID" }}
 }]}
 JSON
-aws s3api put-bucket-policy --bucket "$BUCKET" --policy file:///tmp/bucket-policy.json
+aws s3api put-bucket-policy --bucket "$BUCKET" --policy file://"$WORK"/bucket-policy.json
 echo "  policy applied"
 
 say "5/5  Pointing the domain at it"
-cat > /tmp/alias.json <<JSON
+cat > "$WORK"/alias.json <<JSON
 { "Comment": "catasterism.xyz -> CloudFront", "Changes": [
   { "Action": "UPSERT", "ResourceRecordSet": { "Name": "$DOMAIN.", "Type": "A",
       "AliasTarget": { "HostedZoneId": "Z2FDTNDATAQYW2", "DNSName": "$DIST_DOMAIN.", "EvaluateTargetHealth": false }}},
@@ -107,7 +115,7 @@ cat > /tmp/alias.json <<JSON
 ]}
 JSON
 aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" \
-  --change-batch file:///tmp/alias.json --query 'ChangeInfo.Status' --output text
+  --change-batch file://"$WORK"/alias.json --query 'ChangeInfo.Status' --output text
 
 say "Done — https://$DOMAIN"
 echo "CloudFront takes 5-15 minutes to finish deploying the first time."
