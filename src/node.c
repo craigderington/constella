@@ -45,17 +45,6 @@ static void rebuild_state(void) {
     mempool_revalidate(&L);
 }
 
-/* Mirrors chain.c's (static) epoch_anchor: walk parent links from `par` up to
- * the ancestor at the epoch height for `height`. Not exported by chain.h, so
- * duplicated here rather than widening that interface for one caller. */
-static void epoch_anchor(int par, uint32_t height, uint8_t out[32]) {
-    uint32_t want = sci_epoch(height);
-    const entry_t *e = chain_entry(par);
-    int a = par;
-    while (a >= 0 && e->height > want) { a = e->parent; e = chain_entry(a); }
-    memcpy(out, chain_entry(a < 0 ? 0 : a)->id, 32);
-}
-
 static void update_job(void) {
     int tip = chain_tip();
     const entry_t *t = chain_entry(tip);
@@ -66,7 +55,7 @@ static void update_job(void) {
         sci_epoch_cur = ep;
         nscipool = 0;
         uint8_t anchor[32];
-        epoch_anchor(tip, t->height + 1, anchor);
+        chain_epoch_anchor(tip, t->height + 1, anchor);
         miner_set_sci(anchor, payout);
     }
     tmpl_t *tm = &T[tnext];
@@ -336,15 +325,15 @@ int node_run(void) {
 }
 
 int bench_run(unsigned bits, int secs, int threads) {
-    int pfd[2], spfd[2];
-    if (pipe(pfd) || pipe(spfd)) return 1;
+    int pfd[2];
+    if (pipe(pfd)) return 1;
     fcntl(pfd[0], F_SETFL, O_NONBLOCK);
     signal(SIGINT, on_sig);
     throttle_init(100, 200, 0);
     throttle_fixed(100);
-    /* bench never calls miner_set_sci, so the science worker (if any) just
-     * idles on sci_gen==0; spfd only needs to be a valid write end. */
-    miner_start(threads, pfd[1], spfd[1], &running);
+    /* sci_fd -1: bench measures constellation throughput at exactly
+     * `threads` workers, same as before this task -- no science lane. */
+    miner_start(threads, pfd[1], -1, &running);
     share_t s = {0};
     s.version = SHARE_VERSION; s.bits = (uint16_t)bits; s.time = (uint64_t)now_sec();
     miner_set_job(&s);

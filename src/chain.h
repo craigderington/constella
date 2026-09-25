@@ -40,4 +40,9 @@ unsigned       chain_next_bits(int parent);
 int            chain_path(int **out);                     /* genesis..tip, caller frees */
 int            chain_locator(uint8_t (*out)[32], int max);
 int            chain_orphans(void);
+/* The epoch anchor for a share at `height` whose parent is `par`: the
+ * ancestor at sci_epoch(height). Exported because the miner must derive the
+ * same region the validator will check against -- two copies of this walk
+ * would let the node mine claims its own accept() rejects. */
+void           chain_epoch_anchor(int par, uint32_t height, uint8_t out[32]);
 #endif

@@ -92,8 +92,11 @@ size_t chain_msg(int idx, uint8_t *out) {
 
 /* The anchor is the ancestor of this share at its epoch height — a strict
  * ancestor, always, so validation is never circular (the spec's
- * height - height mod SCI_EPOCH resolves to the share itself on a boundary). */
-static void epoch_anchor(int par, uint32_t height, uint8_t out[32]) {
+ * height - height mod SCI_EPOCH resolves to the share itself on a boundary).
+ * Exported (chain.h) so the miner derives the same region the validator
+ * below checks against -- a second copy of this walk drifting out of step
+ * would let the node mine claims its own accept() rejects. */
+void chain_epoch_anchor(int par, uint32_t height, uint8_t out[32]) {
     uint32_t want = sci_epoch(height);
     int a = par;
     while (a >= 0 && E[a].height > want) a = E[a].parent;
@@ -125,7 +128,7 @@ static int accept(const share_t *s, const tx_t *txs, int ntx, const sci_t *sci, 
     if (nsci) {
         uint8_t anchor[32];
         bn sbase;
-        epoch_anchor(par, s->height, anchor);
+        chain_epoch_anchor(par, s->height, anchor);
         sci_region(&sbase, anchor, s->miner);
         if (sci_check_list(&sbase, sci, nsci)) return CH_INVALID;
     }
