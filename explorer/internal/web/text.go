@@ -5,6 +5,7 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/craig/constella/explorer/internal/proto"
 	"github.com/craig/constella/explorer/internal/store"
 )
 
@@ -14,6 +15,11 @@ func writeText(w io.Writer, st *store.Stats, d *overviewData) {
 	esc, _ := strconv.ParseInt(m["escrow"], 10, 64)
 	paid, _ := strconv.ParseInt(m["sci_paid"], 10, 64)
 	fmt.Fprintf(w, "constella explorer\n\n")
+	// Same derivation as the HTML band (proto.NetworkName/ChainIDHex, both
+	// pure functions of BlockK) — not a second source of truth, and not
+	// read back through meta, so a curl'd dashboard carries the same
+	// verifiable network indicator as the page.
+	fmt.Fprintf(w, "  network     %s   chain %s\n", proto.NetworkName(), proto.ChainIDHex())
 	fmt.Fprintf(w, "  height      %s   tip %.8s   %s bits\n", num(m["height"]), m["tip"], m["bits"])
 	fmt.Fprintf(w, "  shares/min  %.1f   miners %d   blocks %s   txs %s\n", st.SharesPerMin, st.Miners, num(m["blocks"]), num(m["txs"]))
 	fmt.Fprintf(w, "  escrow      %s (science lane, %s paid over %s claims)\n",

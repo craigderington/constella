@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/craig/constella/explorer/internal/proto"
 	"github.com/craig/constella/explorer/internal/store"
 )
 
@@ -50,13 +51,21 @@ func emptyOf(name string) any {
 	return nil
 }
 
-// The network band and selector must both be driven by the "network" meta
-// value the indexer publishes (itself derived from proto.NetworkName, i.e.
-// BlockK) rather than a value hardcoded in the template. This pins the
-// testnet default (including with no "network" key yet, before the first
-// flush) and the mainnet case, so a template change that stops branching on
-// the meta value would be caught here.
-func TestNetworkBandReflectsMeta(t *testing.T) {
+// The network band and selector are driven directly by proto.NetworkName /
+// proto.ChainIDHex — pure functions of BlockK, wired in as template funcs
+// (render.go) — not by anything read back out of the indexer's meta map.
+// That closes the window that existed when the band read .Stats.Meta.network:
+// meta is empty until the indexer's first flush, so on every process start
+// the band would briefly fall back to a hardcoded literal. There is no such
+// fallback branch left in the template to test, so this instead proves meta
+// is irrelevant to the band: it renders with no meta, with meta silent on
+// network, and with meta actively lying about it, and every case must still
+// show this build's real proto values and never the forged one.
+//
+// Only the overview page is rendered here: the band and selector live in
+// layout.html, which every page shares verbatim, so one page's render
+// exercises the exact markup every other page gets too.
+func TestNetworkBandUsesProtoDirectly(t *testing.T) {
 	s := New(nil)
 	render := func(meta map[string]string) string {
 		st := &store.Stats{Meta: meta}
@@ -67,43 +76,39 @@ func TestNetworkBandReflectsMeta(t *testing.T) {
 		return buf.String()
 	}
 
+	wantName := "Testnet"
+	if proto.NetworkName() == "mainnet" {
+		wantName = "Mainnet"
+	}
+	wantID := proto.ChainIDHex()
+
 	for _, tc := range []struct {
 		name string
 		meta map[string]string
-		want []string
-		nope []string
 	}{
-		{
-			name: "testnet with chain id",
-			meta: map[string]string{"network": "testnet", "chain_id": "a8f4562e57e74f9d"},
-			want: []string{"Testnet", "coins have no value", "a8f4562e57e74f9d",
-				`value="testnet" selected`, `value="mainnet" disabled`, "not launched"},
-			nope: []string{"Mainnet</span>"},
-		},
-		{
-			name: "no meta yet defaults to testnet",
-			meta: nil,
-			want: []string{"Testnet", "coins have no value", `value="testnet" selected`, `value="mainnet" disabled`},
-		},
-		{
-			name: "mainnet flips both the band and the selector",
-			meta: map[string]string{"network": "mainnet", "chain_id": "a2da89e8309ab40b"},
-			want: []string{"Mainnet", "production network", "a2da89e8309ab40b",
-				`value="mainnet" selected`, `value="testnet" disabled`, "not connected"},
-			nope: []string{"coins have no value", "not launched"},
-		},
+		{"no meta at all (pre-first-flush state)", nil},
+		{"meta present but silent on network", map[string]string{"height": "1"}},
+		{"meta actively disagrees with proto", map[string]string{"network": "mainnet", "chain_id": "deadbeefdeadbeef"}},
 	} {
 		out := render(tc.meta)
-		for _, w := range tc.want {
-			if !strings.Contains(out, w) {
-				t.Errorf("%s: output missing %q", tc.name, w)
-			}
+		if !strings.Contains(out, wantName) {
+			t.Errorf("%s: band missing %q (proto.NetworkName()=%s)", tc.name, wantName, proto.NetworkName())
 		}
-		for _, n := range tc.nope {
-			if strings.Contains(out, n) {
-				t.Errorf("%s: output unexpectedly contains %q", tc.name, n)
-			}
+		if !strings.Contains(out, wantID) {
+			t.Errorf("%s: band missing chain id %q", tc.name, wantID)
 		}
+		if strings.Contains(out, "deadbeefdeadbeef") {
+			t.Errorf("%s: band echoed a forged meta chain id instead of proto.ChainIDHex()", tc.name)
+		}
+	}
+
+	out := render(nil)
+	if proto.NetworkName() == "mainnet" {
+		if !strings.Contains(out, `value="mainnet" selected`) || !strings.Contains(out, `value="testnet" disabled`) {
+			t.Error("selector did not reflect mainnet")
+		}
+	} else if !strings.Contains(out, `value="testnet" selected`) || !strings.Contains(out, `value="mainnet" disabled`) || !strings.Contains(out, "not launched") {
+		t.Error("selector did not reflect testnet")
 	}
 }
 

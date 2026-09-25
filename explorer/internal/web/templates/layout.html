@@ -107,19 +107,14 @@ footer { border-top: 1px solid var(--rule); color: var(--faded); font-size: .85r
 </head>
 <body>
 <div class="netband" role="status"><div class="wrap">
-  {{with .Stats.Meta}}
-    {{if eq .network "mainnet"}}
-      <span class="net-name">Mainnet</span>
-      <span class="net-note">production network — verify the chain id shown here against your node before trusting this data.</span>
-    {{else}}
-      <span class="net-name">Testnet</span>
-      <span class="net-note">coins have no value and the chain is reset without notice.</span>
-    {{end}}
-    {{if .chain_id}}<span class="net-id">chain <code>{{.chain_id}}</code></span>{{end}}
+  {{if eq network "mainnet"}}
+    <span class="net-name">Mainnet</span>
+    <span class="net-note">production network — verify the chain id shown here against your node before trusting this data.</span>
   {{else}}
     <span class="net-name">Testnet</span>
     <span class="net-note">coins have no value and the chain is reset without notice.</span>
   {{end}}
+  <span class="net-id">chain <code>{{chainID}}</code></span>
 </div></div>
 <header class="top"><div class="wrap">
   <a class="brand" href="/">{{glyph 6}}Constella</a>
@@ -127,10 +122,9 @@ footer { border-top: 1px solid var(--rule); color: var(--faded); font-size: .85r
        navigation control. There is nowhere else here to go, so it is not
        wired to anything. -->
   <div class="netsel">
-    {{$net := "testnet"}}{{with .Stats.Meta}}{{if eq .network "mainnet"}}{{$net = "mainnet"}}{{end}}{{end}}
     <select aria-label="Network shown by this explorer">
-      <option value="testnet" {{if eq $net "mainnet"}}disabled{{else}}selected{{end}}>Testnet{{if eq $net "mainnet"}} — not connected{{end}}</option>
-      <option value="mainnet" {{if eq $net "mainnet"}}selected{{else}}disabled{{end}}>Mainnet{{if ne $net "mainnet"}} — not launched{{end}}</option>
+      <option value="testnet" {{if eq network "mainnet"}}disabled{{else}}selected{{end}}>Testnet{{if eq network "mainnet"}} — not connected{{end}}</option>
+      <option value="mainnet" {{if eq network "mainnet"}}selected{{else}}disabled{{end}}>Mainnet{{if ne network "mainnet"}} — not launched{{end}}</option>
     </select>
   </div>
   <nav><a href="/">Overview</a><a href="/records">Records</a></nav>
