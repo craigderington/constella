@@ -74,6 +74,42 @@ func TestMulDivMatchesPPLNS(t *testing.T) {
 	}
 }
 
+// TestSciLedgerDedupAndAccrual pins the two ledger rules that are easiest to
+// get backwards: escrow accrues before the release is computed from it (a
+// release-before-accrue bug would pay nothing on a chain's very first
+// science block), and epoch dedup stops a re-listed claim from being counted
+// again without stopping an already-payable claim from earning in every
+// block whose window covers its share.
+func TestSciLedgerDedupAndAccrual(t *testing.T) {
+	var m proto.Hash
+	m[0] = 7
+	mk := func(h uint32, id byte, tlen int, claims []proto.Claim) *Node {
+		n := &Node{
+			Msg:    &proto.Msg{Share: proto.Share{Miner: m, Bits: proto.GenesisBits}, Claims: claims},
+			Height: h, TLen: tlen,
+		}
+		n.ID[0] = id
+		return n
+	}
+	path := make([]*Node, 5)
+	path[0] = &Node{Msg: &proto.Msg{}}
+	path[1] = mk(1, 1, 0, []proto.Claim{{K: 100, G: 776}}) // first listing: payable
+	path[2] = mk(2, 2, proto.BlockK, nil)                  // block: window covers share 1
+	path[3] = mk(3, 3, 0, []proto.Claim{{K: 100, G: 776}}) // same epoch, same (miner,k): not payable
+	path[4] = mk(4, 4, proto.BlockK, nil)                  // block: window covers shares 1 and 3
+
+	l := Build(path)
+	if l.SciClaims != 2 {
+		t.Fatalf("SciClaims = %d, want 2 (share 1's payable claim must recur across both blocks; share 3's must never count)", l.SciClaims)
+	}
+	if l.SciPaid != 1015000000 {
+		t.Fatalf("SciPaid = %d, want 1015000000 (350000000 + 665000000, accrue-then-release each block)", l.SciPaid)
+	}
+	if l.Escrow != 5985000000 {
+		t.Fatalf("Escrow = %d, want 5985000000", l.Escrow)
+	}
+}
+
 func TestLedgerTx(t *testing.T) {
 	var a, b, m proto.Hash
 	a[0], b[0], m[0] = 1, 2, 9
