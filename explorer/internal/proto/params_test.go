@@ -7,11 +7,24 @@ import (
 	"testing"
 )
 
+// missingHeader reports a C header the drift guard couldn't read. It fails
+// loudly (t.Fatal) instead of skipping (t.Skip) whenever CONSTELLA_CI is
+// set. The Dockerfile sets it, because a build gate that silently skips and
+// reports success is worse than no gate at all.
+func missingHeader(t *testing.T, err error, path string) {
+	t.Helper()
+	if os.Getenv("CONSTELLA_CI") != "" {
+		t.Fatalf("%s not available in a CI/build context (CONSTELLA_CI set): %v", path, err)
+	}
+	t.Skip(path, "not available:", err)
+}
+
 // Guards against the Go mirror drifting from the C consensus parameters.
 func TestParamsMatchC(t *testing.T) {
 	src, err := os.ReadFile("../../../src/params.h")
 	if err != nil {
-		t.Skip("params.h not available:", err)
+		missingHeader(t, err, "params.h")
+		return
 	}
 	want := map[string]int64{
 		"SHARE_VERSION": ShareVersion, "TUPLE_N": TupleN, "TUPLE_RES": TupleRes, "WHEEL": Wheel,
@@ -46,7 +59,8 @@ func TestParamsMatchC(t *testing.T) {
 	// SCI_SIZE (the claim's wire size) lives in science.h, not params.h.
 	sciSrc, err := os.ReadFile("../../../src/science.h")
 	if err != nil {
-		t.Skip("science.h not available:", err)
+		missingHeader(t, err, "science.h")
+		return
 	}
 	m := regexp.MustCompile(`#define\s+SCI_SIZE\s+(\d+)`).FindSubmatch(sciSrc)
 	if m == nil {
