@@ -258,7 +258,7 @@ static void t_mine(unsigned bits, int print) {
 }
 
 /* Region base computed independently in Python (hashlib + int.from_bytes);
- * pinned here until Task 9 adds it to the crosscheck suite. */
+ * re-derived in the crosscheck suite to detect bignum bugs. */
 static void t_sci_region(void) {
     uint8_t a0[32] = {0}, aa[32], m1[32], m2[32];
     memset(aa, 0xaa, 32); memset(m1, 1, 32); memset(m2, 2, 32);
@@ -480,6 +480,21 @@ int main(int argc, char **argv) {
             size_t n = strlen(line) / 2;
             if (n && hex_dec(buf, n, line)) return 1;
             blake2b(h, 32, buf, n); hex_enc(x, h, 32); puts(x);
+        }
+        return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "--sci")) {   /* anchor miner k g -> base check work */
+        while (fgets(line, sizeof line, stdin)) {
+            char ah[80], mh[80]; unsigned long long k; unsigned g;
+            uint8_t anchor[32], miner[32];
+            if (sscanf(line, "%79s %79s %llu %u", ah, mh, &k, &g) != 4) break;
+            if (hex_dec(anchor, 32, ah) || hex_dec(miner, 32, mh)) return 1;
+            bn base; char dec[100];
+            sci_region(&base, anchor, miner);
+            bn_to_dec(dec, sizeof dec, &base, bn_limbs(SCI_BITS));
+            sci_t c = {.k = k, .g = g};
+            printf("%s %d %llu\n", dec, sci_check(&base, &c) == 0,
+                   (unsigned long long)sci_work(g));
         }
         return 0;
     }
