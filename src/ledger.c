@@ -1,5 +1,7 @@
 #include "ledger.h"
 #include "chain.h"
+#include "science.h"
+#include "params.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -77,18 +79,52 @@ void pplns_pay(ledger_t *L, const uint8_t (*m)[32], const uint64_t *w, int cnt,
     ledger_credit(L, finder, pool - paid);
 }
 
+void sci_seen_reset(sci_seen_t *S, uint32_t epoch) { S->epoch = epoch; S->n = 0; }
+
+int sci_seen_mark(sci_seen_t *S, const uint8_t miner[32], uint32_t epoch, uint64_t k) {
+    if (epoch != S->epoch) sci_seen_reset(S, epoch);
+    for (uint32_t i = 0; i < S->n; i++)
+        if (S->k[i] == k && !memcmp(S->miner[i], miner, 32)) return 0;
+    if (S->n >= SCI_SEEN_MAX) return 0;
+    memcpy(S->miner[S->n], miner, 32);
+    S->k[S->n++] = k;
+    return 1;
+}
+
+uint64_t sci_release(uint64_t escrow) { return escrow * SCI_RELEASE_PCT / 100; }
+
+void ledger_sci_pay(ledger_t *L, const uint8_t (*owners)[32], const uint64_t *w,
+                    int cnt, const uint8_t finder[32]) {
+    if (cnt <= 0) return;
+    uint64_t rel = sci_release(L->escrow);
+    if (!rel) return;
+    pplns_pay(L, owners, w, cnt, finder, rel);
+    L->escrow -= rel;
+    L->sci_paid += rel;
+}
+
 int ledger_build(ledger_t *L) {
     int *path, n = chain_path(&path);
     if (n < 0) return -1;
     uint8_t (*win)[32] = malloc(PPLNS_N * 32);
     uint64_t *wt = malloc(PPLNS_N * sizeof *wt);
-    if (!win || !wt) { free(win); free(wt); free(path); return -1; }
+    sci_seen_t *seen = malloc(sizeof *seen);
+    uint8_t (*scim)[32] = malloc(SCI_WINDOW * (size_t)SHARE_MAX_SCI * 32);
+    uint64_t *sciw = malloc(SCI_WINDOW * (size_t)SHARE_MAX_SCI * sizeof *sciw);
+    uint8_t *pay = calloc((size_t)n * SHARE_MAX_SCI, 1);   /* payable flags */
+    if (!win || !wt || !seen || !scim || !sciw || !pay) {
+        free(win); free(wt); free(seen); free(scim); free(sciw); free(pay); free(path);
+        return -1;
+    }
     const uint64_t pool = BLOCK_REWARD * CONSENSUS_PCT / 100;
     for (int j = 1; j < n; j++) {
         const entry_t *e = chain_entry(path[j]);
         acct_t *a = ledger_acct(L, e->s.miner, 1);
         if (a) a->shares++;
         for (int t = 0; t < e->ntx; t++) ledger_apply_tx(L, &e->txs[t], e->s.miner);
+        for (int c = 0; c < e->nsci; c++)
+            pay[j * SHARE_MAX_SCI + c] =
+                (uint8_t)sci_seen_mark(seen, e->s.miner, sci_epoch(e->height), e->sci[c].k);
         if (e->tlen < BLOCK_K) continue;
         int lo = j - PPLNS_N + 1 < 1 ? 1 : j - PPLNS_N + 1, c = 0;
         for (int i = lo; i <= j; i++, c++) {
@@ -98,9 +134,22 @@ int ledger_build(ledger_t *L) {
         }
         pplns_pay(L, (const uint8_t (*)[32])win, wt, c, e->s.miner, pool);
         L->escrow += BLOCK_REWARD - pool;
+
+        int slo = j - SCI_WINDOW + 1 < 1 ? 1 : j - SCI_WINDOW + 1, sc = 0;
+        for (int i = slo; i <= j; i++) {
+            const entry_t *x = chain_entry(path[i]);
+            for (int c = 0; c < x->nsci; c++) {
+                if (!pay[i * SHARE_MAX_SCI + c]) continue;
+                memcpy(scim[sc], x->s.miner, 32);
+                sciw[sc++] = sci_work(x->sci[c].g);
+            }
+        }
+        L->sci_claims += (uint32_t)sc;
+        ledger_sci_pay(L, (const uint8_t (*)[32])scim, sciw, sc, e->s.miner);
+
         L->blocks++;
     }
-    free(win); free(wt); free(path);
+    free(win); free(wt); free(seen); free(scim); free(sciw); free(pay); free(path);
     return 0;
 }
 
