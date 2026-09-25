@@ -30,6 +30,11 @@ typedef struct {
 void sci_seen_reset(sci_seen_t *S, uint32_t epoch);
 /* 1 = first occurrence (payable), 0 = already seen this epoch, or full. */
 int  sci_seen_mark(sci_seen_t *S, const uint8_t miner[32], uint32_t epoch, uint64_t k);
+/* What ledger_build runs on a freshly malloc'd seen table before first use.
+ * Exposed (not static) so tests can drive the exact initialisation on a
+ * struct they control, rather than depending on what a particular malloc
+ * implementation happens to hand back. */
+void sci_seen_init(sci_seen_t *S);
 
 acct_t *ledger_acct(ledger_t *L, const uint8_t addr[32], int create);
 void    ledger_credit(ledger_t *L, const uint8_t addr[32], uint64_t amt);

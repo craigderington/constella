@@ -81,6 +81,18 @@ void pplns_pay(ledger_t *L, const uint8_t (*m)[32], const uint64_t *w, int cnt,
 
 void sci_seen_reset(sci_seen_t *S, uint32_t epoch) { S->epoch = epoch; S->n = 0; }
 
+/* Makes a freshly malloc'd sci_seen_t valid before its first sci_seen_mark()
+ * call. malloc() does not zero, so without this S->n and S->epoch are
+ * garbage: the mark loop below can then run off the end of S->k[]/
+ * S->miner[] (a measured 512-slot table read with a garbage n of 32540), or
+ * a stale non-empty table can make a genuine first occurrence come back
+ * "already seen" (wrong balances, and a C/Go consensus divergence). epoch 0
+ * is a real epoch (heights 1..256) - starting there is a deliberate choice,
+ * visible here, not an accident of calloc-like zeroing that a future editor
+ * could mistake for redundant and delete. load-bearing: do not remove the
+ * call to this from ledger_build. */
+void sci_seen_init(sci_seen_t *S) { sci_seen_reset(S, 0); }
+
 int sci_seen_mark(sci_seen_t *S, const uint8_t miner[32], uint32_t epoch, uint64_t k) {
     if (epoch != S->epoch) sci_seen_reset(S, epoch);
     for (uint32_t i = 0; i < S->n; i++)
@@ -116,6 +128,7 @@ int ledger_build(ledger_t *L) {
         free(win); free(wt); free(seen); free(scim); free(sciw); free(pay); free(path);
         return -1;
     }
+    sci_seen_init(seen);   /* load-bearing: see sci_seen_init()'s comment */
     const uint64_t pool = BLOCK_REWARD * CONSENSUS_PCT / 100;
     for (int j = 1; j < n; j++) {
         const entry_t *e = chain_entry(path[j]);

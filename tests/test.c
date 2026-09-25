@@ -463,6 +463,46 @@ static void t_sci_dedup(void) {
     CHECK(SCI_SEEN_MAX >= SCI_EPOCH * SHARE_MAX_SCI);
 }
 
+/* t_sci_dedup above only exercises sci_seen_reset()'s own path; production
+ * (ledger_build) never calls that first, it just malloc()s and hands the
+ * result straight to sci_seen_mark(). Reproduce that shape directly: poison
+ * a stack sci_seen_t into a "stale table" - a plausible epoch plus S->n at
+ * capacity - then run sci_seen_init(), the exact call ledger_build makes on
+ * its malloc'd table, and check a genuine first occurrence still pays.
+ *
+ * This deliberately does not poison a real malloc() allocation and hope
+ * ledger_build reuses that same memory: that trick is allocator-dependent,
+ * and on this repo's own default toolchain (musl, which the Makefile
+ * prefers whenever it's installed) a freed-then-remalloc'd block of this
+ * size comes back freshly zeroed, not reused - such a test would report
+ * only false confidence, passing whether or not the fix is present. Driving
+ * sci_seen_init() directly on a struct we fully control is deterministic on
+ * every allocator and still exercises the exact function ledger_build calls
+ * (see ledger.c): remove the sci_seen_reset() call from inside it and this
+ * test fails, because the poisoned epoch is chosen to match what mark() is
+ * asked for, so sci_seen_mark()'s own "epoch changed" safety net can't paper
+ * over the missing init the way production got away with by luck. */
+static void t_sci_seen_init(void) {
+    sci_seen_t S;
+    memset(&S, 0xaa, sizeof S);      /* garbage miner/k entries: must never match a real one */
+    S.epoch = 0x2a2a2a2a;            /* a plausible-looking, but stale, epoch */
+    S.n = SCI_SEEN_MAX;              /* stale table reported as already full */
+
+    uint8_t m1[32] = {1};
+    /* same epoch as the poison: without sci_seen_init, mark()'s own epoch
+     * check would not fire, so this is the case that exposes a missing
+     * reset rather than getting saved by it. */
+    CHECK(sci_seen_mark(&S, m1, 0x2a2a2a2a, 950) == 0);   /* bug shape: wrongly "already seen" */
+
+    memset(&S, 0xaa, sizeof S);
+    S.epoch = 0x2a2a2a2a;
+    S.n = SCI_SEEN_MAX;
+    sci_seen_init(&S);                       /* the exact call ledger_build performs */
+    CHECK(S.epoch == 0 && S.n == 0);         /* unambiguously empty, not whatever malloc returned */
+    CHECK(sci_seen_mark(&S, m1, 0, 950) == 1);    /* genuine first occurrence: must pay */
+    CHECK(S.n == 1);
+}
+
 int main(int argc, char **argv) {
     if (sieve_init()) return 1;
     char line[1024];
@@ -500,7 +540,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_msg(); t_sci_payout(); t_sci_dedup();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
