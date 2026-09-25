@@ -48,13 +48,30 @@ func (c *Chain) accept(m *proto.Msg, id proto.Hash, par *Node) (*Node, error) {
 	if s.Version != proto.ShareVersion || s.Height != par.Height+1 {
 		return nil, ErrInvalid
 	}
-	if proto.TxRoot(m.Txs) != s.TxRoot {
+	if proto.ShareRoot(m.Txs, m.Claims) != s.TxRoot {
 		return nil, ErrInvalid
 	}
 	p := Candidate(s)
 	tl := TupleLen(p)
 	if tl < proto.ShareK {
 		return nil, ErrInvalid
+	}
+	if len(m.Claims) > 0 {
+		anchor := par
+		for anchor != nil && anchor.Height > SciEpoch(s.Height) {
+			anchor = anchor.Parent
+		}
+		if anchor == nil {
+			return nil, ErrInvalid
+		}
+		base := SciRegion(anchor.ID, s.Miner)
+		seen := map[uint64]bool{}
+		for _, c := range m.Claims {
+			if seen[c.K] || !SciCheck(base, c) {
+				return nil, ErrInvalid
+			}
+			seen[c.K] = true
+		}
 	}
 	n := &Node{Msg: m, ID: id, Parent: par, Height: par.Height + 1,
 		Work: par.Work + Work(s.Bits), TLen: tl, P: p.String()}
