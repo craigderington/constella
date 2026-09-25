@@ -1,0 +1,583 @@
+<title>Catasterism</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cardo:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+
+<style>
+:root{
+  --ink:#0E1A2B;
+  --ink-deep:#081120;
+  --ink-raise:#152740;
+  --rule:#274563;
+  --chalk:#EDE8DC;
+  --slate:#8FA0B5;
+  --brass:#C9A227;
+  --brass-dim:#9A7D1E;
+  --verdigris:#5EA692;
+  --struck:#1C3049;
+
+  --display:'Cardo',Georgia,'Times New Roman',serif;
+  --body:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,monospace;
+
+  --measure:62ch;
+  --gut:clamp(20px,5vw,64px);
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --ink:#EFE9DA;
+    --ink-deep:#E4DCC8;
+    --ink-raise:#F7F3E8;
+    --rule:#C8BB9C;
+    --chalk:#1B2432;
+    --slate:#5A6678;
+    --brass:#8A6D12;
+    --brass-dim:#A98F3C;
+    --verdigris:#2C6B59;
+    --struck:#DCD3BC;
+  }
+}
+:root[data-theme="light"]{
+  --ink:#EFE9DA;
+  --ink-deep:#E4DCC8;
+  --ink-raise:#F7F3E8;
+  --rule:#C8BB9C;
+  --chalk:#1B2432;
+  --slate:#5A6678;
+  --brass:#8A6D12;
+  --brass-dim:#A98F3C;
+  --verdigris:#2C6B59;
+  --struck:#DCD3BC;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0;
+  background:var(--ink);
+  color:var(--chalk);
+  font-family:var(--body);
+  font-size:17px;
+  line-height:1.65;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{padding-inline:var(--gut);max-width:1180px;margin-inline:auto}
+.col{max-width:var(--measure)}
+p{margin:0 0 1.15em}
+a{color:var(--brass);text-underline-offset:3px;text-decoration-thickness:1px}
+a:hover{color:var(--chalk)}
+:focus-visible{outline:2px solid var(--brass);outline-offset:3px;border-radius:2px}
+h1,h2,h3{font-family:var(--display);font-weight:400;text-wrap:balance;margin:0}
+em{font-style:italic}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* ---- masthead ---- */
+.mast{padding-block:clamp(28px,5vw,44px) 0;display:flex;justify-content:space-between;align-items:baseline;gap:20px;flex-wrap:wrap}
+.mark{font-family:var(--display);font-size:20px;letter-spacing:.06em}
+.mark span{color:var(--brass)}
+.mast nav{display:flex;gap:22px;font-size:14px;color:var(--slate)}
+.mast nav a{color:inherit;text-decoration:none;border-bottom:1px solid transparent;padding-bottom:2px}
+.mast nav a:hover{color:var(--chalk);border-bottom-color:var(--brass)}
+.mast nav a.live{color:var(--brass);display:inline-flex;align-items:center;gap:7px}
+.mast nav a.live::before{
+  content:"";width:6px;height:6px;border-radius:50%;
+  background:var(--verdigris);box-shadow:0 0 0 3px color-mix(in srgb,var(--verdigris) 22%,transparent);
+}
+
+/* ---- hero ---- */
+.hero{padding-block:clamp(40px,8vw,84px) clamp(32px,6vw,56px)}
+.greek{font-family:var(--display);font-size:15px;color:var(--brass-dim);letter-spacing:.14em;margin:0 0 18px}
+h1{font-size:clamp(42px,8vw,88px);line-height:.96;letter-spacing:-.015em}
+h1 .it{font-style:italic;color:var(--brass)}
+.lede{font-size:clamp(18px,2.4vw,21px);color:var(--slate);max-width:52ch;margin-top:26px;line-height:1.6}
+.lede strong{color:var(--chalk);font-weight:500}
+
+/* ---- the asterism plate ---- */
+.plate{
+  margin-top:clamp(36px,6vw,56px);
+  background:var(--ink-deep);
+  border:1px solid var(--rule);
+  padding:clamp(22px,4vw,38px);
+}
+.plate-cap{font-size:13.5px;color:var(--slate);margin:20px 0 0;max-width:68ch;line-height:1.55}
+.plate-cap b{color:var(--chalk);font-weight:500}
+svg{display:block;max-width:100%;height:auto}
+
+/* ---- sections ---- */
+section{padding-block:clamp(52px,9vw,92px)}
+.rule-top{border-top:1px solid var(--rule)}
+h2{font-size:clamp(28px,4.6vw,44px);line-height:1.08;letter-spacing:-.01em;margin-bottom:22px}
+h3{font-size:22px;margin-bottom:8px}
+.kicker{font-family:var(--display);font-style:italic;color:var(--brass);font-size:19px;margin:0 0 10px}
+
+/* ---- eratosthenes: three works ---- */
+.works{display:grid;gap:1px;background:var(--rule);border:1px solid var(--rule);margin-top:36px}
+@media(min-width:760px){.works{grid-template-columns:repeat(3,1fr)}}
+.work{background:var(--ink);padding:26px 24px 28px}
+.work h3{font-size:20px;color:var(--chalk)}
+.work .gk{font-family:var(--display);font-style:italic;color:var(--brass-dim);font-size:15px;margin:0 0 14px}
+.work p{font-size:15px;color:var(--slate);line-height:1.6;margin-bottom:0}
+.work .here{margin-top:16px;padding-top:14px;border-top:1px dashed var(--rule);font-size:14px;color:var(--chalk)}
+.work .here b{color:var(--brass);font-weight:500}
+
+/* ---- sieve ---- */
+.sieve-head{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;flex-wrap:wrap;margin-bottom:18px}
+.btn{
+  font-family:var(--body);font-size:14.5px;font-weight:500;
+  background:transparent;color:var(--brass);
+  border:1px solid var(--brass-dim);padding:9px 18px;cursor:pointer;
+}
+.btn:hover{background:var(--brass);color:var(--ink-deep);border-color:var(--brass)}
+.btn[disabled]{opacity:.4;cursor:default}
+.btn[disabled]:hover{background:transparent;color:var(--brass)}
+.grid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(30px,1fr));
+  gap:3px;margin-top:6px;
+}
+.cell{
+  font-family:var(--mono);font-size:11.5px;font-variant-numeric:tabular-nums;
+  aspect-ratio:1;display:grid;place-items:center;
+  background:var(--ink-raise);color:var(--slate);
+  border:1px solid transparent;
+  transition:background .18s ease,color .18s ease,border-color .18s ease;
+}
+.cell.struck{background:var(--struck);color:var(--rule);text-decoration:line-through}
+.cell.survivor{background:var(--ink-deep);color:var(--brass);border-color:var(--brass-dim)}
+.cell.hit{background:var(--brass);color:var(--ink-deep);border-color:var(--brass)}
+.cell.seed{background:var(--verdigris);color:var(--ink-deep);border-color:var(--verdigris)}
+.readout{
+  font-family:var(--mono);font-size:13.5px;color:var(--slate);
+  margin-top:18px;min-height:3.2em;line-height:1.6;
+}
+.readout b{color:var(--chalk);font-weight:500}
+.readout .em{color:var(--brass)}
+@media (prefers-reduced-motion:reduce){.cell{transition:none}}
+
+/* ---- pattern facts ---- */
+.facts{display:grid;gap:26px;margin-top:34px}
+@media(min-width:720px){.facts{grid-template-columns:1fr 1fr;gap:34px 48px}}
+.fact h3{font-size:19px;color:var(--chalk);margin-bottom:6px;font-family:var(--display)}
+.fact p{font-size:15.5px;color:var(--slate);margin-bottom:0}
+.fact .num{font-family:var(--mono);color:var(--brass);font-size:15px}
+
+/* ---- split: two lanes ---- */
+.lanes{display:grid;gap:1px;background:var(--rule);border:1px solid var(--rule);margin-top:34px}
+@media(min-width:780px){.lanes{grid-template-columns:3fr 7fr}}
+.lane{background:var(--ink);padding:26px 24px}
+.lane .pct{font-family:var(--display);font-size:clamp(40px,7vw,64px);line-height:1;margin-bottom:6px}
+.lane.consensus .pct{color:var(--brass)}
+.lane.science .pct{color:var(--verdigris)}
+.lane h3{font-size:18px;margin-bottom:8px}
+.lane p{font-size:15px;color:var(--slate);margin-bottom:0}
+.lane p + p{margin-top:.9em}
+
+/* ---- escrow figure ---- */
+.escrow{margin-top:34px;border:1px solid var(--rule);background:var(--ink-deep);padding:clamp(20px,3.5vw,30px)}
+
+/* ---- run ---- */
+pre{
+  font-family:var(--mono);font-size:13.5px;line-height:1.75;
+  background:var(--ink-deep);border:1px solid var(--rule);
+  padding:20px 22px;overflow-x:auto;margin:0 0 16px;
+  color:var(--chalk);
+}
+pre .c{color:var(--slate)}
+pre .p{color:var(--verdigris)}
+.spec{display:grid;gap:0;margin-top:30px;border-top:1px solid var(--rule)}
+.spec div{display:flex;justify-content:space-between;gap:20px;padding:11px 0;border-bottom:1px solid var(--rule);font-size:14.5px}
+.spec dt{color:var(--slate)}
+.spec dd{margin:0;font-family:var(--mono);color:var(--chalk);text-align:right}
+
+/* ---- footer ---- */
+footer{border-top:1px solid var(--rule);padding-block:38px 56px;color:var(--slate);font-size:14px}
+footer p{max-width:62ch}
+.foot-top{display:flex;justify-content:space-between;gap:28px;flex-wrap:wrap;align-items:flex-start}
+.foot-links{display:flex;flex-direction:column;gap:9px;font-size:14.5px}
+.foot-links a{text-decoration:none;border-bottom:1px solid var(--rule);padding-bottom:3px}
+.foot-links a:hover{border-bottom-color:var(--brass)}
+.sig{font-family:var(--display);font-style:italic;color:var(--brass-dim);font-size:16px}
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <div class="mark">catasterism<span>.</span></div>
+    <nav>
+      <a href="#eratosthenes">Eratosthenes</a>
+      <a href="#sieve">The sieve</a>
+      <a href="#pattern">The pattern</a>
+      <a href="#science">The science lane</a>
+      <a href="#run">Run a node</a>
+      <a class="live" href="https://explorer.catasterism.xyz">Explorer</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <p class="greek">καταστερισμός — a placing among the stars</p>
+    <h1>The sieve that finds<br>them is <span class="it">his</span> too.</h1>
+    <p class="lede">Eratosthenes catalogued the constellations and invented the method for
+      finding prime numbers. Twenty-two centuries later, a small C program runs
+      <strong>his sieve</strong> on machines that would otherwise be idle, looking for
+      <strong>constellations made of primes</strong> — and pays for the search in the
+      coin it mines.</p>
+
+    <div class="plate">
+      <svg viewBox="0 0 760 200" role="img" aria-label="The prime sextuplet pattern: six points at offsets 0, 4, 6, 10, 12 and 16, with gaps of 4, 2, 4, 2 and 4 between them.">
+        <defs>
+          <radialGradient id="glow">
+            <stop offset="0" stop-color="#C9A227" stop-opacity=".55"/>
+            <stop offset="1" stop-color="#C9A227" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+
+        <!-- connecting line -->
+        <line x1="60" y1="96" x2="700" y2="96" stroke="#9A7D1E" stroke-width="1" stroke-dasharray="2 4"/>
+
+        <!-- gap braces above -->
+        <g fill="#8FA0B5" font-family="IBM Plex Mono, monospace" font-size="12" text-anchor="middle">
+          <text x="140" y="58">4</text>
+          <text x="260" y="58">2</text>
+          <text x="340" y="58">4</text>
+          <text x="460" y="58">2</text>
+          <text x="580" y="58">4</text>
+        </g>
+        <g stroke="#274563" stroke-width="1">
+          <path d="M60 70 L60 78 M220 70 L220 78 M60 74 L220 74" fill="none"/>
+          <path d="M220 70 L220 78 M300 70 L300 78 M220 74 L300 74" fill="none"/>
+          <path d="M300 70 L300 78 M460 70 L460 78 M300 74 L460 74" fill="none"/>
+          <path d="M460 70 L460 78 M540 70 L540 78 M460 74 L540 74" fill="none"/>
+          <path d="M540 70 L540 78 M700 70 L700 78 M540 74 L700 74" fill="none"/>
+        </g>
+
+        <!-- stars -->
+        <g>
+          <circle cx="60"  cy="96" r="26" fill="url(#glow)"/>
+          <circle cx="220" cy="96" r="22" fill="url(#glow)"/>
+          <circle cx="300" cy="96" r="22" fill="url(#glow)"/>
+          <circle cx="460" cy="96" r="22" fill="url(#glow)"/>
+          <circle cx="540" cy="96" r="22" fill="url(#glow)"/>
+          <circle cx="700" cy="96" r="26" fill="url(#glow)"/>
+          <circle cx="60"  cy="96" r="6"   fill="#EDE8DC"/>
+          <circle cx="220" cy="96" r="4.5" fill="#EDE8DC"/>
+          <circle cx="300" cy="96" r="4.5" fill="#EDE8DC"/>
+          <circle cx="460" cy="96" r="4.5" fill="#EDE8DC"/>
+          <circle cx="540" cy="96" r="4.5" fill="#EDE8DC"/>
+          <circle cx="700" cy="96" r="6"   fill="#EDE8DC"/>
+        </g>
+
+        <!-- offsets below -->
+        <g fill="#C9A227" font-family="IBM Plex Mono, monospace" font-size="13" text-anchor="middle">
+          <text x="60"  y="132">p</text>
+          <text x="220" y="132">p+4</text>
+          <text x="300" y="132">p+6</text>
+          <text x="460" y="132">p+10</text>
+          <text x="540" y="132">p+12</text>
+          <text x="700" y="132">p+16</text>
+        </g>
+
+        <!-- share / block brackets -->
+        <g stroke="#274563" stroke-width="1" fill="none">
+          <path d="M60 152 L60 160 L460 160 L460 152"/>
+          <path d="M60 172 L60 180 L700 180 L700 172"/>
+        </g>
+        <g font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="#8FA0B5">
+          <text x="470" y="164">first four — a share</text>
+          <text x="710" y="184">all six — a block</text>
+        </g>
+      </svg>
+
+      <p class="plate-cap">Six primes in fixed formation. The gaps never vary: <b>4, 2, 4, 2, 4</b>.
+        Find the first four and you have done enough work to claim a share; find all six and you
+        have found a block. The smallest is <span class="mono">7, 11, 13, 17, 19, 23</span> — and
+        it is the only one that does not obey the rule on the next plate.</p>
+    </div>
+  </div>
+
+  <section class="rule-top" id="eratosthenes">
+    <p class="kicker">Cyrene, c. 276 BCE — Alexandria, c. 194 BCE</p>
+    <h2>A librarian who measured<br>the world with a shadow.</h2>
+    <div class="col">
+      <p>Eratosthenes ran the Library of Alexandria. His rivals nicknamed him <em>Beta</em> —
+        second-best at everything, never first at one thing. The joke has not aged well. Three
+        of the things he was second-best at are, between them, this entire project.</p>
+    </div>
+
+    <div class="works">
+      <div class="work">
+        <h3>The Sieve</h3>
+        <p class="gk">κόσκινον Ἐρατοσθένους</p>
+        <p>Write the numbers out. Strike every multiple of two, then of three, then of five.
+          What is left has never been divided by anything. It is still the fastest way to find
+          small primes, because there is nothing to improve.</p>
+        <p class="here"><b>Here:</b> a wheel built from 2·3·5·7 eliminates 77% of candidates
+          before a single primality test runs.</p>
+      </div>
+      <div class="work">
+        <h3>The Catasterismi</h3>
+        <p class="gk">Καταστερισμοί</p>
+        <p>A catalogue of the constellations and the myths that put them there — a
+          <em>catasterism</em> is the act of placing a figure permanently into the sky.
+          The surviving text is likely a later epitome, but the work is his.</p>
+        <p class="here"><b>Here:</b> the project's name, and its unit of work. Every accepted
+          find is fixed in the chain the way a figure is fixed in the sky.</p>
+      </div>
+      <div class="work">
+        <h3>The Measurement</h3>
+        <p class="gk">περὶ τῆς ἀναμετρήσεως τῆς γῆς</p>
+        <p>At noon on the solstice the sun stood directly over a well at Syene. At Alexandria,
+          it did not — it cast a shadow of about 7.2°. From that angle and one road distance he
+          computed the circumference of the Earth.</p>
+        <p class="here"><b>Here:</b> the method. Small idle observations, carefully combined,
+          answer a question far larger than any one of them.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="rule-top" id="sieve">
+    <h2>Run his sieve.</h2>
+    <div class="col">
+      <p>Below are the numbers 1 to 210. Strike the multiples of 2, 3, 5 and 7 and what survives
+        is not just a list of primes — it is the <em>wheel</em> this miner searches on. Every
+        prime sextuplet above 7 sits at one specific residue in it.</p>
+    </div>
+
+    <div class="plate">
+      <div class="sieve-head">
+        <div class="readout" id="readout" aria-live="polite">Press run. The strikes follow Eratosthenes' order: smallest surviving number first.</div>
+        <button class="btn" id="run">Run the sieve</button>
+      </div>
+      <div class="grid" id="grid" role="img" aria-label="A grid of the numbers 1 to 210, used to demonstrate the Sieve of Eratosthenes."></div>
+    </div>
+  </section>
+
+  <section class="rule-top" id="pattern">
+    <h2>What the node is<br>actually looking for.</h2>
+    <div class="col">
+      <p>A prime constellation is a set of primes in fixed relative positions. This one has six
+        members and a span of sixteen. They are rare, they get rarer as the numbers grow, and
+        there is no way to find one except to look.</p>
+    </div>
+
+    <div class="facts">
+      <div class="fact">
+        <h3>The wheel does the eliminating</h3>
+        <p>210 is <span class="num">2·3·5·7</span>. Only <span class="num">48</span> of the 210
+          residues are coprime to it, and a sextuplet must land on exactly one of them:
+          <span class="num">97</span>. Everything else is struck before any arithmetic happens.</p>
+      </div>
+      <div class="fact">
+        <h3>Then it is just testing</h3>
+        <p>What survives the wheel gets a Fermat test. About
+          <span class="num">42 million</span> candidates a second on six cores at 448 bits —
+          and almost all of them fail at the first member.</p>
+      </div>
+      <div class="fact">
+        <h3>Work is proof, not promise</h3>
+        <p>A share is a found quadruplet. Nobody has to be trusted: the number either has four
+          primes in formation or it does not, and anyone can check in milliseconds.</p>
+      </div>
+      <div class="fact">
+        <h3>It runs on the machine you have</h3>
+        <p>A single static binary under <span class="num">150 KB</span>, at idle scheduling
+          priority, governed by a controller that holds the die at a target temperature and
+          yields the moment you need the cores back.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="rule-top" id="science">
+    <p class="kicker">Thirty for the chain, seventy for the question</p>
+    <h2>Most of the reward<br>never goes to mining.</h2>
+    <div class="col">
+      <p>Proof-of-work normally burns everything it earns on the proof. Here the proof is the
+        smaller half of the job. The rest funds a second search whose results are useful whether
+        or not anyone ever trades the coin.</p>
+    </div>
+
+    <div class="lanes">
+      <div class="lane consensus">
+        <div class="pct">30%</div>
+        <h3>The consensus lane</h3>
+        <p>Pays the miners who secure the chain, shared out by the work each one actually did
+          over the last 256 shares.</p>
+      </div>
+      <div class="lane science">
+        <div class="pct">70%</div>
+        <h3>The science lane</h3>
+        <p>Funds a search for <em>prime gaps</em> — long stretches of consecutive composite
+          numbers, the emptiest reaches between primes. A claim is self-certifying: it names a
+          gap, and any node can verify it with a bounded number of tests rather than repeating
+          the search.</p>
+        <p>Claims are weighted by difficulty, not by length. A gap is exponentially harder to
+          find as it grows, so the reward grows the same way — a merit-4 find earns hundreds of
+          times a merit-2 one, not twice.</p>
+      </div>
+    </div>
+
+    <div class="escrow">
+      <svg viewBox="0 0 700 190" role="img" aria-label="The science escrow rises from zero and settles at 315 coins by about block 214, from which point it pays out 35 coins per block — exactly what flows into it.">
+        <g stroke="#274563" stroke-width="1">
+          <line x1="52" y1="150" x2="672" y2="150"/>
+          <line x1="52" y1="26" x2="52" y2="150"/>
+        </g>
+        <line x1="52" y1="52" x2="672" y2="52" stroke="#5EA692" stroke-width="1" stroke-dasharray="3 5"/>
+        <path d="M52 150 C 140 92, 210 62, 300 55 C 400 50, 520 52, 672 52"
+              fill="none" stroke="#5EA692" stroke-width="2"/>
+        <g fill="#8FA0B5" font-family="IBM Plex Mono, monospace" font-size="11">
+          <text x="44" y="56" text-anchor="end">315</text>
+          <text x="44" y="154" text-anchor="end">0</text>
+          <text x="52" y="170">block 1</text>
+          <text x="300" y="170" text-anchor="middle">block 214</text>
+          <text x="672" y="170" text-anchor="end">onward</text>
+        </g>
+        <g fill="#5EA692" font-family="IBM Plex Sans, sans-serif" font-size="12.5">
+          <text x="316" y="42">settles — then pays out exactly what comes in</text>
+        </g>
+        <circle cx="300" cy="55" r="3.5" fill="#5EA692"/>
+      </svg>
+      <p class="plate-cap">The escrow is a reservoir, not a hoard. Each block adds 35 coins and
+        releases a tenth of the balance, so it climbs to <b>315 coins</b> and stops. From there
+        it pays out <b>35 a block</b> — precisely its own inflow — to whoever is finding gaps.
+        It cannot drain, and it cannot run away.</p>
+    </div>
+  </section>
+
+  <section class="rule-top" id="run">
+    <h2>Run a node.</h2>
+    <div class="col">
+      <p>One binary, no daemon to configure, no wallet service to register with. It creates a
+        key on first run and starts searching.</p>
+    </div>
+
+    <pre><span class="c"># build and start a node</span>
+docker compose up --build -d
+
+<span class="c"># watch it work</span>
+docker compose logs -f node1
+
+<span class="c"># the explorer's text dashboard</span>
+curl 127.0.0.1:3071</pre>
+
+    <div class="col">
+      <p>The <a href="https://explorer.catasterism.xyz">explorer</a> is a separate Go
+        implementation that follows a node and re-derives the entire chain from scratch — the
+        work, the linkage, the commitments, the balances. It never trusts the node's arithmetic.
+        If the two ever disagree, the dashboard says so on its first line.</p>
+    </div>
+
+    <dl class="spec">
+      <div><dt>Constellation</dt><dd>p, p+4, p+6, p+10, p+12, p+16</dd></div>
+      <div><dt>Share / block</dt><dd>quadruplet / sextuplet</dd></div>
+      <div><dt>Share spacing</dt><dd>4 s</dd></div>
+      <div><dt>Payout</dt><dd>PPLNS over 256 shares</dd></div>
+      <div><dt>Reward split</dt><dd>30% chain · 70% science</dd></div>
+      <div><dt>Node binary</dt><dd>&lt; 150 KB, static</dd></div>
+      <div><dt>P2P · explorer · database</dt><dd>7043 · 3071 · 5439</dd></div>
+    </dl>
+  </section>
+
+  <footer>
+    <div class="foot-top">
+      <p>Catasterism is experimental software on a test network. Coins have no value, the
+        parameters will change, and the chain has been reset before and will be again.</p>
+      <div class="foot-links">
+        <a href="https://explorer.catasterism.xyz">Chain explorer</a>
+        <a href="#run">Run a node</a>
+        <a href="#sieve">The sieve</a>
+      </div>
+    </div>
+    <p class="sig">οὐδὲν ἐκ τοῦ μηδενός — nothing comes from nothing.</p>
+  </footer>
+</div>
+
+<script>
+(function(){
+  var N = 210, PRIMES = [2,3,5,7];
+  var grid = document.getElementById('grid');
+  var readout = document.getElementById('readout');
+  var btn = document.getElementById('run');
+  var cells = [], running = false;
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  for (var i = 1; i <= N; i++){
+    var c = document.createElement('div');
+    c.className = 'cell';
+    c.textContent = i;
+    grid.appendChild(c);
+    cells.push(c);
+  }
+  var at = function(n){ return cells[n-1]; };
+
+  function reset(){
+    for (var i = 0; i < cells.length; i++) cells[i].className = 'cell';
+    readout.innerHTML = 'Press run. The strikes follow Eratosthenes’ order: smallest surviving number first.';
+  }
+
+  function say(html){ readout.innerHTML = html; }
+
+  function wait(ms){
+    return new Promise(function(res){ setTimeout(res, reduce ? 0 : ms); });
+  }
+
+  async function strike(p){
+    at(p).className = 'cell seed';
+    say('Striking every multiple of <span class="em">' + p + '</span>. ' +
+        'The number itself survives — nothing below it divided it.');
+    await wait(560);
+    for (var m = p * 2; m <= N; m += p){
+      var cell = at(m);
+      if (cell.classList.contains('struck')) continue;
+      cell.className = 'cell hit';
+      await wait(reduce ? 0 : 14);
+      cell.className = 'cell struck';
+    }
+    at(p).className = 'cell survivor';
+    await wait(320);
+  }
+
+  async function run(){
+    if (running) return;
+    running = true; btn.disabled = true; btn.textContent = 'Running…';
+    reset();
+    await wait(240);
+
+    at(1).className = 'cell struck';
+    say('One is struck first: it is not prime, and it divides everything.');
+    await wait(700);
+
+    for (var i = 0; i < PRIMES.length; i++) await strike(PRIMES[i]);
+
+    var survivors = [];
+    for (var n = 1; n <= N; n++){
+      if (!at(n).classList.contains('struck')){
+        at(n).className = 'cell survivor';
+        survivors.push(n);
+      }
+    }
+    await wait(420);
+
+    var c97 = at(97);
+    c97.className = 'cell seed';
+    say('<b>' + survivors.length + ' of 210 survive.</b> Those are the residues coprime to ' +
+        '2·3·5·7, and they are the only places a sextuplet can begin. ' +
+        'This miner searches exactly one of them: <span class="em">97</span>.');
+
+    btn.disabled = false; btn.textContent = 'Run it again';
+    running = false;
+  }
+
+  btn.addEventListener('click', function(){ run(); });
+
+  /* show the finished state at rest, so the page is never a blank grid */
+  (function seedRest(){
+    at(1).className = 'cell struck';
+    for (var i = 0; i < PRIMES.length; i++){
+      var p = PRIMES[i];
+      for (var m = p * 2; m <= N; m += p) at(m).className = 'cell struck';
+    }
+    for (var n = 1; n <= N; n++){
+      if (!at(n).classList.contains('struck')) at(n).className = 'cell survivor';
+    }
+    at(97).className = 'cell seed';
+  })();
+})();
+</script>
