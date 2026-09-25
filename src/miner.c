@@ -109,15 +109,19 @@ static void *sci_worker(void *arg) {
     return NULL;
 }
 
+/* sci_fd < 0 means the caller doesn't want a science lane at all (bench_run:
+ * it measures constellation throughput and a silently-idle science thread
+ * would understate it by ~1/n). Only then does thread count decide the
+ * split: one worker goes to science when n >= 2, else the lane logs idle. */
 int miner_start(int n, int out_fd, int sci_fd, volatile sig_atomic_t *running) {
     nth = n; outfd = out_fd; scifd = sci_fd; run = running;
     th = calloc((size_t)n, sizeof *th);
     if (!th) return -1;
     int i0 = 0;
-    if (n >= 2) {
+    if (sci_fd >= 0 && n >= 2) {
         if (pthread_create(&th[0], NULL, sci_worker, NULL)) return -1;
         i0 = 1;
-    } else {
+    } else if (sci_fd >= 0) {
         log_msg("science lane idle: threads=1 leaves no worker for the science region");
     }
     for (int i = i0; i < n; i++)
