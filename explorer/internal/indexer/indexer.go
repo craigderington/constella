@@ -105,6 +105,8 @@ func (x *Indexer) flush(ctx context.Context) {
 		"blocks":     fmt.Sprint(x.ledger.Blocks),
 		"txs":        fmt.Sprint(x.ledger.Txs),
 		"known":      fmt.Sprint(x.chain.Len() - 1),
+		"chain_id":   proto.ChainIDHex(),
+		"network":    proto.NetworkName(),
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := x.store.ApplyState(ctx, path, x.ledger, meta); err != nil {
