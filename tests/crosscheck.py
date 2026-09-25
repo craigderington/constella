@@ -51,4 +51,67 @@ for bits in (64, 128, 256, 384):
     mbad += not ok
     print(f"mine:    {bits:4d} bits tuple={tl} p={str(p)[:24]}... {'ok' if ok else 'FAIL'}")
 
-sys.exit(1 if bad or b2bad or mbad else 0)
+# 4. Science lane: region derivation, gap validity and payout weight
+SCI_BITS, SCI_G_MIN, SCI_G_MAX, SCI_G_STEP = 256, 384, 4096, 123
+
+def sci_region(anchor, miner):
+    seed = hashlib.blake2b(b"CSTL-SCI1" + anchor + miner, digest_size=32).digest()
+    return (1 << (SCI_BITS - 1)) | int.from_bytes(seed[:24], "big")
+
+def sci_valid(base, k, g):
+    if not (SCI_G_MIN <= g <= SCI_G_MAX) or k >= (1 << 40):
+        return False
+    p = base + k
+    return is_prime(p) and is_prime(p + g) and not any(is_prime(p + i) for i in range(1, g))
+
+def sci_work(g):
+    if g < SCI_G_MIN: return 0
+    d = g - SCI_G_MIN
+    e = min(d // SCI_G_STEP, 40)
+    return (1 << e) + ((1 << e) * (d % SCI_G_STEP) // SCI_G_STEP)
+
+# share_root: the commitment C and Go must agree on byte for byte
+def sci_ser(k, g):
+    return k.to_bytes(8, "little") + g.to_bytes(4, "little")
+
+def share_root(txs, claims):
+    if not txs and not claims:
+        return bytes(32)
+    buf = b"CSTL-TXR" + b"".join(txs) + b"CSTL-SCI" + b"".join(sci_ser(k, g) for k, g in claims)
+    return hashlib.blake2b(buf, digest_size=32).digest()
+
+root_vectors = [
+    ([], bytes(32).hex()),
+    ([(950, 776)], "ed71d999b7eac9a786db8c2876b73a5f776bc238c887bcc9f5e6a31805586d9e"),
+    ([(950, 776), (1726, 400)], "984e182436e7b5c9c892305c84f15f13748f04b9b020a259df021fc86e4697b5"),
+]
+rbad = sum(share_root([], c).hex() != want for c, want in root_vectors)
+print(f"root:    {len(root_vectors) - rbad}/{len(root_vectors)} share_root vectors match python")
+
+# domain separation: 3*152 == 38*12 == 456, so the same bytes split two ways
+flat = bytes((i * 7 + 3) % 256 for i in range(456))
+as_tx = share_root([flat[i * 152:(i + 1) * 152] for i in range(3)], [])
+as_sci = share_root([], [(int.from_bytes(flat[i * 12:i * 12 + 8], "little"),
+                          int.from_bytes(flat[i * 12 + 8:i * 12 + 12], "little")) for i in range(38)])
+dbad = as_tx == as_sci
+print(f"root:    domain tags separate the split: {'ok' if not dbad else 'FAIL'}")
+
+cases = [(bytes(32), bytes([1]) * 32, 950, 776),     # the real gap: merit 4.37
+         (bytes(32), bytes([1]) * 32, 950, 846),     # a prime sits inside
+         (bytes(32), bytes([1]) * 32, 950, 777),     # p+g composite
+         (bytes(32), bytes([1]) * 32, 951, 776),     # p composite
+         (bytes(32), bytes([1]) * 32, 746, 176),     # real gap, below the floor
+         (bytes(32), bytes([2]) * 32, 950, 776),     # another miner's region
+         (bytes([0xaa]) * 32, bytes([1]) * 32, 950, 776)]  # another anchor
+inp = "".join(f"{a.hex()} {m.hex()} {k} {g}\n" for a, m, k, g in cases)
+got = run(["--sci"], inp)
+sbad = 0
+for i, (a, m, k, g) in enumerate(cases):
+    base, ok, w = int(got[i * 3]), got[i * 3 + 1] == "1", int(got[i * 3 + 2])
+    want_base, want_ok, want_w = sci_region(a, m), sci_valid(sci_region(a, m), k, g), sci_work(g)
+    bad_here = base != want_base or ok != want_ok or w != want_w
+    sbad += bad_here
+    print(f"sci:     k={k:5d} g={g:5d} valid={ok!s:5s} work={w:<10d} {'ok' if not bad_here else 'FAIL'}")
+print(f"sci:     {len(cases) - sbad}/{len(cases)} match python")
+
+sys.exit(1 if bad or b2bad or mbad or sbad or rbad or dbad else 0)
