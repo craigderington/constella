@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	_ "embed"
 	"log"
+	"math"
+	"math/big"
 	"time"
 
 	"github.com/lib/pq"
@@ -75,10 +77,10 @@ func (s *Store) InsertShares(ctx context.Context, nodes []*consensus.Node) error
 			cert = sql.NullBool{Bool: consensus.Certified(p, n.TLen), Valid: true}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO shares
-			(id, raw, height, prev, time, miner, bits, k, tlen, ntx, is_block, p, certified)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (id) DO NOTHING`,
+			(id, raw, height, prev, time, miner, bits, k, tlen, ntx, nsci, is_block, p, certified)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (id) DO NOTHING`,
 			n.ID[:], n.Msg.Raw, n.Height, sh.Prev[:], time.Unix(int64(sh.Time), 0).UTC(), sh.Miner[:],
-			sh.Bits, int64(sh.K), n.TLen, len(n.Msg.Txs), n.IsBlock(), n.P, cert); err != nil {
+			sh.Bits, int64(sh.K), n.TLen, len(n.Msg.Txs), len(n.Msg.Claims), n.IsBlock(), n.P, cert); err != nil {
 			return err
 		}
 		for i := range n.Msg.Txs {
@@ -89,6 +91,20 @@ func (s *Store) InsertShares(ctx context.Context, nodes []*consensus.Node) error
 				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (uid) DO NOTHING`,
 				uid(n.ID, i), id[:], n.ID[:], i, t.From[:], t.To[:],
 				int64(t.Amount), int64(t.Fee), int64(t.Nonce)); err != nil {
+				return err
+			}
+		}
+		for i := range n.Msg.Claims {
+			c := &n.Msg.Claims[i]
+			p := new(big.Int).Add(n.SciBase, new(big.Int).SetUint64(c.K))
+			merit := float64(c.G) / (float64(proto.SciBits) * math.Ln2)
+			work := consensus.SciWork(c.G)
+			certClaim := consensus.SciCertified(p, c.G)
+			if _, err := tx.ExecContext(ctx, `INSERT INTO claims
+				(uid, share_id, idx, miner, epoch, k, g, p, merit, work, certified)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (uid) DO NOTHING`,
+				uid(n.ID, i), n.ID[:], i, sh.Miner[:], consensus.SciEpoch(n.Height),
+				int64(c.K), int64(c.G), p.String(), merit, int64(work), certClaim); err != nil {
 				return err
 			}
 		}
@@ -127,7 +143,18 @@ func (s *Store) ApplyState(ctx context.Context, path []*consensus.Node, l *conse
 		return err
 	}
 
-	if _, err := tx.ExecContext(ctx, `TRUNCATE accounts, payouts`); err != nil {
+	var payable pq.ByteaArray
+	for k, ok := range l.SciPayable {
+		if ok {
+			payable = append(payable, uid(k.Share, k.Idx))
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE claims SET payable = (uid = ANY($1))
+		WHERE payable <> (uid = ANY($1))`, payable); err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, `TRUNCATE accounts, payouts, sci_payouts`); err != nil {
 		return err
 	}
 	st, err := tx.PrepareContext(ctx, pq.CopyIn("accounts", "addr", "balance", "nonce", "shares", "blocks", "earned"))
@@ -149,6 +176,20 @@ func (s *Store) ApplyState(ctx context.Context, path []*consensus.Node, l *conse
 		return err
 	}
 	for _, p := range l.Payouts {
+		if _, err := st.ExecContext(ctx, p.Block[:], p.Addr[:], int64(p.Amount)); err != nil {
+			return err
+		}
+	}
+	if _, err := st.ExecContext(ctx); err != nil {
+		return err
+	}
+	st.Close()
+
+	st, err = tx.PrepareContext(ctx, pq.CopyIn("sci_payouts", "block_id", "addr", "amount"))
+	if err != nil {
+		return err
+	}
+	for _, p := range l.SciPayouts {
 		if _, err := st.ExecContext(ctx, p.Block[:], p.Addr[:], int64(p.Amount)); err != nil {
 			return err
 		}

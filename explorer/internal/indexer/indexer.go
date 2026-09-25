@@ -100,6 +100,8 @@ func (x *Indexer) flush(ctx context.Context) {
 		"height":     fmt.Sprint(tip.Height),
 		"bits":       fmt.Sprint(tip.Msg.Share.Bits),
 		"escrow":     fmt.Sprint(x.ledger.Escrow),
+		"sci_paid":   fmt.Sprint(x.ledger.SciPaid),
+		"sci_claims": fmt.Sprint(x.ledger.SciClaims),
 		"blocks":     fmt.Sprint(x.ledger.Blocks),
 		"txs":        fmt.Sprint(x.ledger.Txs),
 		"known":      fmt.Sprint(x.chain.Len() - 1),

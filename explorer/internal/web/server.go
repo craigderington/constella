@@ -86,6 +86,7 @@ type overviewData struct {
 	Blocks []store.ShareRow
 	Shares []store.ShareRow
 	Top    []store.AccountRow
+	Claims []store.ClaimRow
 }
 
 func (s *Server) overviewData(ctx context.Context) (*overviewData, error) {
@@ -100,7 +101,10 @@ func (s *Server) overviewData(ctx context.Context) (*overviewData, error) {
 	if d.Shares, err = s.st.RecentShares(ctx, 16); err != nil {
 		return nil, err
 	}
-	d.Top, err = s.st.TopAccounts(ctx, 8)
+	if d.Top, err = s.st.TopAccounts(ctx, 8); err != nil {
+		return nil, err
+	}
+	d.Claims, err = s.st.TopClaims(ctx, 8)
 	return d, err
 }
 
