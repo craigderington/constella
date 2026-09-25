@@ -175,14 +175,21 @@ static void t_share_root(void) {
     share_root(again, &t, 1, &c, 1);
     CHECK(!memcmp(rb, again, 32));           /* deterministic */
 
-    /* Domain separation: without the tags, a tx list and a claim list whose
-     * bytes concatenate identically would collide. The tags must make the
-     * split unambiguous, so two different splits differ. */
-    sci_t two[2] = {{.k = 950, .g = 776}, {.k = 1726, .g = 400}};
-    uint8_t x1[32], x2[32];
-    share_root(x1, NULL, 0, two, 2);
-    share_root(x2, NULL, 0, two, 1);
-    CHECK(memcmp(x1, x2, 32));
+    /* Domain separation, for real. 3*TX_SIZE == 38*SCI_SIZE == 456, so the
+     * same 456 bytes can be presented as three txs or as thirty-eight claims.
+     * Untagged, both preimages are byte-identical and collide; the tags make
+     * the split unambiguous, so the roots must differ. Deleting either tag
+     * from share_root() makes this CHECK fail, which is the point. */
+    uint8_t flat[456];
+    for (int i = 0; i < 456; i++) flat[i] = (uint8_t)(i * 7 + 3);
+    tx_t ftx[3];
+    sci_t fsci[38];
+    for (int i = 0; i < 3; i++)  tx_deser(&ftx[i], flat + i * TX_SIZE);
+    for (int i = 0; i < 38; i++) sci_deser(&fsci[i], flat + i * SCI_SIZE);
+    uint8_t as_tx[32], as_sci[32];
+    share_root(as_tx,  ftx, 3, NULL, 0);
+    share_root(as_sci, NULL, 0, fsci, 38);
+    CHECK(memcmp(as_tx, as_sci, 32));
 }
 
 static void t_serial(void) {
