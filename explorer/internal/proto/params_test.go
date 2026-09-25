@@ -17,6 +17,9 @@ func TestParamsMatchC(t *testing.T) {
 		"SHARE_VERSION": ShareVersion, "TUPLE_N": TupleN, "TUPLE_RES": TupleRes, "WHEEL": Wheel,
 		"SHARE_K": ShareK, "BLOCK_K": BlockK, "GENESIS_BITS": GenesisBits, "PPLNS_N": PPLNSN,
 		"CONSENSUS_PCT": ConsensusPct,
+		"SCI_BITS": SciBits, "SCI_EPOCH": SciEpoch, "SCI_G_MIN": SciGMin,
+		"SCI_G_MAX": SciGMax, "SCI_G_STEP": SciGStep, "SHARE_MAX_SCI": MaxSci,
+		"SCI_WINDOW": SciWindow, "SCI_RELEASE_PCT": SciReleasePct,
 	}
 	for name, v := range want {
 		m := regexp.MustCompile(`#define\s+` + name + `\s+(\d+)`).FindSubmatch(src)
