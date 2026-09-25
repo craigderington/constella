@@ -21,7 +21,7 @@ typedef struct {
     uint8_t  miner[32];    /* payout address; binds the work to the miner */
     uint16_t bits;         /* candidate size */
     uint16_t rsv;
-    uint8_t  tx_root[32];  /* commits the share's transactions into the seed */
+    uint8_t  tx_root[32];  /* commits the share's txs and science claims into the seed */
     uint64_t k;            /* offset: p = base + 210*k */
 } share_t;
 
