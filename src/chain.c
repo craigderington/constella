@@ -1,4 +1,5 @@
 #include "chain.h"
+#include "science.h"
 #include "util.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -89,6 +90,16 @@ size_t chain_msg(int idx, uint8_t *out) {
     return share_msg(out, &E[idx].s, E[idx].txs, E[idx].ntx, E[idx].sci, E[idx].nsci);
 }
 
+/* The anchor is the ancestor of this share at its epoch height — a strict
+ * ancestor, always, so validation is never circular (the spec's
+ * height - height mod SCI_EPOCH resolves to the share itself on a boundary). */
+static void epoch_anchor(int par, uint32_t height, uint8_t out[32]) {
+    uint32_t want = sci_epoch(height);
+    int a = par;
+    while (a >= 0 && E[a].height > want) a = E[a].parent;
+    memcpy(out, E[a < 0 ? 0 : a].id, 32);
+}
+
 /* Stateless checks + work. Balance/nonce validity is decided later by ledger replay. */
 static int accept(const share_t *s, const tx_t *txs, int ntx, const sci_t *sci, int nsci,
                   const uint8_t *msg, size_t len, const uint8_t id[32], int par, int64_t now) {
@@ -101,6 +112,13 @@ static int accept(const share_t *s, const tx_t *txs, int ntx, const sci_t *sci, 
     share_root(root, txs, ntx, sci, nsci);
     if (memcmp(root, s->tx_root, 32)) return CH_INVALID;
     for (int i = 0; i < ntx; i++) if (tx_check_sig(&txs[i])) return CH_INVALID;
+    if (nsci) {
+        uint8_t anchor[32];
+        bn sbase;
+        epoch_anchor(par, s->height, anchor);
+        sci_region(&sbase, anchor, s->miner);
+        if (sci_check_list(&sbase, sci, nsci)) return CH_INVALID;
+    }
     int tl = share_verify(s, NULL);
     if (tl < SHARE_K) return CH_INVALID;
 
