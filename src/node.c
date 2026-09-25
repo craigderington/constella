@@ -19,7 +19,7 @@
 #define SYNC_BATCH 500
 #define TMPL_RING  4
 
-typedef struct { uint8_t root[32]; int ntx; tx_t txs[SHARE_MAX_TX]; } tmpl_t;
+typedef struct { uint8_t root[32]; int ntx; tx_t txs[SHARE_MAX_TX]; int nsci; sci_t sci[SHARE_MAX_SCI]; } tmpl_t;
 
 static volatile sig_atomic_t running = 1;
 static uint8_t payout[32];
@@ -45,7 +45,8 @@ static void update_job(void) {
     tmpl_t *tm = &T[tnext];
     tnext = (tnext + 1) % TMPL_RING;
     tm->ntx = mempool_select(tm->txs, SHARE_MAX_TX);
-    share_root(tm->root, tm->txs, tm->ntx, NULL, 0);
+    tm->nsci = 0;                          /* claim selection arrives in Task 8 */
+    share_root(tm->root, tm->txs, tm->ntx, tm->sci, tm->nsci);
     share_t s = {0};
     s.version = SHARE_VERSION;
     s.height = t->height + 1;
@@ -179,7 +180,7 @@ static void drain_found(int fd) {
         found++;
         for (int i = 0; i < TMPL_RING; i++) {
             if (memcmp(T[i].root, s.tx_root, 32)) continue;
-            size_t l = share_msg(msg, &s, T[i].txs, T[i].ntx);
+            size_t l = share_msg(msg, &s, T[i].txs, T[i].ntx, T[i].sci, T[i].nsci);
             chain_submit(msg, l, miss, now_sec());
             break;
         }

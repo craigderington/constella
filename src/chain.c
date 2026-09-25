@@ -74,26 +74,31 @@ unsigned chain_next_bits(int parent) {
     return (unsigned)b;
 }
 
-size_t share_msg(uint8_t *out, const share_t *s, const tx_t *txs, int ntx) {
+size_t share_msg(uint8_t *out, const share_t *s, const tx_t *txs, int ntx,
+                 const sci_t *sci, int nsci) {
     share_ser(out, s);
-    out[SHARE_SIZE] = (uint8_t)ntx;
-    out[SHARE_SIZE + 1] = (uint8_t)(ntx >> 8);
-    for (int i = 0; i < ntx; i++) tx_ser(out + SHARE_SIZE + 2 + i * TX_SIZE, &txs[i]);
-    return SHARE_SIZE + 2 + (size_t)ntx * TX_SIZE;
+    size_t o = SHARE_SIZE;
+    out[o] = (uint8_t)ntx; out[o + 1] = (uint8_t)(ntx >> 8); o += 2;
+    for (int i = 0; i < ntx; i++, o += TX_SIZE) tx_ser(out + o, &txs[i]);
+    out[o] = (uint8_t)nsci; out[o + 1] = (uint8_t)(nsci >> 8); o += 2;
+    for (int i = 0; i < nsci; i++, o += SCI_SIZE) sci_ser(out + o, &sci[i]);
+    return o;
 }
 
-size_t chain_msg(int idx, uint8_t *out) { return share_msg(out, &E[idx].s, E[idx].txs, E[idx].ntx); }
+size_t chain_msg(int idx, uint8_t *out) {
+    return share_msg(out, &E[idx].s, E[idx].txs, E[idx].ntx, E[idx].sci, E[idx].nsci);
+}
 
 /* Stateless checks + work. Balance/nonce validity is decided later by ledger replay. */
-static int accept(const share_t *s, const tx_t *txs, int ntx, const uint8_t *msg, size_t len,
-                  const uint8_t id[32], int par, int64_t now) {
+static int accept(const share_t *s, const tx_t *txs, int ntx, const sci_t *sci, int nsci,
+                  const uint8_t *msg, size_t len, const uint8_t id[32], int par, int64_t now) {
     const entry_t *p = &E[par];
     uint8_t root[32];
     if (s->version != SHARE_VERSION || s->height != p->height + 1) return CH_INVALID;
     if (s->bits != chain_next_bits(par)) return CH_INVALID;
     if (now && (int64_t)s->time > now + MAX_FUTURE) return CH_INVALID;
     if (s->time + 600 < p->s.time) return CH_INVALID;
-    share_root(root, txs, ntx, NULL, 0);
+    share_root(root, txs, ntx, sci, nsci);
     if (memcmp(root, s->tx_root, 32)) return CH_INVALID;
     for (int i = 0; i < ntx; i++) if (tx_check_sig(&txs[i])) return CH_INVALID;
     int tl = share_verify(s, NULL);
@@ -105,12 +110,19 @@ static int accept(const share_t *s, const tx_t *txs, int ntx, const uint8_t *msg
         if (!own) return CH_INVALID;
         memcpy(own, txs, (size_t)ntx * sizeof *own);
     }
-    if (reserve()) { free(own); return CH_INVALID; }
+    sci_t *sown = NULL;
+    if (nsci) {
+        sown = malloc((size_t)nsci * sizeof *sown);
+        if (!sown) { free(own); return CH_INVALID; }
+        memcpy(sown, sci, (size_t)nsci * sizeof *sown);
+    }
+    if (reserve()) { free(own); free(sown); return CH_INVALID; }
     int idx = nE++;
     entry_t *e = &E[idx];
     e->s = *s; memcpy(e->id, id, 32);
     e->parent = par; e->height = E[par].height + 1;
     e->tlen = (uint8_t)tl; e->ntx = (uint8_t)ntx; e->txs = own;
+    e->nsci = (uint8_t)nsci; e->sci = sown;
     e->work = E[par].work + share_work(s->bits);
     hput(idx);
 
@@ -126,24 +138,30 @@ static int accept(const share_t *s, const tx_t *txs, int ntx, const uint8_t *msg
     return is_tip ? CH_TIP : CH_ACCEPT;
 }
 
-static int parse(const uint8_t *msg, size_t len, share_t *s, tx_t *txs, int *ntx) {
-    if (len < SHARE_SIZE + 2) return -1;
+int chain_parse_msg(const uint8_t *msg, size_t len, share_t *s, tx_t *txs, int *ntx,
+                    sci_t *sci, int *nsci) {
+    if (len < SHARE_SIZE + 4) return -1;
     share_deser(s, msg);
-    *ntx = msg[SHARE_SIZE] | msg[SHARE_SIZE + 1] << 8;
-    if (*ntx > SHARE_MAX_TX || len != SHARE_SIZE + 2 + (size_t)*ntx * TX_SIZE) return -1;
-    for (int i = 0; i < *ntx; i++) tx_deser(&txs[i], msg + SHARE_SIZE + 2 + i * TX_SIZE);
+    size_t o = SHARE_SIZE;
+    *ntx = msg[o] | msg[o + 1] << 8; o += 2;
+    if (*ntx > SHARE_MAX_TX || len < o + (size_t)*ntx * TX_SIZE + 2) return -1;
+    for (int i = 0; i < *ntx; i++, o += TX_SIZE) tx_deser(&txs[i], msg + o);
+    *nsci = msg[o] | msg[o + 1] << 8; o += 2;
+    if (*nsci > SHARE_MAX_SCI || len != o + (size_t)*nsci * SCI_SIZE) return -1;
+    for (int i = 0; i < *nsci; i++, o += SCI_SIZE) sci_deser(&sci[i], msg + o);
     return 0;
 }
 
 static int submit_one(const uint8_t *msg, size_t len, uint8_t missing[32], int64_t now, uint8_t id[32]) {
     share_t s;
     tx_t txs[SHARE_MAX_TX];
-    int ntx;
-    if (parse(msg, len, &s, txs, &ntx)) return CH_INVALID;
+    sci_t sci[SHARE_MAX_SCI];
+    int ntx, nsci;
+    if (chain_parse_msg(msg, len, &s, txs, &ntx, sci, &nsci)) return CH_INVALID;
     share_id(id, &s);
     if (chain_find(id) >= 0) return CH_DUP;
     int par = chain_find(s.prev);
-    if (par >= 0) return accept(&s, txs, ntx, msg, len, id, par, now);
+    if (par >= 0) return accept(&s, txs, ntx, sci, nsci, msg, len, id, par, now);
 
     memcpy(missing, s.prev, 32);
     for (int i = 0; i < nO; i++)
@@ -231,7 +249,7 @@ int chain_init(const char *dir, accept_fn cb) {
     hput(0);
 
     mkdir(dir, 0755);
-    snprintf(path, sizeof path, "%s/shares.v2", dir);
+    snprintf(path, sizeof path, "%s/shares.v3", dir);
     FILE *f = fopen(path, "rb");
     int loaded = 0;
     if (f) {

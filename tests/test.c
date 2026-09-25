@@ -1,6 +1,7 @@
 /* Unit tests + stdin modes used by crosscheck.py. */
 #include "blake2b.h"
 #include "bn.h"
+#include "chain.h"
 #include "ledger.h"
 #include "mempool.h"
 #include "tx.h"
@@ -355,6 +356,42 @@ static void t_sci_check(void) {
     }
 }
 
+static void t_sci_msg(void) {
+    share_t s = {0};
+    s.version = SHARE_VERSION; s.height = 7; s.bits = 256; s.k = 12345;
+    sci_t c[2] = {{.k = 950, .g = 776}, {.k = 1726, .g = 400}};
+    uint8_t msg[SHARE_MSG_MAX];
+    share_root(s.tx_root, NULL, 0, c, 2);
+    size_t len = share_msg(msg, &s, NULL, 0, c, 2);
+    CHECK(len == SHARE_SIZE + 2 + 2 + 2 * SCI_SIZE);
+
+    share_t back; tx_t txs[SHARE_MAX_TX]; sci_t sc[SHARE_MAX_SCI];
+    int ntx, nsci;
+    CHECK(chain_parse_msg(msg, len, &back, txs, &ntx, sc, &nsci) == 0);
+    CHECK(ntx == 0 && nsci == 2);
+    CHECK(sc[0].k == c[0].k && sc[0].g == c[0].g);
+    CHECK(sc[1].k == c[1].k && sc[1].g == c[1].g);
+
+    /* Review Focus 3: hostile counts and lengths must be rejected, and must
+     * never be used to index before they are checked. */
+    uint8_t bad[SHARE_MSG_MAX];
+    memcpy(bad, msg, len);
+    bad[SHARE_SIZE + 2] = SHARE_MAX_SCI + 1;                 /* nsci too large */
+    CHECK(chain_parse_msg(bad, len, &back, txs, &ntx, sc, &nsci) != 0);
+    memcpy(bad, msg, len);
+    CHECK(chain_parse_msg(bad, len - 1, &back, txs, &ntx, sc, &nsci) != 0);
+    CHECK(chain_parse_msg(bad, len + 1, &back, txs, &ntx, sc, &nsci) != 0);
+    CHECK(chain_parse_msg(bad, SHARE_SIZE + 2, &back, txs, &ntx, sc, &nsci) != 0);
+    CHECK(chain_parse_msg(bad, 3, &back, txs, &ntx, sc, &nsci) != 0);
+
+    /* a share with neither list still round-trips and roots to zero */
+    share_t e = {0};
+    e.version = SHARE_VERSION;
+    size_t el = share_msg(msg, &e, NULL, 0, NULL, 0);
+    CHECK(el == SHARE_SIZE + 2 + 2);
+    CHECK(chain_parse_msg(msg, el, &back, txs, &ntx, sc, &nsci) == 0 && ntx == 0 && nsci == 0);
+}
+
 int main(int argc, char **argv) {
     if (sieve_init()) return 1;
     char line[1024];
@@ -377,7 +414,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_sci_basics(); t_sci_region(); t_sci_check();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_msg();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
