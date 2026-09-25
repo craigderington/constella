@@ -1697,16 +1697,55 @@ Do not attempt it directly, and do not assume a refused command ran nothing — 
 Run: `docker compose logs -f node1 explorer` and `curl 127.0.0.1:3071`
 
 Confirm, and report each one with the evidence rather than a summary:
-- All five nodes log the same new `chain=` id, and it differs from `352fcee542df9981`.
+- All five nodes log the same new `chain=` id. It must be **`a8f4562e57e74f9d`**
+  (computed independently from the packed consensus constants), not the old
+  `352fcee542df9981`. Mainnet's new id is `a2da89e8309ab40b`.
 - Shares carrying `sci=1` or `sci=2` appear, and no share is ever rejected.
 - The escrow rises, then at some block begins to fall as claims are paid.
 - `report_balance` shows a non-zero `science-paid` and a claim count.
 - The explorer shows `ledger ok` **with** science payouts included — this is the whole point of v1, and a mismatch here means the C and Go release arithmetic disagree.
 - The explorer's claim table shows finds with plausible merits (2–5 at `SCI_BITS = 256`).
+- **The chain crosses height 256 and keeps going.** This is the one path no
+  test has ever executed: at an epoch boundary the miner's claim pool must be
+  cleared, because claims found under the old anchor derive a different region.
+  If that clear is wrong, every share the node produces after the rollover
+  carries stale claims and is rejected by every peer — including by itself.
+  Watch for a node whose shares stop being accepted shortly after height 256,
+  257, 512 or 513. Let the testnet run past height 513 (two rollovers, ~35
+  minutes at 4 s spacing) before calling this verified, and say explicitly
+  which heights you observed rather than reporting "no rejections".
+- **A payout that spans an epoch boundary.** Confirm a claim first listed
+  before a rollover still pays at blocks after it, since the payout window
+  (`SCI_WINDOW` 256) and the epoch (`SCI_EPOCH` 256) are independent.
 
 - [ ] **Step 6: Update the project handoff**
 
-In `CLAUDE.md`: move the science lane out of "Backlog" into "Verified" with the measured numbers, note the new chain id, record the constellation throughput cost of the science thread, and add any new open question to "Not yet verified".
+In `CLAUDE.md`, update all of the following — several are corrections to
+records that are now stale or wrong, not just additions:
+
+- Move the science lane out of "Backlog" into "Verified" with the measured
+  numbers actually observed on the live run.
+- **The chain id changed.** "Verified" currently records
+  `chain=352fcee542df9981` as live-verified. `SHARE_VERSION` 2 → 3 makes the
+  testnet id `a8f4562e57e74f9d` and mainnet's `a2da89e8309ab40b`. Correct
+  both, and keep the note that a signed transfer went through end to end only
+  if it is re-confirmed on the new chain.
+- **The unit-test count is wrong.** The Commands section says
+  "C unit tests (59)"; it was already 66 before this plan started and is
+  higher now. Put the real number in.
+- **Record the measured claim-verification cost:** ~6.0–6.6 ms per claim and
+  ~12.1–13.2 ms per share at `SHARE_MAX_SCI = 2`, measured under the node's
+  own `-Os` build at `g = SCI_G_MAX`. This is the figure to design against if
+  `SCI_G_MAX` or `SHARE_MAX_SCI` are ever revisited — not the ~4.5 ms that an
+  earlier `-O2` linear extrapolation suggested.
+- **Record the binary-size granularity:** `make size` quantises in 4096-byte
+  pages for code, so growth appears in 4 KB steps and sub-page changes are
+  invisible. Anyone reading an unchanged number should know that.
+- Record the constellation throughput cost of dedicating one worker to
+  science (~1/threads, about 17% at the default 6), and that `constella bench`
+  deliberately runs no science worker so its numbers stay comparable with the
+  pre-science figures already recorded in the Tuning section.
+- Add to "Not yet verified" anything the live run did not actually exercise.
 
 - [ ] **Step 7: Commit**
 
