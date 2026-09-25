@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/craig/constella/explorer/internal/proto"
 	"github.com/craig/constella/explorer/internal/store"
 )
 
@@ -25,5 +26,16 @@ func TestWriteText(t *testing.T) {
 	}
 	if !bytes.Contains(buf.Bytes(), []byte("payable")) {
 		t.Fatal("missing claims table header")
+	}
+	// The curl dashboard is a common context-free artifact (docs/site tell
+	// people to curl it directly), so it needs its own copy of the network
+	// indicator, derived the same way as the HTML band — not read back
+	// through st.Meta, which this test deliberately leaves without a
+	// "network" or "chain_id" key.
+	if !bytes.Contains(buf.Bytes(), []byte("network")) || !bytes.Contains(buf.Bytes(), []byte(proto.NetworkName())) {
+		t.Fatal("missing network line")
+	}
+	if !bytes.Contains(buf.Bytes(), []byte(proto.ChainIDHex())) {
+		t.Fatal("missing chain id")
 	}
 }

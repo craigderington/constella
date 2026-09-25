@@ -162,6 +162,11 @@ var funcs = template.FuncMap{
 	"hex": hexs, "short": short, "coins": coins, "num": num, "ago": ago, "clip": clip,
 	"digits": digits, "glyph": glyph, "constellation": constellation, "tuple": tupleName,
 	"members": members, "blockK": func() int { return proto.BlockK },
+	// network and chainID are compile-time facts (pure functions of BlockK),
+	// so the band and selector call them directly rather than going through
+	// the indexer's meta map — there is then no window, on process start or
+	// otherwise, where the network name is unknown or defaults to a literal.
+	"network": proto.NetworkName, "chainID": proto.ChainIDHex,
 	"bitlen": func(p string) int {
 		n, _ := new(big.Int).SetString(p, 10)
 		if n == nil {
