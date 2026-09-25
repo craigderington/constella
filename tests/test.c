@@ -392,6 +392,77 @@ static void t_sci_msg(void) {
     CHECK(chain_parse_msg(msg, el, &back, txs, &ntx, sc, &nsci) == 0 && ntx == 0 && nsci == 0);
 }
 
+static void t_sci_payout(void) {
+    /* release is a fixed cut of the post-accrual escrow, floored */
+    CHECK(sci_release(0) == 0);
+    CHECK(sci_release(99) == 9);
+    CHECK(sci_release(100) == 10);
+    CHECK(sci_release(350 * COIN) == 35 * COIN);
+
+    /* The escrow self-balances: inflow is BLOCK_REWARD - pool per block,
+     * outflow is SCI_RELEASE_PCT of the escrow. It must converge, never drain
+     * and never run away. */
+    const uint64_t in = BLOCK_REWARD - BLOCK_REWARD * CONSENSUS_PCT / 100;
+    uint64_t esc = 0;
+    for (int i = 0; i < 2000; i++) { esc += in; esc -= sci_release(esc); }
+    uint64_t settled = esc;
+    for (int i = 0; i < 2000; i++) { esc += in; esc -= sci_release(esc); }
+    CHECK(esc == settled);                                   /* a true fixed point */
+    /* Accrue-then-release means the steady state solves e = 0.9*(e + in),
+     * so the *stored* escrow settles at 9*in = 315 coins. The escrow at the
+     * moment of release is 9*in + in = 350, and it pays exactly `in`. The
+     * spec's "settles near 350" measures at the release point; both are the
+     * same equilibrium seen from either side of the payout. */
+    CHECK(settled == 9 * in);
+    CHECK(settled == 315 * COIN);
+    CHECK(sci_release(settled + in) == in);   /* pays exactly inflow, forever */
+
+    /* Review Focus 1: with no claims, pplns_pay would hand the whole release
+     * to the finder. The release must be skipped outright. */
+    ledger_t L = {0};
+    uint8_t f[32] = {7};
+    L.escrow = 350 * COIN;
+    uint64_t before = L.escrow;
+    ledger_sci_pay(&L, NULL, NULL, 0, f);
+    CHECK(L.escrow == before);
+    CHECK(ledger_acct(&L, f, 0) == NULL);
+    ledger_free(&L);
+
+    /* with claims, the release is split by weight and the remainder goes to
+     * the finder, exactly as the consensus lane pays shares */
+    ledger_t M = {0};
+    uint8_t m1[32] = {1}, m2[32] = {2}, fin[32] = {3};
+    uint8_t who[2][32];
+    uint64_t wt[2] = {0};
+    memcpy(who[0], m1, 32); memcpy(who[1], m2, 32);
+    wt[0] = sci_work(507);          /* 2 */
+    wt[1] = sci_work(753);          /* 8 */
+    M.escrow = 1000;
+    ledger_sci_pay(&M, (const uint8_t (*)[32])who, wt, 2, fin);
+    CHECK(M.escrow == 900);                                  /* 10% released */
+    CHECK(ledger_acct(&M, m1, 0)->amt == 20);                /* 2/10 of 100 */
+    CHECK(ledger_acct(&M, m2, 0)->amt == 80);                /* 8/10 of 100 */
+    CHECK(M.sci_paid == 100);
+    ledger_free(&M);
+}
+
+/* Dedup is epoch-scoped and suppresses a claim RE-LISTED in another share.
+ * It does not stop a payable claim earning at every block whose window covers
+ * its share — that is how PPLNS already pays shares. */
+static void t_sci_dedup(void) {
+    sci_seen_t S;
+    uint8_t m1[32] = {1}, m2[32] = {2};
+    sci_seen_reset(&S, 0);
+    CHECK(sci_seen_mark(&S, m1, 0, 950) == 1);      /* first occurrence: pays */
+    CHECK(sci_seen_mark(&S, m1, 0, 950) == 0);      /* re-listed: never again */
+    CHECK(sci_seen_mark(&S, m2, 0, 950) == 1);      /* other miner, own region */
+    CHECK(sci_seen_mark(&S, m1, 0, 951) == 1);      /* other k */
+    sci_seen_reset(&S, SCI_EPOCH);                  /* new epoch clears it */
+    CHECK(sci_seen_mark(&S, m1, SCI_EPOCH, 950) == 1);
+    /* the set never needs to hold more than one epoch of claims */
+    CHECK(SCI_SEEN_MAX >= SCI_EPOCH * SHARE_MAX_SCI);
+}
+
 int main(int argc, char **argv) {
     if (sieve_init()) return 1;
     char line[1024];
@@ -414,7 +485,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_msg();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_msg(); t_sci_payout(); t_sci_dedup();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
