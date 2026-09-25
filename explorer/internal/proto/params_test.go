@@ -34,4 +34,24 @@ func TestParamsMatchC(t *testing.T) {
 	if !regexp.MustCompile(`#define\s+GENESIS_TIME\s+1790121600ULL`).Match(src) {
 		t.Error("GENESIS_TIME differs")
 	}
+	// SCI_K_MAX is a shift expression, not a decimal literal (`#define
+	// SCI_K_MAX (1ULL << 40)`), so — like GENESIS_TIME above — it needs its
+	// own pattern check rather than a `want` entry the decimal regex can
+	// match. Go's SciKMax is itself defined as `1 << 40`, so this asserts the
+	// two sides spell the same bound the same way.
+	if SciKMax != 1<<40 || !regexp.MustCompile(`#define\s+SCI_K_MAX\s+\(1ULL\s*<<\s*40\)`).Match(src) {
+		t.Error("SCI_K_MAX differs")
+	}
+
+	// SCI_SIZE (the claim's wire size) lives in science.h, not params.h.
+	sciSrc, err := os.ReadFile("../../../src/science.h")
+	if err != nil {
+		t.Skip("science.h not available:", err)
+	}
+	m := regexp.MustCompile(`#define\s+SCI_SIZE\s+(\d+)`).FindSubmatch(sciSrc)
+	if m == nil {
+		t.Error("SCI_SIZE not found in science.h")
+	} else if got, _ := strconv.ParseInt(string(m[1]), 10, 64); got != SciSize {
+		t.Errorf("SCI_SIZE: C=%d Go=%d", got, SciSize)
+	}
 }
