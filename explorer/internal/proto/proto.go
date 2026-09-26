@@ -12,7 +12,7 @@ import (
 
 // Consensus constants. params_test.go asserts these match ../src/params.h.
 const (
-	Magic        = 0x4c545343
+	Magic        = 0x32545343 // "CST2" — must match NET_MAGIC in src/params.h
 	ShareVersion = 3
 	TupleN       = 6
 	TupleRes     = 97
