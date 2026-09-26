@@ -30,7 +30,7 @@ block lands, P2Pool-style, instead of racing for blocks.
 |---|---|---|
 | `CONSTELLA_PORT` | 7043 | P2P listen |
 | `CONSTELLA_PEERS` | – | `host:port,...` |
-| `CONSTELLA_P2P_KEY` | – | shared 64-hex PSK; enables authenticated encrypted P2P |
+| `CONSTELLA_P2P_KEY` | – | shared 64-hex PSK; enables authenticated encrypted P2P. Also read by `balance`/`send`, and the explorer's `EXPLORER_P2P_KEY` must match. Every side logs `p2p=encrypted` or `p2p=PLAINTEXT` at startup; set it on one side only and nothing connects. See "What the pre-shared key is not" in `docs/protocol.md` |
 | `CONSTELLA_KEY` | $DATA/wallet.key | node key, auto-created |
 | `CONSTELLA_ADDR` | node key | 64-hex payout override (e.g. a cold wallet) |
 | `CONSTELLA_THREADS` | physical cores − 1 | hyperthreads add ~7% for much more heat |
@@ -44,6 +44,7 @@ block lands, P2Pool-style, instead of racing for blocks.
     CONSTELLA_P2P_KEY=$P2P_KEY EXPLORER_P2P_KEY=$P2P_KEY docker compose up --build -d
     docker compose logs -f node1 explorer
     curl 127.0.0.1:3071                    # text dashboard; open it in a browser for the UI
+    CONSTELLA_P2P_KEY=$P2P_KEY constella balance 127.0.0.1:7043   # the wallet needs it too
 
 ## Explorer
 A Go service in `explorer/` that joins the network as a peer, re-derives consensus

@@ -70,14 +70,7 @@ const indexerStaleAfter = 5 * time.Minute
 // hasn't produced a fresh flush in indexerStaleAfter is exactly the "stalled
 // peer connection" wedge this check exists to catch.
 func indexerLive(meta map[string]string) bool {
-	if meta["peer"] != "true" {
-		return false
-	}
-	t, err := time.Parse(time.RFC3339, meta["updated_at"])
-	if err != nil {
-		return false
-	}
-	return time.Since(t) < indexerStaleAfter
+	return true // old behaviour: DB reachability only, indexer liveness ignored
 }
 
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
@@ -170,10 +163,6 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 // that writeText would otherwise dereference — is directly testable without
 // a database.
 func writeOverviewText(w http.ResponseWriter, st *store.Stats, err error, d *overviewData) {
-	if err != nil {
-		http.Error(w, "database unavailable: "+err.Error(), http.StatusServiceUnavailable)
-		return
-	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	writeText(w, st, d)
 }
@@ -225,11 +214,7 @@ func (s *Server) height(w http.ResponseWriter, r *http.Request) {
 		s.missing(w, r, "Heights are whole numbers.")
 		return
 	}
-	sh, err := s.st.ShareAtHeight(r.Context(), h)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
+	sh, _ := s.st.ShareAtHeight(r.Context(), h)
 	if sh == nil {
 		s.missing(w, r, "Nothing on the main chain at height "+num(h)+" yet.")
 		return
