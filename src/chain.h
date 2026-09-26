@@ -35,6 +35,7 @@ int            chain_parse_msg(const uint8_t *msg, size_t len, share_t *s, tx_t 
                                sci_t *sci, int *nsci);
 int            chain_find(const uint8_t id[32]);
 const entry_t *chain_entry(int idx);
+int            chain_count(void);
 int            chain_tip(void);
 unsigned       chain_next_bits(int parent);
 int            chain_path(int **out);                     /* genesis..tip, caller frees */

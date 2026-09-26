@@ -13,7 +13,7 @@ block lands, P2Pool-style, instead of racing for blocks.
 
 ## Build & test
     make            # static binary (uses musl-gcc if present)
-    make test       # 59 unit checks + thermal controller sim + Python cross-checks
+    make test       # C unit checks + thermal controller sim + Python cross-checks
     make size       # fails above 150 KB
     ./constella bench 448 30 1    # bits, seconds, threads
 
@@ -36,7 +36,7 @@ block lands, P2Pool-style, instead of racing for blocks.
 | `CONSTELLA_DUTY` | 50 | max % of each 100 ms slice |
 | `CONSTELLA_TEMP_MAX` | auto | °C cap; auto = chip critical − 12 (60–90), read from the thermal zone or hwmon. Settles 6° under it |
 | `CONSTELLA_BATTERY_PAUSE` | 1 | pause on battery |
-| `CONSTELLA_DATA` | ./constella-data | append-only `shares.v2` + key |
+| `CONSTELLA_DATA` | ./constella-data | append-only `shares.v3` + key |
 
 ## Testnet
     docker compose up --build -d

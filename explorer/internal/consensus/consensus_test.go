@@ -64,6 +64,39 @@ func TestBaseShape(t *testing.T) {
 	}
 }
 
+func TestNextBitsMirrorsRetarget(t *testing.T) {
+	makeChain := func(bits uint16, span int64) *Node {
+		g := &Node{Msg: &proto.Msg{Share: proto.Share{Bits: bits, Time: 1000}}, Height: 0}
+		p := g
+		for h := uint32(1); h <= 63; h++ {
+			p = &Node{Msg: &proto.Msg{Share: proto.Share{Bits: bits, Time: 1000 + uint64(h)*4}}, Parent: p, Height: h}
+		}
+		p.Msg.Share.Time = uint64(1000 + span)
+		a := p
+		for i := uint32(0); i < proto.RetargetN; i++ {
+			a = a.Parent
+		}
+		a.Msg.Share.Time = 1000
+		return p
+	}
+
+	if got := NextBits(makeChain(384, 100)); got != 392 {
+		t.Fatalf("fast retarget = %d, want 392", got)
+	}
+	if got := NextBits(makeChain(384, 300)); got != 352 {
+		t.Fatalf("slow retarget = %d, want 352", got)
+	}
+	if got := NextBits(makeChain(70, 50)); got != 102 {
+		t.Fatalf("retarget lower branch = %d, want 102", got)
+	}
+	if got := NextBits(makeChain(70, 300)); got != proto.BitsMin {
+		t.Fatalf("retarget lower clamp = %d, want %d", got, proto.BitsMin)
+	}
+	if got := NextBits(makeChain(1000, 50)); got != proto.BitsMax {
+		t.Fatalf("retarget upper clamp = %d, want %d", got, proto.BitsMax)
+	}
+}
+
 func TestMulDivMatchesPPLNS(t *testing.T) {
 	// same vector as tests/test.c: weights 3,1,0 over pool 1000
 	if mulDiv(1000, 3, 4) != 750 || mulDiv(1000, 1, 4) != 250 {

@@ -25,6 +25,12 @@ const (
 	Coin         = 100000000
 	BlockReward  = 50 * Coin
 	ConsensusPct = 30
+	RetargetN    = 32
+	ShareSpacing = 4
+	BitsMin      = 64
+	BitsMax      = 1024
+	MaxFuture    = 7200
+	KMax         = 1 << 40
 
 	ShareHdr  = 116
 	ShareSize = 124

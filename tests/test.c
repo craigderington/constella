@@ -10,9 +10,12 @@
 #include "sieve.h"
 #include "science.h"
 #include "util.h"
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static int fails, runs;
 #define CHECK(c) do { runs++; if (!(c)) { fails++; fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #c); } } while (0)
@@ -503,6 +506,27 @@ static void t_sci_seen_init(void) {
     CHECK(S.n == 1);
 }
 
+static void t_chain_recovery(void) {
+    char dir[] = "/tmp/constella-chain-XXXXXX";
+    int d = mkdtemp(dir) != NULL;
+    CHECK(d);
+    if (!d) return;
+
+    char path[256];
+    snprintf(path, sizeof path, "%s/shares.v3", dir);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    CHECK(fd >= 0);
+    if (fd >= 0) {
+        CHECK(write(fd, "\x01", 1) == 1); /* truncated record length */
+        close(fd);
+    }
+    CHECK(chain_init(dir, NULL) == 0);
+    struct stat st;
+    CHECK(!stat(path, &st) && st.st_size == 0); /* bad suffix is not replayed forever */
+    unlink(path);
+    rmdir(dir);
+}
+
 int main(int argc, char **argv) {
     if (sieve_init()) return 1;
     char line[1024];
@@ -540,7 +564,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

@@ -19,7 +19,7 @@ typedef struct { double ema, duty, prev_err; int init, hot_run; } ctl_t;
 double ctl_step(ctl_t *c, const ctl_cfg *k, double temp_c, double dt);
 
 /* ---- node integration ---- */
-enum { TH_RUN, TH_THERMAL, TH_HOT, TH_BATTERY };
+enum { TH_RUN, TH_THERMAL, TH_HOT, TH_BATTERY, TH_SENSOR };
 
 /* Median of n samples: package sensors spike on every turbo burst, the median
  * tracks the heat that actually accumulates. Sorts in place. */

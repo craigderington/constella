@@ -29,8 +29,9 @@ func TestParamsMatchC(t *testing.T) {
 	want := map[string]int64{
 		"SHARE_VERSION": ShareVersion, "TUPLE_N": TupleN, "TUPLE_RES": TupleRes, "WHEEL": Wheel,
 		"SHARE_K": ShareK, "BLOCK_K": BlockK, "GENESIS_BITS": GenesisBits, "PPLNS_N": PPLNSN,
-		"CONSENSUS_PCT": ConsensusPct,
-		"SCI_BITS":      SciBits, "SCI_EPOCH": SciEpoch, "SCI_G_MIN": SciGMin,
+		"CONSENSUS_PCT": ConsensusPct, "RETARGET_N": RetargetN, "SHARE_SPACING": ShareSpacing,
+		"BITS_MIN": BitsMin, "BITS_MAX": BitsMax, "MAX_FUTURE": MaxFuture,
+		"SCI_BITS": SciBits, "SCI_EPOCH": SciEpoch, "SCI_G_MIN": SciGMin,
 		"SCI_G_MAX": SciGMax, "SCI_G_STEP": SciGStep, "SHARE_MAX_SCI": MaxSci,
 		"SCI_WINDOW": SciWindow, "SCI_RELEASE_PCT": SciReleasePct,
 	}
@@ -54,6 +55,9 @@ func TestParamsMatchC(t *testing.T) {
 	// two sides spell the same bound the same way.
 	if SciKMax != 1<<40 || !regexp.MustCompile(`#define\s+SCI_K_MAX\s+\(1ULL\s*<<\s*40\)`).Match(src) {
 		t.Error("SCI_K_MAX differs")
+	}
+	if KMax != 1<<40 || !regexp.MustCompile(`#define\s+K_MAX\s+\(1ULL\s*<<\s*40\)`).Match(src) {
+		t.Error("K_MAX differs")
 	}
 
 	// SCI_SIZE (the claim's wire size) lives in science.h, not params.h.

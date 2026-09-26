@@ -225,7 +225,7 @@ static void *sampler(void *arg) {
         if (read_battery(&present) && batt_pause) {
             atomic_store(&duty, 0); atomic_store(&reason, TH_BATTERY); n = 0; continue;
         }
-        if (n == 0) { atomic_store(&duty, (int)cfg.duty_max); atomic_store(&reason, TH_RUN); continue; }
+        if (n == 0) { atomic_store(&duty, 0); atomic_store(&reason, TH_SENSOR); continue; }
         double m = median(win, n), d = ctl_step(&ctl, &cfg, m, dt);
         n = 0;
         atomic_store(&temp_now, (int)(m * 1000));
@@ -283,6 +283,6 @@ int throttle_has_battery(void) { return has_batt; }
 const char *throttle_sensor(void) { return sens_name; }
 
 const char *throttle_reason_str(void) {
-    static const char *r[] = {"running", "thermal", "too hot, stopped", "on battery, paused"};
+    static const char *r[] = {"running", "thermal", "too hot, stopped", "on battery, paused", "sensor unavailable"};
     return r[atomic_load(&reason)];
 }

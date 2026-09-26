@@ -34,14 +34,70 @@ static struct { uint8_t id[32]; int64_t at; } lastreq[64];
 static sci_t scipool[SCI_POOL];
 static int nscipool;
 static uint32_t sci_epoch_cur = 0xffffffffu;
+static uint8_t sci_anchor_cur[32];
 
 static void on_sig(int s) { (void)s; running = 0; }
 static const char *env(const char *k, const char *d) { const char *v = getenv(k); return v && *v ? v : d; }
 static void sh(char out[9], const uint8_t *b) { hex_enc(out, b, 4); }
 
+static int sci_pool_has(uint64_t k) {
+    for (int i = 0; i < nscipool; i++) if (scipool[i].k == k) return 1;
+    return 0;
+}
+
+static int sci_main_has(const int *path, int n, uint64_t k) {
+    for (int i = 1; i < n; i++) {
+        const entry_t *e = chain_entry(path[i]);
+        if (memcmp(e->s.miner, payout, 32)) continue;
+        for (int c = 0; c < e->nsci; c++) if (e->sci[c].k == k) return 1;
+    }
+    return 0;
+}
+
+static int chain_path_has(const int *path, int n, int idx) {
+    for (int i = 1; i < n; i++) if (path[i] == idx) return 1;
+    return 0;
+}
+
+static void recover_side_claims(const int *path, int n, int total) {
+    if (!path || n < 1) return;
+    int tip = chain_tip();
+    uint32_t tip_height = chain_entry(tip)->height;
+    for (int i = 1; i < total && nscipool < SCI_POOL; i++) if (!chain_path_has(path, n, i)) {
+        const entry_t *e = chain_entry(i);
+        if (e->height == 0 || e->height > tip_height || memcmp(e->s.miner, payout, 32)) continue;
+        uint8_t anchor[32];
+        chain_epoch_anchor(tip, e->height, anchor);
+        bn base;
+        sci_region(&base, anchor, payout);
+        for (int c = 0; c < e->nsci && nscipool < SCI_POOL; c++) {
+            if (sci_main_has(path, n, e->sci[c].k) || sci_pool_has(e->sci[c].k) ||
+                sci_check(&base, &e->sci[c])) continue;
+            scipool[nscipool++] = e->sci[c];
+        }
+    }
+}
+
 static void rebuild_state(void) {
     ledger_free(&L);
     ledger_build(&L);
+
+    /* Re-offer transactions from side branches after a reorg. The mempool
+     * filters duplicates and transactions invalid in the new ledger state. */
+    int *path = NULL, n = chain_path(&path), total = chain_count();
+    if (n > 0 && total > n) {
+        uint8_t *main = calloc((size_t)total, 1);
+        if (main) {
+            for (int i = 0; i < n; i++) main[path[i]] = 1;
+            for (int i = 1; i < total; i++) if (!main[i]) {
+                const entry_t *e = chain_entry(i);
+                for (int j = 0; j < e->ntx; j++) mempool_add(&e->txs[j], &L);
+            }
+            free(main);
+        }
+    }
+    recover_side_claims(path, n, total);
+    free(path);
     mempool_revalidate(&L);
 }
 
@@ -49,13 +105,14 @@ static void update_job(void) {
     int tip = chain_tip();
     const entry_t *t = chain_entry(tip);
     uint32_t ep = sci_epoch(t->height + 1);
-    if (ep != sci_epoch_cur) {
+    uint8_t anchor[32];
+    chain_epoch_anchor(tip, t->height + 1, anchor);
+    if (ep != sci_epoch_cur || memcmp(anchor, sci_anchor_cur, 32)) {
         /* a claim found under the old anchor derives from a different region
          * and every peer's accept() -- including our own -- would reject it. */
         sci_epoch_cur = ep;
+        memcpy(sci_anchor_cur, anchor, 32);
         nscipool = 0;
-        uint8_t anchor[32];
-        chain_epoch_anchor(tip, t->height + 1, anchor);
         miner_set_sci(anchor, payout);
     }
     tmpl_t *tm = &T[tnext];
@@ -95,7 +152,7 @@ static void on_accept(int idx, int is_tip) {
     /* a claim of ours that just landed is spent: keeping it around would only
      * re-offer it in a later share, where the ledger's dedup refuses to pay
      * it twice and it would just waste share space. */
-    if (e->nsci && !memcmp(e->s.miner, payout, 32)) {
+    if (is_tip && e->nsci && !memcmp(e->s.miner, payout, 32)) {
         for (int i = 0; i < e->nsci; i++)
             for (int j = 0; j < nscipool; j++)
                 if (scipool[j].k == e->sci[i].k) { scipool[j] = scipool[--nscipool]; break; }
