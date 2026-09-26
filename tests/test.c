@@ -858,6 +858,67 @@ static void t_addr_tables(void) {
     CHECK(sel_hits > 0);   /* selection actually produced results - the check above ran */
 }
 
+/* Review Focus 4: a corrupt or foreign peers.dat must be discarded and the
+ * node must start. The chain loader's opposite behaviour - stop at the bad
+ * record, keep the bad suffix - is a known defect; do not repeat it here. */
+static void t_addr_persist(void) {
+    const char *dir = "/tmp/constella-addrtest";
+    char path[256];
+    mkdir(dir, 0700);
+    snprintf(path, sizeof path, "%s/peers.dat", dir);
+    unlink(path);
+
+    CHECK(addr_load(dir) == 0);          /* no file: fresh secret, empty */
+    uint8_t ip[16];
+    mk4(ip, 198, 51, 100, 9);
+    addr_add(ip, 7043, 42);
+    /* Two DIFFERENT attempt ids, not the same id twice: with the same id
+     * promotion correctly does not happen, n_tried would be 0, and the
+     * later addr_count(1) == n_tried check would degenerate into 0 == 0,
+     * never exercising tried-table persistence at all. */
+    addr_good(ip, 7043, 1); addr_good(ip, 7043, 2);
+    int n_new = addr_count(0), n_tried = addr_count(1);
+    CHECK(n_tried == 1);                 /* prove the fixture built what it's about to round-trip */
+    int b = addr_bucket_of(ip, 1);
+    addr_save(dir);
+
+    CHECK(addr_load(dir) == 0);
+    CHECK(addr_count(0) == n_new && addr_count(1) == n_tried);
+    CHECK(addr_bucket_of(ip, 1) == b);   /* the secret round-tripped too */
+
+    /* Case 1: corrupt a header byte (inside the 4-byte magic). A foreign or
+     * header-damaged file is discarded outright. */
+    FILE *f = fopen(path, "r+"); CHECK(f != NULL);
+    if (f) { fseek(f, 3, SEEK_SET); fputc(0xff, f); fclose(f); }
+    CHECK(addr_load(dir) == 0);          /* corrupt: discarded, still starts */
+    CHECK(addr_count(0) == 0 && addr_count(1) == 0);
+
+    /* Case 2: corrupt only the final byte, inside the trailing BLAKE2b
+     * checksum. The magic and every header/record field are untouched, so
+     * only the checksum can catch this - a layout-independent regression
+     * check that checksum verification is actually wired up (Step 5).
+     * addr_load's case-1 discard left the tables empty (freshly reset, not
+     * re-persisted), so populate and save a clean file to corrupt here. */
+    addr_add(ip, 7043, 99);
+    addr_good(ip, 7043, 3); addr_good(ip, 7043, 4);
+    addr_save(dir);
+    f = fopen(path, "r+b"); CHECK(f != NULL);
+    if (f) {
+        fseek(f, -1, SEEK_END);
+        int c = fgetc(f);
+        fseek(f, -1, SEEK_END);
+        fputc(c ^ 0xff, f);
+        fclose(f);
+    }
+    CHECK(addr_load(dir) == 0);          /* final-byte corruption: discarded, still starts */
+    CHECK(addr_count(0) == 0 && addr_count(1) == 0);
+
+    f = fopen(path, "wb"); if (f) { fwrite("xx", 1, 2, f); fclose(f); }
+    CHECK(addr_load(dir) == 0);          /* truncated: same */
+    CHECK(addr_count(0) == 0 && addr_count(1) == 0);
+    unlink(path);
+}
+
 int main(int argc, char **argv) {
     if (sieve_init()) return 1;
     char line[1024];
@@ -895,7 +956,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_cli_socket(); t_netgroup(); t_addr_tables();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

@@ -32,4 +32,16 @@ int  addr_good(const uint8_t ip[16], uint16_t port, uint64_t attempt);
 int  addr_select(addr_t *out, const uint8_t (*avoid)[8], int navoid);
 int  addr_count(int tried);
 int  addr_bucket_of(const uint8_t ip[16], int tried);
+
+/* Persistence. `<datadir>/peers.dat` holds the bucket secret and both
+ * tables so restarting a node does not reset its eclipse-resistance state.
+ * addr_load discards ANY corrupt or foreign file wholesale - wrong magic,
+ * wrong version, truncated, or a bad trailing checksum all fall back to a
+ * freshly generated secret and empty tables, never a partially-trusted
+ * prefix (see the chain loader's opposite, defective behaviour). It
+ * generates and persists a fresh random secret when no file exists.
+ * Returns 0 on success (which includes every discard-and-start-fresh path);
+ * -1 only if a fresh secret was needed and no entropy source was available. */
+int  addr_load(const char *datadir);
+void addr_save(const char *datadir);
 #endif
