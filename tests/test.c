@@ -167,14 +167,18 @@ static void t_tx(void) {
     ledger_free(&L);
 
     /* A transaction at the final nonce must be skipped, not wrap the sender
-     * nonce back to zero and make an old transaction valid again. */
+     * nonce back to zero and make an old transaction valid again. The
+     * account's nonce must actually be at UINT64_MAX for this to exercise the
+     * wrap guard (f->nonce == UINT64_MAX) rather than the ordinary
+     * t->nonce != f->nonce mismatch, which would reject it either way. */
     ledger_t N = {0};
     tx_t last = {0};
     memcpy(last.from, a.pk, 32); memcpy(last.to, b.pk, 32);
     last.amount = 1; last.nonce = UINT64_MAX; tx_sign(&last, a.sk);
     CHECK(ledger_credit(&N, a.pk, UINT64_MAX) == 0);
+    ledger_acct(&N, a.pk, 1)->nonce = UINT64_MAX;
     CHECK(ledger_apply_tx(&N, &last, miner) == -1);
-    CHECK(ledger_acct(&N, a.pk, 0)->nonce == 0);
+    CHECK(ledger_acct(&N, a.pk, 0)->nonce == UINT64_MAX);
     ledger_free(&N);
 }
 
