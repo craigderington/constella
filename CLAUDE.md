@@ -15,7 +15,7 @@ independently.
 - The node binary stays under 150 KB (`make size` enforces this).
 
 ## Commands
-    make test            # C unit tests (144) + thermal sim + Python cross-checks
+    make test            # C unit tests (149) + thermal sim + Python cross-checks
     make size            # size gate
     make explorer-test   # go vet + go test (includes params.h drift guard)
     docker compose up --build -d && docker compose logs -f node1 explorer
@@ -44,7 +44,7 @@ independently.
   by 1 in `src/params.h` fails `docker build -f explorer/Dockerfile .`
   (`SCI_G_MIN: C=385 Go=384`); restoring it passes clean.
 - The explorer never validates signatures (it trusts the node); it does validate
-  work, linkage, and tx_root.
+  work, linkage, tx_root, retargeting, and share timestamps.
 - Balances are always derived by replay and never stored as truth. The explorer
   header shows whether its ledger matches the node's.
 - The explorer shows a network band (testnet/mainnet + chain id) derived
@@ -68,7 +68,7 @@ independently.
   `explorer/internal/proto/chainid_test.go`). The live confirmation — nodes
   actually logging the new id, a signed transfer holding end to end — has
   not been re-run since the bump; see "Not yet verified."
-- Science lane (v1) implemented and locally verified: 144/144 C unit tests
+- Science lane (v1) implemented and locally verified: 149/149 C unit tests
   (claim record, region/epoch derivation, all seven validity rules, payout
   weight, dedup, release arithmetic), `tests/crosscheck.py` cross-checks
   claim validity and payout weight against independent Python, and
@@ -144,27 +144,19 @@ independently.
 - Ledger snapshots. `node.c` calls `ledger_build()` on every tip change and it
   replays genesis..tip, so cost is O(n) per share. Invisible at these heights,
   a real ceiling later.
-- Mempool: fee priority; return reorged txs. Low value until the mempool
-  actually holds more than one tx.
+- Mempool: fee priority remains open; reorged transactions are returned to the
+  mempool after tip changes.
 - Mainnet params: BLOCK_K=6. One constant, but it makes blocks ~77x rarer
   (measured 4->5 ratio), so the economics need thinking through first.
 - Open: Craig's call on the 88/82 thermal cap (see "Not yet verified").
-- Thermal protection fails open on a sensor outage. `src/throttle.c`'s
-  sampler (`if (n == 0) { atomic_store(&duty, (int)cfg.duty_max); ... }`):
-  if no temperature samples arrive in a window, duty jumps to *max* rather
-  than dropping to 0. A dead or unreadable sensor therefore disables thermal
-  protection at the exact moment it's needed most, instead of failing safe.
-- Persistence recovery doesn't self-heal a truncated/malformed share record.
-  `chain_init()` in `src/chain.c` reads `shares.v3` record by record and
-  `break`s out of the load loop on the first short read or bad length, then
-  reopens the same file in append mode (`fopen(path, "ab")`) - the bad
-  suffix is never truncated or skipped, so every subsequent restart re-reads
-  the same good prefix, hits the same corruption, and stops replay at the
-  same point again.
+- Thermal protection now fails safe on a sensor outage: the sampler stops
+  workers when no temperature samples arrive in a control window.
+<!--
+  Removed stale detail: the old sampler failed open here.
+-->
 - P2P is testnet-grade only: `src/net.c` listens on `INADDR_ANY` with no
   authentication or encryption and limited peer admission control. Fine for
   a local/trusted testnet; not something to expose before mainnet.
-- Operational hardening is minimal: fixed database credentials in
-  `docker-compose.yml`, no migration/versioning strategy for the Postgres
-  schema, and no CI workflow running `make test` / `make explorer-test` /
-  `make size` on push.
+- Operational hardening is still minimal: Compose credentials are configurable
+  but there is no migration/versioning strategy for the Postgres schema and no
+  CI workflow running `make test` / `make explorer-test` / `make size` on push.

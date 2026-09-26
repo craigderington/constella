@@ -1,12 +1,16 @@
 #include "chain.h"
 #include "science.h"
 #include "util.h"
+#include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #define MAX_ORPHANS 16384
+#define MAX_ORPHAN_BYTES (16u << 20)
 
 typedef struct { uint8_t *msg; uint16_t len; uint8_t parent[32]; } orphan_t;
 
@@ -16,6 +20,7 @@ static int32_t *H;
 static uint32_t hcap;
 static orphan_t *O;
 static int nO, capO;
+static size_t orphan_bytes;
 static FILE *db;
 static accept_fn on_accept;
 
@@ -54,6 +59,7 @@ static int reserve(void) {
 }
 
 const entry_t *chain_entry(int i) { return &E[i]; }
+int chain_count(void) { return nE; }
 int chain_tip(void) { return tip; }
 int chain_orphans(void) { return nO; }
 
@@ -113,9 +119,10 @@ static int accept(const share_t *s, const tx_t *txs, int ntx, const sci_t *sci, 
     const entry_t *p = &E[par];
     uint8_t root[32];
     if (s->version != SHARE_VERSION || s->height != p->height + 1) return CH_INVALID;
+    if (s->time > (uint64_t)INT64_MAX) return CH_INVALID;
     if (s->bits != chain_next_bits(par)) return CH_INVALID;
-    if (now && (int64_t)s->time > now + MAX_FUTURE) return CH_INVALID;
-    if (s->time + 600 < p->s.time) return CH_INVALID;
+    if (now > 0 && s->time > (uint64_t)now && s->time - (uint64_t)now > MAX_FUTURE) return CH_INVALID;
+    if (s->time < p->s.time && p->s.time - s->time > 600) return CH_INVALID;
     share_root(root, txs, ntx, sci, nsci);
     if (memcmp(root, s->tx_root, 32)) return CH_INVALID;
     /* Cheapest rejection first: a garbage candidate dies in one Fermat test,
@@ -161,7 +168,11 @@ static int accept(const share_t *s, const tx_t *txs, int ntx, const sci_t *sci, 
     }
     if (db) {
         uint8_t l[2] = {(uint8_t)len, (uint8_t)(len >> 8)};
-        fwrite(l, 1, 2, db); fwrite(msg, 1, len, db); fflush(db);
+        if (fwrite(l, 1, 2, db) != 2 || fwrite(msg, 1, len, db) != len ||
+            fflush(db) || fsync(fileno(db))) {
+            log_msg("fatal: cannot durably persist accepted share");
+            abort();
+        }
     }
     if (on_accept) on_accept(idx, is_tip);
     return is_tip ? CH_TIP : CH_ACCEPT;
@@ -192,10 +203,14 @@ static int submit_one(const uint8_t *msg, size_t len, uint8_t missing[32], int64
     int par = chain_find(s.prev);
     if (par >= 0) return accept(&s, txs, ntx, sci, nsci, msg, len, id, par, now);
 
+    /* Do not let arbitrary-parent garbage consume the orphan budget. The
+     * parent-dependent checks wait until the parent arrives. */
+    if (share_verify(&s, NULL) < SHARE_K) return CH_INVALID;
+
     memcpy(missing, s.prev, 32);
     for (int i = 0; i < nO; i++)
         if (O[i].len == len && !memcmp(O[i].msg, msg, len)) return CH_ORPHAN;
-    if (nO >= MAX_ORPHANS) return CH_ORPHAN;
+    if (nO >= MAX_ORPHANS || len > MAX_ORPHAN_BYTES - orphan_bytes) return CH_ORPHAN;
     if (nO == capO) {
         int nc = capO ? capO * 2 : 256;
         orphan_t *no = realloc(O, (size_t)nc * sizeof *O);
@@ -208,6 +223,7 @@ static int submit_one(const uint8_t *msg, size_t len, uint8_t missing[32], int64
     O[nO].msg = copy; O[nO].len = (uint16_t)len;
     memcpy(O[nO].parent, s.prev, 32);
     nO++;
+    orphan_bytes += len;
     return CH_ORPHAN;
 }
 
@@ -223,6 +239,7 @@ static void resolve_orphans(const uint8_t first[32], int64_t now) {
             if (memcmp(O[i].parent, id, 32)) { i++; continue; }
             orphan_t o = O[i];
             O[i] = O[--nO];
+            orphan_bytes -= o.len;
             int r = submit_one(o.msg, o.len, miss, now, cid);
             free(o.msg);
             if (r != CH_TIP && r != CH_ACCEPT) continue;
@@ -281,13 +298,25 @@ int chain_init(const char *dir, accept_fn cb) {
     snprintf(path, sizeof path, "%s/shares.v3", dir);
     FILE *f = fopen(path, "rb");
     int loaded = 0;
+    off_t good = 0;
+    int damaged = 0;
     if (f) {
-        while (fread(l, 1, 2, f) == 2) {
+        for (;;) {
+            size_t n = fread(l, 1, 2, f);
+            if (!n) break;
+            if (n != 2) { damaged = 1; break; }
             size_t len = (size_t)(l[0] | l[1] << 8);
-            if (len > sizeof msg || fread(msg, 1, len, f) != len) break;
+            if (len < SHARE_SIZE + 4 || len > sizeof msg || fread(msg, 1, len, f) != len) {
+                damaged = 1; break;
+            }
+            good = ftello(f);
             if (chain_submit(msg, len, miss, 0) <= CH_ACCEPT) loaded++;
         }
         fclose(f);
+        if (damaged && good >= 0) {
+            int fd = open(path, O_WRONLY);
+            if (fd >= 0) { ftruncate(fd, good); close(fd); }
+        }
     }
     db = fopen(path, "ab");
     if (!db) return -1;

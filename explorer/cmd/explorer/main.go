@@ -41,7 +41,8 @@ func main() {
 	go ix.Run(ctx)
 
 	srv := &http.Server{Addr: env("EXPLORER_HTTP", ":3071"), Handler: web.New(st).Routes(),
-		ReadHeaderTimeout: 5 * time.Second}
+		ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 15 * time.Second,
+		IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

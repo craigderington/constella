@@ -16,6 +16,7 @@
 #define MAX_SEEDS 16
 #define RXCAP     8192
 #define TXMAX     (4u << 20)
+#define RX_TIMEOUT 30
 #define HDR       NET_HDR
 #define MAXPAY    NET_MAXPAY
 
@@ -25,6 +26,7 @@ typedef struct {
     int fd, state, seed;
     uint8_t rx[RXCAP];
     int rxn;
+    int64_t rx_at;
     uint8_t *tx;
     size_t txn, txcap;
 } peer_t;
@@ -120,6 +122,9 @@ static void dial(int s) {
 
 void net_tick(void) {
     int64_t t = now_sec();
+    for (int i = 0; i < MAX_PEERS; i++)
+        if (P[i].state == P_UP && P[i].rxn && P[i].rx_at && t - P[i].rx_at > RX_TIMEOUT)
+            drop(i);
     for (int s = 0; s < nseeds; s++)
         if (S[s].peer < 0 && t >= S[s].next) dial(s);
 }
@@ -165,6 +170,7 @@ int net_pollfds(struct pollfd *pf, int max) {
 
 static void readable(int i) {
     peer_t *p = &P[i];
+    if (!p->rxn) p->rx_at = now_sec();
     ssize_t r = recv(p->fd, p->rx + p->rxn, RXCAP - (size_t)p->rxn, 0);
     if (r == 0 || (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) { drop(i); return; }
     if (r < 0) return;
@@ -180,6 +186,7 @@ static void readable(int i) {
         memmove(p->rx, p->rx + HDR + len, (size_t)(p->rxn - HDR - len));
         p->rxn -= HDR + len;
     }
+    if (!p->rxn) p->rx_at = 0;
 }
 
 void net_process(const struct pollfd *pf, int n) {

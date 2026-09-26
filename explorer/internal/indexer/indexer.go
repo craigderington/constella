@@ -43,7 +43,7 @@ func (x *Indexer) Load(ctx context.Context) error {
 	}
 	for _, r := range raws {
 		if m, err := proto.ParseMsg(r); err == nil {
-			x.chain.Add(m)
+			x.chain.AddAt(m, 0)
 		}
 	}
 	log.Printf("indexer: loaded %d shares, height %d", len(raws), x.chain.Tip.Height)

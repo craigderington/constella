@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"math/big"
+	"time"
 
 	"github.com/craig/constella/explorer/internal/proto"
 )
@@ -21,8 +22,8 @@ type Node struct {
 
 func (n *Node) IsBlock() bool { return n.TLen >= proto.BlockK }
 
-// Chain is the explorer's sharechain view. It checks work, linkage and tx_root;
-// signatures and retarget are trusted to the node it follows.
+// Chain is the explorer's sharechain view. It mirrors the node's stateless
+// share rules; transaction signatures remain trusted to the node.
 type Chain struct {
 	nodes   map[proto.Hash]*Node
 	orphans map[proto.Hash][]*proto.Msg
@@ -45,9 +46,58 @@ func NewChain() *Chain {
 func (c *Chain) Get(id proto.Hash) *Node { return c.nodes[id] }
 func (c *Chain) Len() int                { return len(c.nodes) }
 
-func (c *Chain) accept(m *proto.Msg, id proto.Hash, par *Node) (*Node, error) {
+func NextBits(parent *Node) uint16 {
+	b := int(parent.Msg.Share.Bits)
+	h := parent.Height + 1
+	if h%proto.RetargetN != 0 || parent.Height < proto.RetargetN+1 {
+		return uint16(b)
+	}
+	a := parent
+	for i := uint32(0); i < proto.RetargetN; i++ {
+		if a.Parent == nil {
+			return uint16(b)
+		}
+		a = a.Parent
+	}
+	span := int64(parent.Msg.Share.Time) - int64(a.Msg.Share.Time)
+	target := int64(proto.RetargetN * proto.ShareSpacing)
+	switch {
+	case span*2 < target:
+		b += 32
+	case span*5 < target*4:
+		b += 8
+	case span > target*2:
+		b -= 32
+	case span*4 > target*5:
+		b -= 8
+	}
+	if b < proto.BitsMin {
+		b = proto.BitsMin
+	}
+	if b > proto.BitsMax {
+		b = proto.BitsMax
+	}
+	return uint16(b)
+}
+
+func (c *Chain) accept(m *proto.Msg, id proto.Hash, par *Node, now int64) (*Node, error) {
 	s := &m.Share
 	if s.Version != proto.ShareVersion || s.Height != par.Height+1 {
+		return nil, ErrInvalid
+	}
+	if s.Time > 1<<63-1 {
+		return nil, ErrInvalid
+	}
+	if s.Bits != NextBits(par) {
+		return nil, ErrInvalid
+	}
+	if now > 0 && s.Time > uint64(now) && s.Time-uint64(now) > proto.MaxFuture {
+		return nil, ErrInvalid
+	}
+	if s.Time < par.Msg.Share.Time && par.Msg.Share.Time-s.Time > 600 {
+		return nil, ErrInvalid
+	}
+	if s.K >= proto.KMax {
 		return nil, ErrInvalid
 	}
 	if proto.ShareRoot(m.Txs, m.Claims) != s.TxRoot {
@@ -88,6 +138,12 @@ func (c *Chain) accept(m *proto.Msg, id proto.Hash, par *Node) (*Node, error) {
 // Add returns newly connected nodes (the share plus any orphans it unblocked),
 // or the missing parent id if it could not be connected yet.
 func (c *Chain) Add(m *proto.Msg) (added []*Node, missing *proto.Hash, err error) {
+	return c.AddAt(m, time.Now().Unix())
+}
+
+// AddAt is used during persistence replay with now=0, matching the node's
+// startup path, which validates historical records without a wall-clock bound.
+func (c *Chain) AddAt(m *proto.Msg, now int64) (added []*Node, missing *proto.Hash, err error) {
 	id := m.Share.ID()
 	if c.nodes[id] != nil {
 		return nil, nil, nil
@@ -104,7 +160,7 @@ func (c *Chain) Add(m *proto.Msg) (added []*Node, missing *proto.Hash, err error
 		prev := m.Share.Prev
 		return nil, &prev, nil
 	}
-	n, err := c.accept(m, id, par)
+	n, err := c.accept(m, id, par, now)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -117,7 +173,7 @@ func (c *Chain) Add(m *proto.Msg) (added []*Node, missing *proto.Hash, err error
 			if c.nodes[kid] != nil {
 				continue
 			}
-			if kn, err := c.accept(k, kid, c.nodes[q[0]]); err == nil {
+			if kn, err := c.accept(k, kid, c.nodes[q[0]], now); err == nil {
 				added = append(added, kn)
 				q = append(q, kid)
 			}
