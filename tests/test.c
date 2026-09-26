@@ -886,23 +886,49 @@ static void t_addr_persist(void) {
     CHECK(addr_count(0) == n_new && addr_count(1) == n_tried);
     CHECK(addr_bucket_of(ip, 1) == b);   /* the secret round-tripped too */
 
-    /* Case 1: corrupt a header byte (inside the 4-byte magic). A foreign or
-     * header-damaged file is discarded outright. */
-    FILE *f = fopen(path, "r+"); CHECK(f != NULL);
-    if (f) { fseek(f, 3, SEEK_SET); fputc(0xff, f); fclose(f); }
-    CHECK(addr_load(dir) == 0);          /* corrupt: discarded, still starts */
+    /* Case 1: a genuinely FOREIGN file, not a randomly corrupted one - the
+     * checksum covers the whole body including the magic, so a random bit
+     * flip in the magic is caught by the checksum and never actually
+     * exercises the magic check on its own (verified by review: disabling
+     * the checksum but leaving a flipped-magic-byte file rejected proved
+     * nothing, because the checksum alone already rejected it). What the
+     * magic check exists to catch is a well-formed file from another
+     * program or an older format version: correct structure, a VALID
+     * checksum over its own (altered) body, but the wrong magic. Build
+     * exactly that by loading the just-saved valid file, flipping the
+     * magic bytes, and recomputing the trailing BLAKE2b checksum over the
+     * altered body - so ONLY the magic disagrees with what addr_load
+     * expects. */
+    uint8_t fbuf[65536];
+    size_t flen;
+    {
+        FILE *rf = fopen(path, "rb"); CHECK(rf != NULL);
+        flen = rf ? fread(fbuf, 1, sizeof fbuf, rf) : 0;
+        if (rf) fclose(rf);
+    }
+    CHECK(flen > 32 && flen < sizeof fbuf);
+    fbuf[0] ^= 0xff; fbuf[1] ^= 0xff; fbuf[2] ^= 0xff; fbuf[3] ^= 0xff;  /* foreign magic */
+    uint8_t fcsum[32];
+    blake2b(fcsum, 32, fbuf, flen - 32);
+    memcpy(fbuf + flen - 32, fcsum, 32);                                /* valid checksum over the altered body */
+    FILE *wf = fopen(path, "wb"); CHECK(wf != NULL);
+    if (wf) { fwrite(fbuf, 1, flen, wf); fclose(wf); }
+
+    CHECK(addr_load(dir) == 0);          /* foreign magic, valid checksum: still discarded */
     CHECK(addr_count(0) == 0 && addr_count(1) == 0);
 
     /* Case 2: corrupt only the final byte, inside the trailing BLAKE2b
      * checksum. The magic and every header/record field are untouched, so
      * only the checksum can catch this - a layout-independent regression
      * check that checksum verification is actually wired up (Step 5).
-     * addr_load's case-1 discard left the tables empty (freshly reset, not
-     * re-persisted), so populate and save a clean file to corrupt here. */
+     * Every discard path now re-persists immediately (fix for Minor 1), so
+     * case 1's discard already healed the file on disk into a fresh, valid,
+     * empty one; populate and save again here to give case 2 something to
+     * corrupt. */
     addr_add(ip, 7043, 99);
     addr_good(ip, 7043, 3); addr_good(ip, 7043, 4);
     addr_save(dir);
-    f = fopen(path, "r+b"); CHECK(f != NULL);
+    FILE *f = fopen(path, "r+b"); CHECK(f != NULL);
     if (f) {
         fseek(f, -1, SEEK_END);
         int c = fgetc(f);
@@ -912,6 +938,14 @@ static void t_addr_persist(void) {
     }
     CHECK(addr_load(dir) == 0);          /* final-byte corruption: discarded, still starts */
     CHECK(addr_count(0) == 0 && addr_count(1) == 0);
+
+    /* Minor 1: the discard path re-persists immediately, healing the file -
+     * a node that keeps crashing before a clean shutdown must not churn a
+     * fresh secret forever while leaving the bad file on disk untouched. */
+    FILE *hf = fopen(path, "rb"); CHECK(hf != NULL);
+    uint8_t hmagic[4] = {0};
+    if (hf) { size_t hn = fread(hmagic, 1, 4, hf); (void)hn; fclose(hf); }
+    CHECK(!memcmp(hmagic, "ADR1", 4));
 
     f = fopen(path, "wb"); if (f) { fwrite("xx", 1, 2, f); fclose(f); }
     CHECK(addr_load(dir) == 0);          /* truncated: same */
