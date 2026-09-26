@@ -105,7 +105,7 @@ Two tables:
 | Table | Meaning | Buckets | Entries/bucket | Total |
 |---|---|---|---|---|
 | `new` | heard about, never connected | 32 | 32 | 1,024 |
-| `tried` | handshake completed at least once | 8 | 32 | 256 |
+| `tried` | two handshakes, separate attempts | 8 | 32 | 256 |
 
 **Bucket assignment is by network group, not by address:**
 
@@ -130,8 +130,12 @@ sizing would multiply that severalfold to index a network three orders of
 magnitude larger than this one. 1,280 entries is ample for hundreds to low
 thousands of nodes, and the structure scales later by changing two constants.
 
-- **Promotion** `new` → `tried` happens on a **completed handshake**, never on
-  TCP connect, so an attacker cannot promote an address where no node answers.
+- **Promotion** `new` → `tried` requires **two successful handshakes on
+  separate connection attempts**, never a TCP connect. One handshake proves
+  someone answered once; two proves the address is durably reachable, which is
+  what `tried` is supposed to mean. It also raises the cost of seeding an
+  attacker's addresses into the table an honest node prefers to dial, since
+  each one must be kept answering rather than merely stood up briefly.
 - **Eviction** takes the stalest entry in the target bucket. No terribleness
   heuristic in v1.
 - **Persistence** to `<datadir>/peers.dat` with the `fwrite`/`fflush`/`fsync`
@@ -195,7 +199,8 @@ The slot structure already exists: `MAX_PEERS 32`, `MAX_INBOUND 16`, with
 inbound capped so it cannot crowd out outbound. That stays. What changes is how
 outbound peers are chosen.
 
-**Eight outbound slots, each in a distinct network group.** This is the other
+**Eight outbound slots, each in a distinct network group** — confirmed as the
+target rather than inherited from Bitcoin by default. This is the other
 half of eclipse resistance and the half that is easy to forget. A perfectly
 diverse address table buys nothing if all eight outbound connections land in
 one attacker's /16 — they would own the node's entire view of the chain. The
@@ -283,9 +288,4 @@ connections across restarts; Tor and I2P transports; address relay privacy
 ## Open questions
 
 - The DNS measurement above decides `getaddrinfo` versus a minimal resolver.
-- Whether 8 outbound is right for a network of this size. Bitcoin's 8 is tuned
-  for a large network; a smaller one may want more for connectivity or fewer
-  for resource use. Revisit once the network has a real size.
-- Whether `tried` promotion should require more than one successful handshake.
-  One is simple and adequate against the cheap attacks; Bitcoin effectively
-  requires sustained reachability.
+- The DNS measurement above is the only one still open.
