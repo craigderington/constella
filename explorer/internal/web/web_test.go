@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/lib/pq"
-
 	"github.com/craig/constella/explorer/internal/proto"
 	"github.com/craig/constella/explorer/internal/store"
 )
@@ -154,22 +152,16 @@ func TestOverviewTextReportsErrorInsteadOfPanicking(t *testing.T) {
 // height(): it used to discard ShareAtHeight's error and treat any failure
 // (including a database outage) the same as "no share at this height",
 // rendering a 404 that tells the user the share does not exist instead of
-// that the database is unavailable.
+// the 503 the rest of the app gives for a database hiccup. Before the fix,
+// writeHeightResult (then inlined in height()) only checked `sh == nil`, so
+// a non-nil error with a nil share fell into the "missing" branch — a 404 —
+// exactly like a genuinely absent height.
 func TestHeightSurfacesDatabaseErrorAsServiceUnavailable(t *testing.T) {
-	// A DSN nothing listens on: QueryContext fails fast with "connection
-	// refused" rather than hanging, so ShareAtHeight returns a real error
-	// without needing a live Postgres.
-	db, err := sql.Open("postgres", "host=127.0.0.1 port=1 sslmode=disable connect_timeout=1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	s := New(&store.Store{DB: db})
-
+	s := New(nil) // s.missing is never reached on this path, so no store is needed
 	req := httptest.NewRequest("GET", "/height/5", nil)
-	req.SetPathValue("h", "5")
 	rec := httptest.NewRecorder()
-	s.height(rec, req)
+
+	s.writeHeightResult(rec, req, 5, nil, errors.New("db down"))
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("code = %d, want %d (body: %s)", rec.Code, http.StatusServiceUnavailable, rec.Body.String())

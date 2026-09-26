@@ -594,14 +594,22 @@ static void t_transport_vector(void) {
  * real net.c listener here and drive the real binary against it, in the clear
  * and with a PSK. */
 static const uint8_t cli_addr[32] = {0xab, 0xcd, 0x01, 0x02};
+static uint8_t cli_asked[32];
+static int cli_got_tx;
 
 static void cli_on_msg(int peer, uint8_t type, const uint8_t *p, uint16_t len) {
-    if (type != MSG_GETACCT || len != 32 || memcmp(p, cli_addr, 32)) return;
-    uint8_t out[28] = {0};
-    uint64_t amt = 125000000ULL;                 /* 1.25 coins */
-    for (int i = 0; i < 8; i++) out[i] = (uint8_t)(amt >> 8 * i);
-    out[8] = 3; out[16] = 4; out[24] = 7;        /* nonce, next nonce, height */
-    net_send(peer, MSG_ACCT, out, sizeof out);
+    if (type == MSG_GETACCT && len == 32) {
+        memcpy(cli_asked, p, 32);
+        uint8_t out[28] = {0};
+        uint64_t amt = 125000000ULL;             /* 1.25 coins */
+        for (int i = 0; i < 8; i++) out[i] = (uint8_t)(amt >> 8 * i);
+        out[8] = 3; out[16] = 4; out[24] = 7;    /* nonce, next nonce, height */
+        net_send(peer, MSG_ACCT, out, sizeof out);
+    } else if (type == MSG_TX && len == TX_SIZE) {
+        uint8_t r = 0;                           /* accepted */
+        cli_got_tx = 1;
+        net_send(peer, MSG_TXRES, &r, 1);
+    }
 }
 
 static void cli_on_conn(int peer) {
@@ -610,7 +618,7 @@ static void cli_on_conn(int peer) {
 }
 
 /* Returns the CLI's exit status with its stdout in `out`; -1 if it never ran. */
-static int cli_probe(const char *psk, char *out, size_t cap) {
+static int cli_probe(const char *psk, const char *sub, char *out, size_t cap) {
     uint16_t port = 0;
     for (uint16_t t = 17943; t < 17983 && !port; t++)
         if (!net_init(t, NULL, psk, cli_on_msg, cli_on_conn)) port = t;
@@ -624,7 +632,10 @@ static int cli_probe(const char *psk, char *out, size_t cap) {
     if (pid == 0) {
         dup2(pfd[1], 1); close(pfd[0]); close(pfd[1]);
         if (psk) setenv("CONSTELLA_P2P_KEY", psk, 1); else unsetenv("CONSTELLA_P2P_KEY");
-        execl("./constella", "constella", "balance", hp, ah, (char *)NULL);
+        if (!strcmp(sub, "send"))
+            execl("./constella", "constella", "send", hp, ah, "1.5", "0.002", (char *)NULL);
+        else
+            execl("./constella", "constella", "balance", hp, ah, (char *)NULL);
         _exit(127);
     }
     close(pfd[1]);
@@ -654,13 +665,33 @@ static int cli_probe(const char *psk, char *out, size_t cap) {
 static void t_cli_socket(void) {
     if (access("./constella", X_OK)) { fprintf(stderr, "SKIP cli socket: no ./constella\n"); return; }
     static const char *want = "1.25000000  (nonce 3, next 4, height 7)";
-    char out[512];
-    CHECK(cli_probe(NULL, out, sizeof out) == 0);                 /* plaintext */
-    CHECK(strstr(out, want) != NULL);
     /* same PSK on both ends: the CLI must authenticate, not be gated out */
     static const char *psk = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
-    CHECK(cli_probe(psk, out, sizeof out) == 0);                  /* secure */
+    char out[512];
+
+    CHECK(cli_probe(NULL, "balance", out, sizeof out) == 0);      /* plaintext */
     CHECK(strstr(out, want) != NULL);
+    CHECK(!memcmp(cli_asked, cli_addr, 32));
+    CHECK(cli_probe(psk, "balance", out, sizeof out) == 0);       /* secure */
+    CHECK(strstr(out, want) != NULL);
+
+    /* `send` opened with MSG_TX and was gated out just as hard as `balance`. */
+    char dir[] = "/tmp/constella-cli-XXXXXX", kf[256];
+    if (!mkdtemp(dir)) return;
+    snprintf(kf, sizeof kf, "%s/w.key", dir);
+    wallet_t w;
+    CHECK(wallet_load(&w, kf, 1) == 1);
+    setenv("CONSTELLA_KEY", kf, 1);
+    cli_got_tx = 0;
+    CHECK(cli_probe(psk, "send", out, sizeof out) == 0);
+    CHECK(cli_got_tx);                                  /* the tx reached the node */
+    CHECK(strstr(out, "accepted  tx ") != NULL);
+    CHECK(strstr(out, "nonce 4") != NULL);              /* it used the next nonce we served */
+    CHECK(!memcmp(cli_asked, w.pk, 32));                /* asked about its own account */
+    unsetenv("CONSTELLA_KEY");
+    memset(&w, 0, sizeof w);
+    unlink(kf);
+    rmdir(dir);
 }
 
 int main(int argc, char **argv) {
