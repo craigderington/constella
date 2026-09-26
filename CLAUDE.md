@@ -57,10 +57,12 @@ independently.
 - `docker compose up --build` on real Docker: all services came up and the
   explorer's ledger check matched the node.
 - Explorer UI reviewed in a browser and approved as-is. Keep the star-chart design.
-- The node now uses tip-bound disposable ledger snapshots and reconstructs the
-  256-share payout/science tail on load; stale or malformed snapshots fall back
-  to full replay. This was exercised on the live Compose volume across a node
-  restart.
+- The ledger-snapshot subsystem (tip-bound disposable snapshots, reconstructing
+  the 256-share payout/science tail on load) was removed: it had zero test
+  coverage (no round-trip, corrupt-file, reorg-across-boundary, or
+  OOM-during-restore check) and was consensus-adjacent. `ledger_build()` is
+  back to unconditional full replay from genesis, reclaiming one 4096-byte
+  page of binary size. See the O(n)-per-share backlog item below.
 - Chain id in the tx signing domain, live on a fresh testnet under
   `SHARE_VERSION` 2: all 5 nodes logged `chain=352fcee542df9981`, and a signed
   transfer went through end to end (sender -1.25 -0.002 fee, recipient +1.25,
@@ -150,6 +152,12 @@ independently.
   the pre-science numbers.
 
 ## Backlog
+- Ledger snapshots (node side): `node.c` calls `ledger_build()` on every tip
+  change and it replays genesis..tip, so cost is O(n) per share. Invisible at
+  these heights, a real ceiling later. A prior attempt was removed for lacking
+  test coverage (no round-trip, corrupt-file, reorg, or OOM-during-restore
+  check) on a consensus-adjacent path; redo it with that coverage from the
+  start if it's tackled again.
 - The explorer still replays its ledger from genesis on every tip change; a Go
   snapshot design remains separate work if explorer-scale growth requires it.
 - Mempool: fee priority is implemented; reorged transactions are returned to

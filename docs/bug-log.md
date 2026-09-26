@@ -292,10 +292,11 @@ BLAKE2b-based EdDSA verifier. It therefore trusts the node for signatures.
 
 ### DESIGN-003: Ledger replay is O(n) on every tip change
 
-The explorer still rebuilds its derived ledger from the best chain. The node
-uses disposable tip-bound snapshots at checkpoint heights and reconstructs the
-bounded PPLNS/science tail before continuing; a missing, stale, or malformed
-snapshot falls back to full replay.
+The explorer still rebuilds its derived ledger from the best chain, and so
+does the node: `ledger_build()` always replays genesis..tip. An earlier
+tip-bound snapshot subsystem was removed (no round-trip, corrupt-file, reorg,
+or OOM-during-restore coverage, and it was consensus-adjacent); this remains
+a real cost ceiling at height, not yet addressed.
 
 ### DESIGN-004: P2P authentication is PSK-configured
 

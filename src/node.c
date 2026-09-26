@@ -317,7 +317,6 @@ int node_run(void) {
             throttle_target_c(), throttle_has_battery() ? " (laptop)" : "");
 
     if (chain_init(data, on_accept)) { log_msg("fatal: cannot open data dir %s", data); return 1; }
-    ledger_snapshot_set_path(data);
 
     wallet_t w;
     int wr = wallet_load(&w, env("CONSTELLA_KEY", keypath), 1);
