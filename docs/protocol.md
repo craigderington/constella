@@ -3,7 +3,7 @@
 ## Work
 Pattern `p, p+4, p+6, p+10, p+12, p+16` (prime sextuplet), `p ≡ 97 (mod 210)`.
 
-1. `seed = BLAKE2b-256(header[0..84])`
+1. `seed = BLAKE2b-256(header[0..116))` (the first 116 bytes, including `tx_root`)
 2. `base = 2^(bits-1) + (seed bits placed below it)`, rounded up to `97 mod 210`
 3. `p = base + 210·k`, with `k < 2^40`
 4. Tuple length = number of leading pattern members passing Fermat base-2.
@@ -12,6 +12,15 @@ Pattern `p, p+4, p+6, p+10, p+12, p+16` (prime sextuplet), `p ≡ 97 (mod 210)`.
 
 The miner's address is inside the seeded header, so a share cannot be stolen:
 changing the payee changes the seed and invalidates the work.
+
+A block is a share whose tuple length reaches `BLOCK_K`; it has no separate
+block wire format. A node validates a transaction-bearing block by recomputing
+`tx_root` from the complete serialized transaction and claim lists, checking
+that root against the share header, deriving the PoW seed from that header,
+checking the prime constellation, and verifying every transaction signature.
+Changing any transaction, signature, claim, payee, or other committed header
+field therefore requires new proof-of-work. Balance, nonce, and funding rules
+are then applied during deterministic ledger replay as described below.
 
 ## Share (124 bytes, little-endian)
 | off | size | field    |
@@ -148,12 +157,15 @@ science-lane balance.
 Each block pays 50 coins. 30% is split by work weight across the last 256 shares in its
 ancestry (PPLNS, integer remainder to finder). 70% accrues to the science escrow;
 see "Science claims" above for how it is released. Balances are derived by
-replaying the chain; nothing is stored.
+replaying the chain; a tip-bound ledger snapshot may accelerate replay, but it
+is disposable cache and never consensus truth.
 
 ## Wire
 Frame: `u32 magic "CSTL" | u8 type | u16 len | payload`
 
-- `1 HELLO`: tip id (32 bytes). The receiver requests it if unknown.
+- `1 HELLO`: tip id (32 bytes). Both sides send HELLO after connecting; a peer
+  that does not send a valid HELLO within 10 seconds is dropped. The receiver
+  requests the tip if unknown.
 - `2 SHARE`: share message. If orphaned, the receiver sends GETCHAIN.
 - `3 GETSHARE`: id (32 bytes).
 - `4 GETCHAIN`: locator of up to 32 ids (dense near the tip, exponentially sparse
@@ -163,3 +175,8 @@ Frame: `u32 magic "CSTL" | u8 type | u16 len | payload`
   and relays it if added.
 - `6 GETACCT`: address → `7 ACCT`: `amt | nonce | next_nonce | height`.
 - `8 TXRES`: u8 result (0 added, 1 duplicate, 2 bad signature, 3 balance/nonce, 4 full).
+- `9 AUTH`: transport challenge and keyed proof (32-byte challenge followed by
+  32-byte BLAKE2b proof). When `CONSTELLA_P2P_KEY` is configured, both peers
+  authenticate before HELLO and all later frames use directional
+  XChaCha20-Poly1305 with monotonically increasing nonces. The explorer uses
+  the matching `EXPLORER_P2P_KEY`.

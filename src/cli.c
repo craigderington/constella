@@ -67,6 +67,9 @@ static int frame_wait(int fd, uint8_t want, uint8_t *out, uint16_t *len) {
     for (int i = 0; i < 4096; i++) {
         uint8_t h[NET_HDR];
         if (xfer(fd, h, NET_HDR, 0)) return -1;
+        uint32_t magic = (uint32_t)h[0] | (uint32_t)h[1] << 8 |
+                         (uint32_t)h[2] << 16 | (uint32_t)h[3] << 24;
+        if (magic != NET_MAGIC) return -1;
         uint16_t l = (uint16_t)(h[5] | h[6] << 8);
         if (l > NET_MAXPAY || xfer(fd, buf, l, 0)) return -1;
         if (h[4] == want) { memcpy(out, buf, l); *len = l; return 0; }
@@ -150,6 +153,7 @@ int cli_send(int argc, char **argv) {
     tx_ser(raw, &t);
     if (frame_send(fd, MSG_TX, raw, TX_SIZE) || frame_wait(fd, MSG_TXRES, r, &l) || l != 1 || r[0] > 4) {
         fprintf(stderr, "no response from node\n");
+        close(fd);
         return 1;
     }
     close(fd);

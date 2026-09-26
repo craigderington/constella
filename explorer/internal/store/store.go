@@ -5,9 +5,11 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"fmt"
 	"log"
 	"math"
 	"math/big"
+	"strconv"
 	"time"
 
 	"github.com/lib/pq"
@@ -21,6 +23,10 @@ var schema string
 
 type Store struct{ DB *sql.DB }
 
+const schemaVersion = 1
+
+func u64(v uint64) string { return strconv.FormatUint(v, 10) }
+
 func Open(ctx context.Context, dsn string) (*Store, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
@@ -31,13 +37,34 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 			break
 		}
 		if i == 30 || ctx.Err() != nil {
+			db.Close()
 			return nil, err
 		}
 		log.Printf("store: waiting for postgres: %v", err)
 		time.Sleep(2 * time.Second)
 	}
-	if _, err := db.ExecContext(ctx, schema); err != nil {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		db.Close()
 		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, schema); err != nil {
+		tx.Rollback()
+		db.Close()
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	var version int
+	if err := db.QueryRowContext(ctx, `SELECT version FROM schema_version WHERE id = TRUE`).Scan(&version); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if version != schemaVersion {
+		db.Close()
+		return nil, fmt.Errorf("unsupported explorer schema version %d", version)
 	}
 	return &Store{db}, nil
 }
@@ -90,7 +117,7 @@ func (s *Store) InsertShares(ctx context.Context, nodes []*consensus.Node) error
 				(uid, id, share_id, idx, from_addr, to_addr, amount, fee, nonce)
 				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (uid) DO NOTHING`,
 				uid(n.ID, i), id[:], n.ID[:], i, t.From[:], t.To[:],
-				int64(t.Amount), int64(t.Fee), int64(t.Nonce)); err != nil {
+				u64(t.Amount), u64(t.Fee), u64(t.Nonce)); err != nil {
 				return err
 			}
 		}
@@ -162,42 +189,48 @@ func (s *Store) ApplyState(ctx context.Context, path []*consensus.Node, l *conse
 		return err
 	}
 	for _, a := range l.Accounts {
-		if _, err := st.ExecContext(ctx, a.Addr[:], int64(a.Balance), int64(a.Nonce), a.Shares, a.Blocks, int64(a.Earned)); err != nil {
+		if _, err := st.ExecContext(ctx, a.Addr[:], u64(a.Balance), u64(a.Nonce), a.Shares, a.Blocks, u64(a.Earned)); err != nil {
 			return err
 		}
 	}
 	if _, err := st.ExecContext(ctx); err != nil {
 		return err
 	}
-	st.Close()
+	if err := st.Close(); err != nil {
+		return err
+	}
 
 	st, err = tx.PrepareContext(ctx, pq.CopyIn("payouts", "block_id", "addr", "amount"))
 	if err != nil {
 		return err
 	}
 	for _, p := range l.Payouts {
-		if _, err := st.ExecContext(ctx, p.Block[:], p.Addr[:], int64(p.Amount)); err != nil {
+		if _, err := st.ExecContext(ctx, p.Block[:], p.Addr[:], u64(p.Amount)); err != nil {
 			return err
 		}
 	}
 	if _, err := st.ExecContext(ctx); err != nil {
 		return err
 	}
-	st.Close()
+	if err := st.Close(); err != nil {
+		return err
+	}
 
 	st, err = tx.PrepareContext(ctx, pq.CopyIn("sci_payouts", "block_id", "addr", "amount"))
 	if err != nil {
 		return err
 	}
 	for _, p := range l.SciPayouts {
-		if _, err := st.ExecContext(ctx, p.Block[:], p.Addr[:], int64(p.Amount)); err != nil {
+		if _, err := st.ExecContext(ctx, p.Block[:], p.Addr[:], u64(p.Amount)); err != nil {
 			return err
 		}
 	}
 	if _, err := st.ExecContext(ctx); err != nil {
 		return err
 	}
-	st.Close()
+	if err := st.Close(); err != nil {
+		return err
+	}
 
 	if err := setMeta(ctx, tx, meta); err != nil {
 		return err

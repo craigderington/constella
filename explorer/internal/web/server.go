@@ -46,7 +46,13 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("GET /api/blocks", s.apiBlocks)
 	m.HandleFunc("GET /api/share/{id}", s.apiShare)
 	m.HandleFunc("GET /api/address/{addr}", s.apiAddress)
-	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok\n")) })
+	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.st.DB.PingContext(r.Context()); err != nil {
+			http.Error(w, "database unavailable\n", http.StatusServiceUnavailable)
+			return
+		}
+		w.Write([]byte("ok\n"))
+	})
 	return m
 }
 

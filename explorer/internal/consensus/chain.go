@@ -25,10 +25,11 @@ func (n *Node) IsBlock() bool { return n.TLen >= proto.BlockK }
 // Chain is the explorer's sharechain view. It mirrors the node's stateless
 // share rules; transaction signatures remain trusted to the node.
 type Chain struct {
-	nodes   map[proto.Hash]*Node
-	orphans map[proto.Hash][]*proto.Msg
-	Genesis *Node
-	Tip     *Node
+	nodes       map[proto.Hash]*Node
+	orphans     map[proto.Hash][]*proto.Msg
+	orphanBytes int
+	Genesis     *Node
+	Tip         *Node
 }
 
 var ErrInvalid = errors.New("invalid share")
@@ -45,6 +46,7 @@ func NewChain() *Chain {
 
 func (c *Chain) Get(id proto.Hash) *Node { return c.nodes[id] }
 func (c *Chain) Len() int                { return len(c.nodes) }
+func (c *Chain) OrphanCount() int        { return c.orphanCount() }
 
 func NextBits(parent *Node) uint16 {
 	b := int(parent.Msg.Share.Bits)
@@ -88,6 +90,9 @@ func (c *Chain) accept(m *proto.Msg, id proto.Hash, par *Node, now int64) (*Node
 	if s.Time > 1<<63-1 {
 		return nil, ErrInvalid
 	}
+	if s.Bits < proto.BitsMin || s.Bits > proto.BitsMax {
+		return nil, ErrInvalid
+	}
 	if s.Bits != NextBits(par) {
 		return nil, ErrInvalid
 	}
@@ -126,8 +131,14 @@ func (c *Chain) accept(m *proto.Msg, id proto.Hash, par *Node, now int64) (*Node
 			seen[c.K] = true
 		}
 	}
+	w := Work(s.Bits)
+	if ^uint64(0)-par.Work < w {
+		w = ^uint64(0)
+	} else {
+		w += par.Work
+	}
 	n := &Node{Msg: m, ID: id, Parent: par, Height: par.Height + 1,
-		Work: par.Work + Work(s.Bits), TLen: tl, P: p.String(), SciBase: base}
+		Work: w, TLen: tl, P: p.String(), SciBase: base}
 	c.nodes[id] = n
 	if n.Work > c.Tip.Work || (n.Work == c.Tip.Work && bytes.Compare(id[:], c.Tip.ID[:]) < 0) {
 		c.Tip = n
@@ -150,13 +161,24 @@ func (c *Chain) AddAt(m *proto.Msg, now int64) (added []*Node, missing *proto.Ha
 	}
 	par := c.nodes[m.Share.Prev]
 	if par == nil {
+		if m.Share.Time > 1<<63-1 || (now > 0 && m.Share.Time > uint64(now) &&
+			m.Share.Time-uint64(now) > proto.MaxFuture) || m.Share.Bits < proto.BitsMin ||
+			m.Share.Bits > proto.BitsMax || m.Share.K >= proto.KMax ||
+			TupleLen(Candidate(&m.Share)) < proto.ShareK {
+			return nil, nil, ErrInvalid
+		}
 		for _, o := range c.orphans[m.Share.Prev] {
 			if bytes.Equal(o.Raw, m.Raw) {
 				prev := m.Share.Prev
 				return nil, &prev, nil
 			}
 		}
+		if len(m.Raw) > 16<<20-c.orphanBytes || c.orphanCount() >= 16384 {
+			prev := m.Share.Prev
+			return nil, &prev, nil
+		}
 		c.orphans[m.Share.Prev] = append(c.orphans[m.Share.Prev], m)
+		c.orphanBytes += len(m.Raw)
 		prev := m.Share.Prev
 		return nil, &prev, nil
 	}
@@ -169,6 +191,7 @@ func (c *Chain) AddAt(m *proto.Msg, now int64) (added []*Node, missing *proto.Ha
 		kids := c.orphans[q[0]]
 		delete(c.orphans, q[0])
 		for _, k := range kids {
+			c.orphanBytes -= len(k.Raw)
 			kid := k.Share.ID()
 			if c.nodes[kid] != nil {
 				continue
@@ -180,6 +203,14 @@ func (c *Chain) AddAt(m *proto.Msg, now int64) (added []*Node, missing *proto.Ha
 		}
 	}
 	return added, nil, nil
+}
+
+func (c *Chain) orphanCount() int {
+	n := 0
+	for _, kids := range c.orphans {
+		n += len(kids)
+	}
+	return n
 }
 
 // Path returns genesis..tip on the best chain.

@@ -159,7 +159,8 @@ static int accept(const share_t *s, const tx_t *txs, int ntx, const sci_t *sci, 
     e->parent = par; e->height = E[par].height + 1;
     e->tlen = (uint8_t)tl; e->ntx = (uint8_t)ntx; e->txs = own;
     e->nsci = (uint8_t)nsci; e->sci = sown;
-    e->work = E[par].work + share_work(s->bits);
+    uint64_t sw = share_work(s->bits);
+    e->work = E[par].work > UINT64_MAX - sw ? UINT64_MAX : E[par].work + sw;
     hput(idx);
 
     int is_tip = 0;
@@ -198,6 +199,8 @@ static int submit_one(const uint8_t *msg, size_t len, uint8_t missing[32], int64
     sci_t sci[SHARE_MAX_SCI];
     int ntx, nsci;
     if (chain_parse_msg(msg, len, &s, txs, &ntx, sci, &nsci)) return CH_INVALID;
+    if (s.time > (uint64_t)INT64_MAX ||
+        (now > 0 && s.time > (uint64_t)now && s.time - (uint64_t)now > MAX_FUTURE)) return CH_INVALID;
     share_id(id, &s);
     if (chain_find(id) >= 0) return CH_DUP;
     int par = chain_find(s.prev);

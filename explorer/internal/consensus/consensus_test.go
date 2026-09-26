@@ -41,6 +41,9 @@ func TestScienceMatchesC(t *testing.T) {
 	if SciRelease(350*proto.Coin) != 35*proto.Coin || SciRelease(99) != 9 {
 		t.Error("release diverges from C")
 	}
+	if SciRelease(^uint64(0)) != ^uint64(0)/10 {
+		t.Error("release overflows at uint64 limit")
+	}
 }
 
 func TestTupleLen(t *testing.T) {
@@ -97,6 +100,14 @@ func TestNextBitsMirrorsRetarget(t *testing.T) {
 	}
 }
 
+func TestInvalidBitsDoNotReachCandidate(t *testing.T) {
+	c := NewChain()
+	m := &proto.Msg{Share: proto.Share{Version: proto.ShareVersion, Height: 1, Prev: c.Genesis.ID}}
+	if _, _, err := c.AddAt(m, 0); err != ErrInvalid {
+		t.Fatalf("zero-bit share returned %v, want ErrInvalid", err)
+	}
+}
+
 func TestMulDivMatchesPPLNS(t *testing.T) {
 	// same vector as tests/test.c: weights 3,1,0 over pool 1000
 	if mulDiv(1000, 3, 4) != 750 || mulDiv(1000, 1, 4) != 250 {
@@ -140,6 +151,31 @@ func TestSciLedgerDedupAndAccrual(t *testing.T) {
 	}
 	if l.Escrow != 5985000000 {
 		t.Fatalf("Escrow = %d, want 5985000000", l.Escrow)
+	}
+}
+
+func TestSciClaimPaysAcrossEpochRollover(t *testing.T) {
+	var miner proto.Hash
+	mk := func(h uint32, tlen int, claims []proto.Claim) *Node {
+		return &Node{Msg: &proto.Msg{Share: proto.Share{Miner: miner, Bits: proto.GenesisBits}, Claims: claims},
+			Height: h, TLen: tlen}
+	}
+	path := make([]*Node, 258)
+	path[0] = &Node{Msg: &proto.Msg{}}
+	for h := uint32(1); h <= 257; h++ {
+		var claims []proto.Claim
+		if h == 40 {
+			claims = []proto.Claim{{K: 950, G: 776}}
+		}
+		tlen := 0
+		if h == 257 {
+			tlen = proto.BlockK
+		}
+		path[h] = mk(h, tlen, claims)
+	}
+	l := Build(path)
+	if l.SciClaims != 1 || l.SciPaid == 0 {
+		t.Fatalf("pre-rollover claim was not paid at h257: claims=%d paid=%d", l.SciClaims, l.SciPaid)
 	}
 }
 

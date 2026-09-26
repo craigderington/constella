@@ -29,9 +29,9 @@ CREATE TABLE IF NOT EXISTS txs (
     idx       SMALLINT NOT NULL,
     from_addr BYTEA NOT NULL,
     to_addr   BYTEA NOT NULL,
-    amount    BIGINT NOT NULL,
-    fee       BIGINT NOT NULL,
-    nonce     BIGINT NOT NULL,
+    amount    NUMERIC(20,0) NOT NULL,
+    fee       NUMERIC(20,0) NOT NULL,
+    nonce     NUMERIC(20,0) NOT NULL,
     status    TEXT NOT NULL DEFAULT 'pending' -- applied | skipped | orphaned
 );
 CREATE INDEX IF NOT EXISTS txs_from ON txs (from_addr);
@@ -58,23 +58,23 @@ CREATE INDEX IF NOT EXISTS claims_g ON claims (g DESC);
 CREATE TABLE IF NOT EXISTS sci_payouts (
     block_id BYTEA NOT NULL,
     addr     BYTEA NOT NULL,
-    amount   BIGINT NOT NULL,
+    amount   NUMERIC(20,0) NOT NULL,
     PRIMARY KEY (block_id, addr)
 );
 
 CREATE TABLE IF NOT EXISTS accounts (
     addr    BYTEA PRIMARY KEY,
-    balance BIGINT NOT NULL,
-    nonce   BIGINT NOT NULL,
+    balance NUMERIC(20,0) NOT NULL,
+    nonce   NUMERIC(20,0) NOT NULL,
     shares  INTEGER NOT NULL,
     blocks  INTEGER NOT NULL,
-    earned  BIGINT NOT NULL
+    earned  NUMERIC(20,0) NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS payouts (
     block_id BYTEA NOT NULL,
     addr     BYTEA NOT NULL,
-    amount   BIGINT NOT NULL,
+    amount   NUMERIC(20,0) NOT NULL,
     PRIMARY KEY (block_id, addr)
 );
 CREATE INDEX IF NOT EXISTS payouts_addr ON payouts (addr);
@@ -83,3 +83,32 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS schema_version (
+    id      BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+    version INTEGER NOT NULL
+);
+INSERT INTO schema_version (id, version) VALUES (TRUE, 0)
+ON CONFLICT (id) DO NOTHING;
+
+-- Version 1 upgrades the original signed BIGINT monetary columns to the
+-- uint64-compatible NUMERIC representation used by the wire protocol. This
+-- block is transactional because Store.Open applies the schema in a DB tx.
+DO $$
+DECLARE v INTEGER;
+BEGIN
+    SELECT version INTO v FROM schema_version WHERE id = TRUE;
+    IF v > 1 THEN
+        RAISE EXCEPTION 'unsupported explorer schema version %', v;
+    ELSIF v < 1 THEN
+        ALTER TABLE txs ALTER COLUMN amount TYPE NUMERIC(20,0) USING amount::numeric;
+        ALTER TABLE txs ALTER COLUMN fee TYPE NUMERIC(20,0) USING fee::numeric;
+        ALTER TABLE txs ALTER COLUMN nonce TYPE NUMERIC(20,0) USING nonce::numeric;
+        ALTER TABLE sci_payouts ALTER COLUMN amount TYPE NUMERIC(20,0) USING amount::numeric;
+        ALTER TABLE accounts ALTER COLUMN balance TYPE NUMERIC(20,0) USING balance::numeric;
+        ALTER TABLE accounts ALTER COLUMN nonce TYPE NUMERIC(20,0) USING nonce::numeric;
+        ALTER TABLE accounts ALTER COLUMN earned TYPE NUMERIC(20,0) USING earned::numeric;
+        ALTER TABLE payouts ALTER COLUMN amount TYPE NUMERIC(20,0) USING amount::numeric;
+        UPDATE schema_version SET version = 1 WHERE id = TRUE;
+    END IF;
+END $$;

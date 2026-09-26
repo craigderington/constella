@@ -18,12 +18,13 @@ import (
 )
 
 type Indexer struct {
-	chain   *consensus.Chain
-	store   *store.Store
-	peer    *p2p.Client
-	ledger  *consensus.Ledger
-	dirty   bool
-	lastReq time.Time
+	chain         *consensus.Chain
+	store         *store.Store
+	peer          *p2p.Client
+	ledger        *consensus.Ledger
+	dirty         bool
+	pendingShares []*consensus.Node
+	lastReq       time.Time
 
 	// consensus cross-check: GETACCT replies arrive in request order
 	pending  []proto.Hash
@@ -42,9 +43,20 @@ func (x *Indexer) Load(ctx context.Context) error {
 		return err
 	}
 	for _, r := range raws {
-		if m, err := proto.ParseMsg(r); err == nil {
-			x.chain.AddAt(m, 0)
+		m, err := proto.ParseMsg(r)
+		if err != nil {
+			return fmt.Errorf("invalid persisted share: %w", err)
 		}
+		if _, missing, err := x.chain.AddAt(m, 0); err != nil {
+			return fmt.Errorf("invalid persisted share: %w", err)
+		} else if missing != nil {
+			// Arrival order should be sufficient to connect every persisted
+			// record; an unresolved parent means the database is incomplete.
+			continue
+		}
+	}
+	if n := x.chain.OrphanCount(); n != 0 {
+		return fmt.Errorf("%d persisted shares have missing parents", n)
 	}
 	log.Printf("indexer: loaded %d shares, height %d", len(raws), x.chain.Tip.Height)
 	x.dirty = true
@@ -80,8 +92,11 @@ func (x *Indexer) onShare(ctx context.Context, raw []byte) {
 		return
 	}
 	if len(added) > 0 {
-		if err := x.store.InsertShares(ctx, added); err != nil {
+		x.pendingShares = append(x.pendingShares, added...)
+		if err := x.store.InsertShares(ctx, x.pendingShares); err != nil {
 			log.Printf("indexer: insert: %v", err)
+		} else {
+			x.pendingShares = nil
 		}
 		x.dirty = true
 	}
@@ -91,9 +106,15 @@ func (x *Indexer) flush(ctx context.Context) {
 	if !x.dirty {
 		return
 	}
-	x.dirty = false
 	path := x.chain.Path()
 	x.ledger = consensus.Build(path)
+	if len(x.pendingShares) > 0 {
+		if err := x.store.InsertShares(ctx, x.pendingShares); err != nil {
+			log.Printf("indexer: retry insert: %v", err)
+			return
+		}
+		x.pendingShares = nil
+	}
 	tip := x.chain.Tip
 	meta := map[string]string{
 		"tip":        hex.EncodeToString(tip.ID[:]),
@@ -111,7 +132,9 @@ func (x *Indexer) flush(ctx context.Context) {
 	}
 	if err := x.store.ApplyState(ctx, path, x.ledger, meta); err != nil {
 		log.Printf("indexer: apply state: %v", err)
+		return
 	}
+	x.dirty = false
 }
 
 // startCheck asks the node for every account's state and compares on reply.

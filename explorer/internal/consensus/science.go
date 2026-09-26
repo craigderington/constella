@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"math/big"
+	"math/bits"
 	"sync"
 
 	"github.com/craig/constella/explorer/internal/blake2b"
@@ -139,5 +140,7 @@ func SciWork(g uint32) uint64 {
 // (sci_release in ledger.c). The multiply comes before the divide: computing
 // it the other way round is a different function under integer division.
 func SciRelease(escrow uint64) uint64 {
-	return escrow * proto.SciReleasePct / 100
+	hi, lo := bits.Mul64(escrow, proto.SciReleasePct)
+	q, _ := bits.Div64(hi, lo, 100)
+	return q
 }

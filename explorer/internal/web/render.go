@@ -31,9 +31,8 @@ func short(b []byte) string {
 	return h
 }
 
-func coins(v int64) string {
-	u := uint64(v)
-	whole, frac := u/proto.Coin, u%proto.Coin
+func coins(v uint64) string {
+	whole, frac := v/proto.Coin, v%proto.Coin
 	return fmt.Sprintf("%s.%08d", group(fmt.Sprint(whole)), frac)
 }
 
@@ -177,5 +176,5 @@ var funcs = template.FuncMap{
 	"ndigits": func(p string) int { return len(p) },
 	"iso":     func(t time.Time) string { return t.UTC().Format(time.RFC3339) },
 	"add":     func(a, b int) int { return a + b },
-	"atoi":    func(s string) int64 { v, _ := strconv.ParseInt(s, 10, 64); return v },
+	"atoi":    func(s string) uint64 { v, _ := strconv.ParseUint(s, 10, 64); return v },
 }

@@ -1,9 +1,37 @@
 package proto
 
 import (
+	"bytes"
 	"encoding/hex"
 	"testing"
 )
+
+type shortWriter struct {
+	b bytes.Buffer
+}
+
+func (w *shortWriter) Write(p []byte) (int, error) {
+	if len(p) > 2 {
+		p = p[:2]
+	}
+	return w.b.Write(p)
+}
+
+func TestWriteFrameHandlesShortWrites(t *testing.T) {
+	var w shortWriter
+	if err := WriteFrame(&w, MsgHello, []byte("payload")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ReadFrame(bytes.NewReader(w.b.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWriteFrameRejectsOversize(t *testing.T) {
+	if err := WriteFrame(&bytes.Buffer{}, MsgHello, make([]byte, MaxPay+1)); err == nil || err.Error() != "frame too large" {
+		t.Fatalf("WriteFrame oversized payload: %v", err)
+	}
+}
 
 // The pinned digests below were produced by the C share_root() itself and
 // cross-checked against an independent Python model. They are what actually
