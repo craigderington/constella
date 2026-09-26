@@ -45,6 +45,17 @@ func TestParamsMatchC(t *testing.T) {
 			t.Errorf("%s: C=%d Go=%d", name, got, v)
 		}
 	}
+	// NET_MAGIC is a hex literal, so it misses the decimal want-map above. It
+	// was unguarded until the wire went encrypted and the magic was bumped —
+	// a one-sided bump makes the explorer reject every frame from the node
+	// while both test suites stay green, which is the whole failure this
+	// guard exists to prevent.
+	if m := regexp.MustCompile(`#define\s+NET_MAGIC\s+0x([0-9a-fA-F]+)u`).FindSubmatch(src); m == nil {
+		t.Error("NET_MAGIC not found in params.h")
+	} else if got, _ := strconv.ParseUint(string(m[1]), 16, 32); got != uint64(Magic) {
+		t.Errorf("NET_MAGIC: C=0x%08x Go=0x%08x", got, Magic)
+	}
+
 	if !regexp.MustCompile(`#define\s+GENESIS_TIME\s+1790121600ULL`).Match(src) {
 		t.Error("GENESIS_TIME differs")
 	}
