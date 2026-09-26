@@ -1,6 +1,12 @@
 #include "addr.h"
 #include "blake2b.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
+#include <sys/random.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static int v4mapped(const uint8_t ip[16]) {
     static const uint8_t pfx[12] = {0,0,0,0,0,0,0,0,0,0,0xff,0xff};
@@ -268,4 +274,213 @@ int addr_is_routable(const uint8_t ip[16]) {
     if (ip[0] == 0xfe && (ip[1] & 0xc0) == 0x80) return 0; /* fe80::/10 */
     if (ip[0] == 0xff) return 0;                      /* multicast */
     return 1;
+}
+
+/* ---- persistence -----------------------------------------------------
+ *
+ * File layout (all multi-byte fields little-endian, matching the w16/w32
+ * convention used across share.c/tx.c):
+ *
+ *   offset  size  field
+ *   0       4     magic "ADR1"
+ *   4       1     version (1)
+ *   5       16    bucket secret
+ *   21      4     max_seen (u32)
+ *   25      4     n_new    (u32) - record count that follows for `new`
+ *   29      4     n_tried  (u32) - record count that follows for `tried`
+ *   33      ...   n_new records, then n_tried records; each record is
+ *                 ip(16) + port(2) + seen(4) + ok(1) = 23 bytes. `tried` is
+ *                 not stored per record - it is implied by which of the two
+ *                 runs the record falls in.
+ *   (end-32) 32   BLAKE2b-256 checksum over every byte before it
+ *
+ * On ANY mismatch - wrong magic, wrong version, a size that cannot be a
+ * valid record count, or a checksum that does not match - the whole file is
+ * discarded: fresh secret, empty tables. This is the opposite of the chain
+ * loader, which keeps a validated prefix and stops at the first bad record;
+ * that is a known defect there and must not be repeated here, since a
+ * partially-adopted secret plus a partially-restored table is exactly the
+ * kind of inconsistent state an attacker who can flip one bit wants. */
+
+#define ADDR_REC_SIZE   23u
+#define ADDR_HDR_SIZE   33u
+#define ADDR_CSUM_SIZE  32u
+#define ADDR_MAX_NEW    (ADDR_NEW_BUCKETS   * ADDR_BUCKET_SIZE)
+#define ADDR_MAX_TRIED  (ADDR_TRIED_BUCKETS * ADDR_BUCKET_SIZE)
+#define ADDR_FILE_MAX   (ADDR_HDR_SIZE + \
+                          (uint32_t)(ADDR_MAX_NEW + ADDR_MAX_TRIED) * ADDR_REC_SIZE + \
+                          ADDR_CSUM_SIZE)
+#define ADDR_FILE_MIN   (ADDR_HDR_SIZE + ADDR_CSUM_SIZE)
+
+static void aw16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void aw32(uint8_t *p, uint32_t v) { for (int i = 0; i < 4; i++) p[i] = (uint8_t)(v >> 8 * i); }
+static uint16_t ar16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
+static uint32_t ar32(const uint8_t *p) { uint32_t v = 0; for (int i = 3; i >= 0; i--) v = v << 8 | p[i]; return v; }
+
+/* getrandom(2) needs no fd and cannot be starved by an fd limit or a missing
+ * /dev - same reasoning as net.c's random_bytes. This module's secret is as
+ * security-critical as that one's session key, so it gets the same
+ * fails-closed treatment rather than a clock-derived fallback. */
+static int addr_randbytes(uint8_t *out, size_t n) {
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = getrandom(out + got, n - got, 0);
+        if (r <= 0) { if (errno == EINTR) continue; return -1; }
+        got += (size_t)r;
+    }
+    return 0;
+}
+
+/* Generates a fresh secret and resets both tables to empty. Used both when
+ * no file exists and when an existing one is discarded as corrupt/foreign -
+ * either way the node must still start. */
+static int addr_reset_fresh(void) {
+    uint8_t secret[16];
+    if (addr_randbytes(secret, 16)) return -1;
+    addr_init(secret);
+    return 0;
+}
+
+static uint8_t *write_record(uint8_t *p, const addr_t *a) {
+    memcpy(p, a->ip, 16); p += 16;
+    aw16(p, a->port); p += 2;
+    aw32(p, a->seen); p += 4;
+    *p++ = a->ok;
+    return p;
+}
+
+void addr_save(const char *datadir) {
+    char path[512], tmp[512];
+    if (snprintf(path, sizeof path, "%s/peers.dat", datadir) >= (int)sizeof path) return;
+    if (snprintf(tmp, sizeof tmp, "%s/peers.dat.tmp", datadir) >= (int)sizeof tmp) return;
+
+    static uint8_t buf[ADDR_FILE_MAX];
+    uint8_t *p = buf;
+    *p++ = 'A'; *p++ = 'D'; *p++ = 'R'; *p++ = '1';
+    *p++ = 1;                                   /* version */
+    memcpy(p, g_secret, 16); p += 16;
+    aw32(p, g_max_seen); p += 4;
+
+    uint8_t *n_new_at = p;   p += 4;             /* filled in once counted */
+    uint8_t *n_tried_at = p; p += 4;
+
+    uint32_t n_new = 0;
+    for (int b = 0; b < ADDR_NEW_BUCKETS; b++)
+        for (int i = 0; i < ADDR_BUCKET_SIZE; i++)
+            if (g_new[b][i].used) { p = write_record(p, &g_new[b][i].a); n_new++; }
+
+    uint32_t n_tried = 0;
+    for (int b = 0; b < ADDR_TRIED_BUCKETS; b++)
+        for (int i = 0; i < ADDR_BUCKET_SIZE; i++)
+            if (g_tried[b][i].used) { p = write_record(p, &g_tried[b][i].a); n_tried++; }
+
+    aw32(n_new_at, n_new);
+    aw32(n_tried_at, n_tried);
+
+    size_t body_len = (size_t)(p - buf);
+    uint8_t csum[ADDR_CSUM_SIZE];
+    blake2b(csum, ADDR_CSUM_SIZE, buf, body_len);
+    memcpy(p, csum, ADDR_CSUM_SIZE); p += ADDR_CSUM_SIZE;
+    size_t total = (size_t)(p - buf);
+
+    mkdir(datadir, 0700);   /* best-effort; ignored if it already exists */
+
+    /* mode 0600 from creation, not chmod'd on afterward - the secret must
+     * never be briefly world-readable between fopen and a later chmod. */
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return;
+    fchmod(fd, 0600);   /* covers a pre-existing tmp file with looser perms */
+    FILE *f = fdopen(fd, "wb");
+    if (!f) { close(fd); return; }
+
+    size_t written = fwrite(buf, 1, total, f);
+    int ok = written == total && fflush(f) == 0 && fsync(fileno(f)) == 0;
+    fclose(f);
+    if (!ok) { unlink(tmp); return; }
+    rename(tmp, path);
+}
+
+int addr_load(const char *datadir) {
+    char path[512];
+    if (snprintf(path, sizeof path, "%s/peers.dat", datadir) >= (int)sizeof path)
+        return addr_reset_fresh();
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        if (addr_reset_fresh()) return -1;
+        addr_save(datadir);     /* persist the fresh secret immediately */
+        return 0;
+    }
+
+    if (fseek(f, 0, SEEK_END)) { fclose(f); return addr_reset_fresh(); }
+    long sz = ftell(f);
+    if (sz < 0 || fseek(f, 0, SEEK_SET)) { fclose(f); return addr_reset_fresh(); }
+    if ((uint64_t)sz < ADDR_FILE_MIN || (uint64_t)sz > ADDR_FILE_MAX) {
+        fclose(f);
+        return addr_reset_fresh();
+    }
+
+    static uint8_t buf[ADDR_FILE_MAX];
+    size_t n = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    if (n != (size_t)sz) return addr_reset_fresh();
+
+    const uint8_t *p = buf;
+    if (p[0] != 'A' || p[1] != 'D' || p[2] != 'R' || p[3] != '1') return addr_reset_fresh();
+    p += 4;
+    if (*p != 1) return addr_reset_fresh();
+    p += 1;
+    uint8_t secret[16]; memcpy(secret, p, 16); p += 16;
+    uint32_t max_seen = ar32(p); p += 4;
+    uint32_t n_new    = ar32(p); p += 4;
+    uint32_t n_tried  = ar32(p); p += 4;
+
+    if (n_new > ADDR_MAX_NEW || n_tried > ADDR_MAX_TRIED) return addr_reset_fresh();
+
+    uint64_t expect = ADDR_HDR_SIZE + (uint64_t)(n_new + n_tried) * ADDR_REC_SIZE + ADDR_CSUM_SIZE;
+    if (expect != (uint64_t)n) return addr_reset_fresh();
+
+    size_t body_len = (size_t)n - ADDR_CSUM_SIZE;
+    uint8_t csum[ADDR_CSUM_SIZE];
+    blake2b(csum, ADDR_CSUM_SIZE, buf, body_len);
+    if (memcmp(csum, buf + body_len, ADDR_CSUM_SIZE)) return addr_reset_fresh();
+
+    /* Validated end to end: adopt the persisted secret and rebuild both
+     * tables from the persisted records. addr_init resets max_seen and the
+     * rand counter along with the tables, so max_seen is restored right
+     * after it. Bucket placement is recomputed from the restored secret
+     * rather than trusting a stored bucket index, so it stays consistent
+     * with bucket_hash even if ADDR_*_BUCKETS ever changes. */
+    addr_init(secret);
+    g_max_seen = max_seen;
+
+    for (uint32_t i = 0; i < n_new; i++) {
+        uint8_t ip[16]; memcpy(ip, p, 16); p += 16;
+        uint16_t port = ar16(p); p += 2;
+        uint32_t seen = ar32(p); p += 4;
+        uint8_t ok = *p; p += 1;
+
+        int b = addr_bucket_of(ip, 0);
+        slot_t *s = bucket_free(g_new[b]);
+        if (!s) s = bucket_stalest(g_new[b]);
+        memset(s, 0, sizeof *s);
+        memcpy(s->a.ip, ip, 16);
+        s->a.port = port; s->a.seen = seen; s->a.tried = 0; s->a.ok = ok;
+        s->used = 1;
+    }
+    for (uint32_t i = 0; i < n_tried; i++) {
+        uint8_t ip[16]; memcpy(ip, p, 16); p += 16;
+        uint16_t port = ar16(p); p += 2;
+        uint32_t seen = ar32(p); p += 4;
+        uint8_t ok = *p; p += 1;
+
+        int b = addr_bucket_of(ip, 1);
+        slot_t *s = bucket_free(g_tried[b]);
+        if (!s) s = bucket_stalest(g_tried[b]);
+        memset(s, 0, sizeof *s);
+        memcpy(s->a.ip, ip, 16);
+        s->a.port = port; s->a.seen = seen; s->a.tried = 1; s->a.ok = ok;
+        s->used = 1;
+    }
+    return 0;
 }
