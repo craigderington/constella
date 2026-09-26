@@ -11,7 +11,7 @@ x-node: &node
 
 x-env: &env
   CONSTELLA_PORT: "7043"
-  CONSTELLA_THREADS: "1"
+  CONSTELLA_THREADS: "2"
   CONSTELLA_DUTY: "50"
   CONSTELLA_BATTERY_PAUSE: "1"
   CONSTELLA_P2P_KEY: ${CONSTELLA_P2P_KEY:-}
@@ -33,17 +33,6 @@ services:
     depends_on: [node1]
     environment: { <<: *env, CONSTELLA_PEERS: "node1:7043,node2:7043" }
     volumes: [node3:/data]
-  node4:
-    <<: *node
-    depends_on: [node1]
-    environment: { <<: *env, CONSTELLA_PEERS: "node1:7043,node3:7043" }
-    volumes: [node4:/data]
-  node5:
-    <<: *node
-    depends_on: [node1]
-    environment: { <<: *env, CONSTELLA_PEERS: "node1:7043,node4:7043" }
-    volumes: [node5:/data]
-
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -86,4 +75,4 @@ services:
 networks:
   constella: {}
 
-volumes: { node1: {}, node2: {}, node3: {}, node4: {}, node5: {}, pgdata: {} }
+volumes: { node1: {}, node2: {}, node3: {}, pgdata: {} }
