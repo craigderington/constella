@@ -156,9 +156,8 @@ science-lane balance.
 ## Rewards
 Each block pays 50 coins. 30% is split by work weight across the last 256 shares in its
 ancestry (PPLNS, integer remainder to finder). 70% accrues to the science escrow;
-see "Science claims" above for how it is released. Balances are derived by
-replaying the chain; a tip-bound ledger snapshot may accelerate replay, but it
-is disposable cache and never consensus truth.
+see "Science claims" above for how it is released. Balances are always derived
+by replaying the chain from genesis; there is no snapshot or cached state.
 
 ## Wire
 Frame: `u32 magic "CST2" | u8 type | u16 len | payload`. In secure mode `len` is

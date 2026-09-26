@@ -1,6 +1,6 @@
 /* State is derived from the best chain, applying each share's transactions and,
- * at every block, a work-weighted PPLNS payout. Periodic authenticated-by-tip
- * snapshots shorten replay without becoming consensus state. */
+ * at every block, a work-weighted PPLNS payout. Always a full replay from
+ * genesis; see CLAUDE.md's backlog for the O(n)-per-share cost this implies. */
 #ifndef LEDGER_H
 #define LEDGER_H
 #include <stdint.h>
@@ -55,6 +55,5 @@ uint64_t sci_release(uint64_t escrow);
 int      ledger_sci_pay(ledger_t *L, const uint8_t (*owners)[32], const uint64_t *w,
                         int cnt, const uint8_t finder[32]);
 int     ledger_build(ledger_t *L);               /* replay genesis..best tip */
-void    ledger_snapshot_set_path(const char *datadir);
 void    ledger_free(ledger_t *L);
 #endif
