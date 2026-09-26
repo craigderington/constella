@@ -616,13 +616,12 @@ static void t_transport_vector(void) {
 
     int n = net_seal_vector(out, key, low, high, "lo", 0, 2, "constella", 9);
     hex_enc(hx, out, (size_t)n);
-    CHECK(!strcmp(hx, "43535432021900c06b492f10b0316862380df3530a8a21f6c9473c227ffc4c5c"));
+    CHECK(!strcmp(hx, "43535433021900c06b492f10b03168623a1f5ab88274c4992382b1d6e10fdc9a"));
 
     const char *m = "second frame, counter 1";       /* other direction, counter 1 */
     n = net_seal_vector(out, key, low, high, "hi", 1, 5, m, (uint16_t)strlen(m));
     hex_enc(hx, out, (size_t)n);
-    CHECK(!strcmp(hx, "43535432052700c6f1bead58b05daad2fe578fc92c49eafa0cfccaa041f7674e"
-                      "21633320c31486931bf13fabd0c6"));
+    CHECK(!strcmp(hx, "43535433052700c6f1bead58b05daad2fe578fc92c49eafa0cfccaa041f7bd4268dcc6a8fc028f66a6d658dcda7d"));
 }
 
 /* The wallet CLI is the only thing outside net.c that speaks the wire, and

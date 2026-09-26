@@ -2,9 +2,9 @@
 #ifndef PARAMS_H
 #define PARAMS_H
 
-#define NET_MAGIC      0x32545343u     /* "CST2": the wire is encrypted now, so an
-                                        * old peer must refuse the handshake
-                                        * rather than fail opaquely at decrypt */
+#define NET_MAGIC      0x33545343u     /* "CST3": the handshake changed, so an
+                                        * old peer must refuse rather than fail
+                                        * opaquely at decrypt */
 #define SHARE_VERSION  3
 
 /* Constellation: p, p+4, p+6, p+10, p+12, p+16 (prime sextuplet pattern).
