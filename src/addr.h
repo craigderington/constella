@@ -16,4 +16,16 @@ int addr_netgroup(const uint8_t ip[16], uint8_t out[8]);
 /* Loopback, unspecified, RFC1918, link-local and ULA are never worth storing:
  * they cannot be dialled across the internet and they all share a netgroup. */
 int addr_is_routable(const uint8_t ip[16]);
+
+typedef struct { uint8_t ip[16]; uint16_t port; uint32_t seen; uint8_t tried, ok; } addr_t;
+
+/* `secret` keys bucket placement. It is random per node, persisted, and never
+ * gossiped: if an attacker learns it they can shop for addresses that land in
+ * a victim's buckets and the whole defence collapses. */
+void addr_init(const uint8_t secret[16]);
+int  addr_add(const uint8_t ip[16], uint16_t port, uint32_t seen);
+int  addr_good(const uint8_t ip[16], uint16_t port);
+int  addr_select(addr_t *out, const uint8_t (*avoid)[8], int navoid);
+int  addr_count(int tried);
+int  addr_bucket_of(const uint8_t ip[16], int tried);
 #endif
