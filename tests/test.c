@@ -776,6 +776,63 @@ static void t_netgroup(void) {
     uint8_t ula[16] = {0xfd}; CHECK(!addr_is_routable(ula));
 }
 
+static void t_addr_tables(void) {
+    uint8_t secret[16] = {0};
+    for (int i = 0; i < 16; i++) secret[i] = (uint8_t)(i * 7 + 1);
+    addr_init(secret);
+
+    uint8_t ip[16];
+    /* Review Focus 5 / the security claim, written executably: 10,000
+     * addresses from one /16 must occupy ONE bucket - 32 of 1024 new slots.
+     * If this cannot fail, we built a hash table, not eclipse resistance. */
+    for (int i = 0; i < 10000; i++) {
+        mk4(ip, 203, 0, (uint8_t)(i >> 8), (uint8_t)i);
+        addr_add(ip, 7043, 1000 + (uint32_t)i);
+    }
+    CHECK(addr_count(0) <= ADDR_BUCKET_SIZE);
+
+    mk4(ip, 203, 0, 1, 1);
+    int b = addr_bucket_of(ip, 0);
+    for (int i = 0; i < 200; i++) {
+        mk4(ip, 203, 0, (uint8_t)(i >> 8), (uint8_t)i);
+        CHECK(addr_bucket_of(ip, 0) == b);      /* same /16 -> same bucket */
+    }
+
+    /* a different secret must place the same netgroup differently, or an
+     * attacker could predict a victim's layout */
+    uint8_t other[16]; memset(other, 0xA5, 16);
+    int diff = 0;
+    for (int i = 0; i < 64; i++) {
+        mk4(ip, (uint8_t)(10 + i), 0, 1, 1);
+        addr_init(secret); int x = addr_bucket_of(ip, 0);
+        addr_init(other);  if (addr_bucket_of(ip, 0) != x) diff++;
+    }
+    CHECK(diff > 40);            /* overwhelmingly different, not identical */
+
+    /* unroutable is refused outright */
+    addr_init(secret);
+    mk4(ip, 127, 0, 0, 1); CHECK(addr_add(ip, 7043, 1) == 0);
+    mk4(ip, 10, 0, 0, 1);  CHECK(addr_add(ip, 7043, 1) == 0);
+
+    /* promotion needs two handshakes on separate attempts */
+    mk4(ip, 198, 51, 100, 4);
+    CHECK(addr_add(ip, 7043, 1) == 1);
+    CHECK(addr_count(1) == 0);
+    addr_good(ip, 7043);  CHECK(addr_count(1) == 0);   /* one is not enough */
+    addr_good(ip, 7043);  CHECK(addr_count(1) == 1);   /* two promotes */
+
+    /* selection honours the avoid list, so outbound stays netgroup-diverse */
+    uint8_t avoid[1][8] = {0}; int n = addr_netgroup(ip, avoid[0]);
+    (void)n;
+    addr_t got;
+    for (int i = 0; i < 20; i++) {
+        if (addr_select(&got, avoid, 1)) {
+            uint8_t g[8]; addr_netgroup(got.ip, g);
+            CHECK(memcmp(g, avoid[0], 2));
+        }
+    }
+}
+
 int main(int argc, char **argv) {
     if (sieve_init()) return 1;
     char line[1024];
@@ -813,7 +870,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_cli_socket(); t_netgroup();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_cli_socket(); t_netgroup(); t_addr_tables();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
