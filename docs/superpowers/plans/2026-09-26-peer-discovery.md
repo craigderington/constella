@@ -317,10 +317,7 @@ static void t_addr_tables(void) {
 
     /* a different secret must place the same netgroup differently, or an
      * attacker could predict a victim's layout */
-    int b1 = addr_bucket_of(ip, 0);
     uint8_t other[16]; memset(other, 0xA5, 16);
-    addr_init(other);
-    CHECK(addr_bucket_of(ip, 0) != b1 || 1);    /* may collide; see below */
     int diff = 0;
     for (int i = 0; i < 64; i++) {
         mk4(ip, (uint8_t)(10 + i), 0, 1, 1);
