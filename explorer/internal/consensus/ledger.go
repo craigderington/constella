@@ -78,8 +78,15 @@ func (l *Ledger) applyTx(t *proto.Tx, miner proto.Hash) bool {
 		m = l.acct(miner)
 	}
 	if t.To == t.From {
-		if t.Fee > f.Balance-t.Amount {
-			return false
+		// Self-transfer: to and f are the same account, so only a fee
+		// recipient distinct from f can overflow. m == f means the fee
+		// returns to the sender, a no-op on balance. Mirrors
+		// ledger_apply_tx's nm check in src/ledger.c (m != f && m != to,
+		// and to == f here makes m != to equivalent to m != f).
+		if t.Fee > 0 && m != f {
+			if ^uint64(0)-m.Balance < t.Fee {
+				return false
+			}
 		}
 	} else {
 		if ^uint64(0)-to.Balance < t.Amount {
@@ -90,8 +97,15 @@ func (l *Ledger) applyTx(t *proto.Tx, miner proto.Hash) bool {
 				if ^uint64(0)-to.Balance < t.Amount+t.Fee {
 					return false
 				}
-			} else if ^uint64(0)-m.Balance < t.Fee {
-				return false
+			} else if m != f {
+				// m == f: the fee returns to the sender, whose true
+				// post-tx balance is f.Balance-t.Amount (a decrease) and
+				// can never overflow — matches ledger_apply_tx's nf
+				// computation in src/ledger.c, which folds the fee back
+				// into the same subtraction that debited it.
+				if ^uint64(0)-m.Balance < t.Fee {
+					return false
+				}
 			}
 		}
 	}

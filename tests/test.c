@@ -562,6 +562,32 @@ static void t_chain_recovery(void) {
     rmdir(dir);
 }
 
+/* The transport AEAD is implemented twice - src/net.c and the Go explorer -
+ * and the params drift guard only compares constants, so nothing would catch
+ * the two constructions drifting apart. These exact strings are asserted on
+ * the other side too, in explorer/internal/p2p/transport_test.go. Negative
+ * cases (tampered header, tampered ciphertext, replay, wrong key) live there,
+ * where there is already a reader to feed. */
+static void t_transport_vector(void) {
+    uint8_t key[32], low[32], high[32], out[128];
+    char hx[280];
+    for (int i = 0; i < 32; i++) { key[i] = (uint8_t)i; low[i] = 0x11; high[i] = 0x22; }
+
+    net_auth_vector(out, key, low);
+    hex_enc(hx, out, 32);
+    CHECK(!strcmp(hx, "c4afcebefb54c3f0c50b62ed7e07952ae5143647bb8ba8f6f3e39367f6ead244"));
+
+    int n = net_seal_vector(out, key, low, high, "lo", 0, 2, "constella", 9);
+    hex_enc(hx, out, (size_t)n);
+    CHECK(!strcmp(hx, "43535432021900c06b492f10b0316862380df3530a8a21f6c9473c227ffc4c5c"));
+
+    const char *m = "second frame, counter 1";       /* other direction, counter 1 */
+    n = net_seal_vector(out, key, low, high, "hi", 1, 5, m, (uint16_t)strlen(m));
+    hex_enc(hx, out, (size_t)n);
+    CHECK(!strcmp(hx, "43535432052700c6f1bead58b05daad2fe578fc92c49eafa0cfccaa041f7674e"
+                      "21633320c31486931bf13fabd0c6"));
+}
+
 /* The wallet CLI is the only thing outside net.c that speaks the wire, and
  * nothing exercised it over a socket - which is how a HELLO gate that locks
  * `constella balance` out of every node shipped with a green suite. Host a
@@ -674,7 +700,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_cli_socket();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_cli_socket();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

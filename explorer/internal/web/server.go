@@ -46,14 +46,51 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("GET /api/blocks", s.apiBlocks)
 	m.HandleFunc("GET /api/share/{id}", s.apiShare)
 	m.HandleFunc("GET /api/address/{addr}", s.apiAddress)
-	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		if err := s.st.DB.PingContext(r.Context()); err != nil {
-			http.Error(w, "database unavailable\n", http.StatusServiceUnavailable)
-			return
-		}
-		w.Write([]byte("ok\n"))
-	})
+	m.HandleFunc("GET /healthz", s.healthz)
 	return m
+}
+
+// indexerStaleAfter bounds how old the indexer's "updated_at" meta (written
+// only when a flush actually runs — indexer.go's flush(), gated on x.dirty)
+// may be before healthz calls the indexer stale rather than merely quiet.
+// It reuses the 5-minute window Stats() already treats as "active" for
+// shares/min: comfortably longer than this testnet's observed cadence (on
+// the order of one share every few seconds — see the thermal notes in
+// CLAUDE.md), so an ordinary lull between shares never flaps healthz, while
+// an indexer wedged on a stalled peer connection or a flush stuck retrying
+// is caught well within a live run's monitoring horizon.
+const indexerStaleAfter = 5 * time.Minute
+
+// indexerLive reports whether the indexer looks alive, from what it already
+// publishes to meta rather than any new plumbing: "peer" (rewritten on every
+// ~2s flush tick regardless of whether that tick did any work, so it also
+// doubles as a heartbeat for the indexer's main loop) and "updated_at"
+// (rewritten only on an actual flush). Both must hold: a disconnected peer
+// is unhealthy outright, and a peer that still claims to be connected but
+// hasn't produced a fresh flush in indexerStaleAfter is exactly the "stalled
+// peer connection" wedge this check exists to catch.
+func indexerLive(meta map[string]string) bool {
+	if meta["peer"] != "true" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, meta["updated_at"])
+	if err != nil {
+		return false
+	}
+	return time.Since(t) < indexerStaleAfter
+}
+
+func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
+	st, err := s.st.Stats(r.Context())
+	if err != nil {
+		http.Error(w, "database unavailable\n", http.StatusServiceUnavailable)
+		return
+	}
+	if !indexerLive(st.Meta) {
+		http.Error(w, "indexer stale\n", http.StatusServiceUnavailable)
+		return
+	}
+	w.Write([]byte("ok\n"))
 }
 
 type page struct {
@@ -121,12 +158,24 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if wantsText(r) {
-		st, _ := s.st.Stats(r.Context())
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		writeText(w, st, d)
+		st, err := s.st.Stats(r.Context())
+		writeOverviewText(w, st, err, d)
 		return
 	}
 	s.render(w, r, "overview", "Overview", d, http.StatusOK)
+}
+
+// writeOverviewText renders the curl dashboard, or a 503 if Stats() failed.
+// Split out from overview() so the failure path — a possibly-nil *Stats
+// that writeText would otherwise dereference — is directly testable without
+// a database.
+func writeOverviewText(w http.ResponseWriter, st *store.Stats, err error, d *overviewData) {
+	if err != nil {
+		http.Error(w, "database unavailable: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	writeText(w, st, d)
 }
 
 func wantsText(r *http.Request) bool {
@@ -176,7 +225,11 @@ func (s *Server) height(w http.ResponseWriter, r *http.Request) {
 		s.missing(w, r, "Heights are whole numbers.")
 		return
 	}
-	sh, _ := s.st.ShareAtHeight(r.Context(), h)
+	sh, err := s.st.ShareAtHeight(r.Context(), h)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	if sh == nil {
 		s.missing(w, r, "Nothing on the main chain at height "+num(h)+" yet.")
 		return

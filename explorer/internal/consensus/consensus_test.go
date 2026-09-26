@@ -195,3 +195,68 @@ func TestLedgerTx(t *testing.T) {
 		t.Fatal("replay applied")
 	}
 }
+
+// TestApplyTxSelfTransferSkipsOnDistinctFeeOverflow pins ledger_apply_tx's
+// aliasing-aware overflow check (src/ledger.c) for a self-transfer (t.To ==
+// t.From) whose fee goes to a third, distinct miner account already sitting
+// near uint64 max. C computes the miner's post-tx balance (nm) in 128-bit
+// arithmetic and returns LEDGER_INVALID (skip, keep replaying) when it
+// doesn't fit in a uint64. Before the fix, applyTx's self-transfer branch
+// never checked the miner's balance at all and fell through to
+// addBalance(m, t.Fee), which panics on overflow — on the indexer's single,
+// unrecovered goroutine that is a process crash, repeated on every restart
+// via replay of the same persisted tx.
+func TestApplyTxSelfTransferSkipsOnDistinctFeeOverflow(t *testing.T) {
+	var a, m proto.Hash
+	a[0], m[0] = 1, 9
+	l := &Ledger{Accounts: map[proto.Hash]*Account{}}
+	l.acct(a).Balance = 100
+	l.acct(m).Balance = ^uint64(0) // already at the uint64 limit
+	tx := &proto.Tx{From: a, To: a, Amount: 1, Fee: 10}
+
+	applied := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("applyTx panicked instead of skipping the tx (C returns LEDGER_INVALID here): %v", r)
+			}
+		}()
+		applied = l.applyTx(tx, m)
+	}()
+	if applied {
+		t.Fatal("self-transfer with an overflowing fee recipient must be skipped, not applied")
+	}
+	if l.Accounts[a].Balance != 100 || l.Accounts[a].Nonce != 0 {
+		t.Fatalf("a skipped tx must not mutate state: balance=%d nonce=%d", l.Accounts[a].Balance, l.Accounts[a].Nonce)
+	}
+	if l.Accounts[m].Balance != ^uint64(0) {
+		t.Fatalf("a skipped tx must not touch the miner's balance: %d", l.Accounts[m].Balance)
+	}
+}
+
+// TestApplyTxFeeRefundUsesPostDebitSenderBalance pins the second divergence:
+// in ledger_apply_tx (src/ledger.c), when to != from and the fee's
+// destination miner is the sender itself (m == f), the fee is added back
+// into the same subtraction that debited it, so the sender's true post-tx
+// balance is f.Balance-t.Amount — a decrease that can never overflow.
+// Checking the fee against the pre-debit f.Balance instead (as applyTx did)
+// can reject a transaction near uint64 max that C accepts: a real,
+// if hard-to-reach, consensus fork.
+func TestApplyTxFeeRefundUsesPostDebitSenderBalance(t *testing.T) {
+	var f, to proto.Hash
+	f[0], to[0] = 1, 2
+	l := &Ledger{Accounts: map[proto.Hash]*Account{}}
+	max := ^uint64(0)
+	l.acct(f).Balance = max
+	tx := &proto.Tx{From: f, To: to, Amount: 1, Fee: max - 1}
+
+	if !l.applyTx(tx, f) { // miner == sender: the fee refunds to f
+		t.Fatal("C accepts this tx (nf = f.Balance-t.Amount never overflows); applyTx rejected it")
+	}
+	if l.Accounts[f].Balance != max-1 {
+		t.Fatalf("sender balance = %d, want %d", l.Accounts[f].Balance, max-1)
+	}
+	if l.Accounts[to].Balance != 1 {
+		t.Fatalf("recipient balance = %d, want 1", l.Accounts[to].Balance)
+	}
+}
