@@ -160,7 +160,7 @@ see "Science claims" above for how it is released. Balances are always derived
 by replaying the chain from genesis; there is no snapshot or cached state.
 
 ## Wire
-Frame: `u32 magic "CST2" | u8 type | u16 len | payload`. In secure mode `len` is
+Frame: `u32 magic "CST3" | u8 type | u16 len | payload`. In secure mode `len` is
 the ciphertext length (payload + 16-byte tag) and the whole 7-byte header is the
 AEAD's associated data.
 

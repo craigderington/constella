@@ -39,7 +39,12 @@ size: constella
 	test $$sz -le $(SIZE_MAX_BYTES) || { echo "SIZE GATE FAILED"; exit 1; }
 
 explorer-test:
-	cd explorer && go vet -mod=vendor ./... && go test -mod=vendor ./...
+# -count=1 is load-bearing, not caution. params_test.go is the C/Go drift
+# guard and it reads src/params.h and src/science.h with os.ReadFile at
+# runtime. Go's test cache tracks source, flags and env - not files a test
+# opens itself - so after a C-only header edit the cache serves the old
+# PASS and the guard reports success on a divergence it never looked at.
+	cd explorer && go vet -mod=vendor ./... && go test -count=1 -mod=vendor ./...
 
 explorer:
 	cd explorer && CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o ../constella-explorer ./cmd/explorer
