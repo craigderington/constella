@@ -161,7 +161,9 @@ replaying the chain; a tip-bound ledger snapshot may accelerate replay, but it
 is disposable cache and never consensus truth.
 
 ## Wire
-Frame: `u32 magic "CSTL" | u8 type | u16 len | payload`
+Frame: `u32 magic "CST2" | u8 type | u16 len | payload`. In secure mode `len` is
+the ciphertext length (payload + 16-byte tag) and the whole 7-byte header is the
+AEAD's associated data.
 
 - `1 HELLO`: tip id (32 bytes). Both sides send HELLO after connecting; a peer
   that does not send a valid HELLO within 10 seconds is dropped. The receiver
@@ -179,4 +181,36 @@ Frame: `u32 magic "CSTL" | u8 type | u16 len | payload`
   32-byte BLAKE2b proof). When `CONSTELLA_P2P_KEY` is configured, both peers
   authenticate before HELLO and all later frames use directional
   XChaCha20-Poly1305 with monotonically increasing nonces. The explorer uses
-  the matching `EXPLORER_P2P_KEY`.
+  the matching `EXPLORER_P2P_KEY`; the wallet CLI reads `CONSTELLA_P2P_KEY`.
+  Challenges come from `getrandom(2)` and the handshake aborts if it fails: a
+  repeated challenge repeats the session key with the counter back at zero. A
+  peer that echoes our own challenge is rejected for the same reason.
+
+The wallet is a peer like any other. `balance` and `send` run the AUTH
+exchange when a key is set, then send HELLO, then their request — the 10-second
+HELLO gate exists so an unauthenticated stranger cannot sit in an inbound slot,
+and nothing is exempt from it.
+
+### What the pre-shared key is not
+It authenticates the *network*, not a peer, and it is worth being explicit
+about the three things it does not do:
+
+- **No forward secrecy.** Session keys are `BLAKE2b(psk; "CSTL-P2P1" ‖ dir ‖
+  challenges)` and the challenges travel in the clear, so anyone who learns the
+  PSK later can decrypt any session they recorded earlier. Rotating the key
+  protects future traffic only.
+- **One key for the whole network.** Every node holds the same secret, so any
+  holder can impersonate any other node to any peer. It keeps strangers off the
+  wire; it does not tell two members apart, and it is not an authorisation
+  boundary between them.
+- **The AUTH proof is replayable.** It is a keyed hash of the challenge the
+  prover itself chose, with nothing binding it to this connection or this
+  moment. Anyone who has seen one valid AUTH frame can replay it to pass the
+  gate. They still cannot read or forge the session that follows — the frame
+  keys depend on both challenges and the session counter starts at zero — so
+  this costs an inbound slot, not confidentiality.
+
+Consensus does not rest on any of this: shares carry their own proof of work
+and transactions their own signatures, both verified independently of the
+transport. The key raises the cost of watching or joining the network, and
+that is all it is for.
