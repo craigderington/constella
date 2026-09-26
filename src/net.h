@@ -29,4 +29,19 @@ void net_send(int peer, uint8_t type, const void *p, uint16_t len);
 void net_broadcast(int except, uint8_t type, const void *p, uint16_t len);
 void net_tick(void);
 int  net_peers(void);
+void net_stop(void);   /* close the listener and drop every peer */
+
+/* Short-lived request/response client (the wallet). It runs the same AUTH and
+ * HELLO handshake a gossip peer does, because the node gates every connection
+ * on it. Blocking, with a 10 s socket timeout. */
+typedef struct {
+    int fd, secure;
+    uint8_t txkey[32], rxkey[32];
+    uint64_t txseq, rxseq;
+} net_client_t;
+
+int  net_client_open(net_client_t *c, const char *hostport, const char *psk_hex);
+int  net_client_send(net_client_t *c, uint8_t type, const void *p, uint16_t len);
+int  net_client_wait(net_client_t *c, uint8_t want, uint8_t *out, uint16_t *len);
+void net_client_close(net_client_t *c);
 #endif

@@ -27,7 +27,7 @@ test_constella: $(CORE) tests/test.c src/*.h
 thermal_sim: src/throttle.c src/util.c tests/thermal_sim.c src/throttle.h
 	$(CC) $(CFLAGS) -Isrc -o $@ src/throttle.c src/util.c tests/thermal_sim.c $(LDFLAGS)
 
-unit: test_constella thermal_sim
+unit: constella test_constella thermal_sim
 	./test_constella
 	./thermal_sim
 
