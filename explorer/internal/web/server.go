@@ -70,7 +70,14 @@ const indexerStaleAfter = 5 * time.Minute
 // hasn't produced a fresh flush in indexerStaleAfter is exactly the "stalled
 // peer connection" wedge this check exists to catch.
 func indexerLive(meta map[string]string) bool {
-	return true // old behaviour: DB reachability only, indexer liveness ignored
+	if meta["peer"] != "true" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, meta["updated_at"])
+	if err != nil {
+		return false
+	}
+	return time.Since(t) < indexerStaleAfter
 }
 
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
@@ -163,6 +170,10 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 // that writeText would otherwise dereference — is directly testable without
 // a database.
 func writeOverviewText(w http.ResponseWriter, st *store.Stats, err error, d *overviewData) {
+	if err != nil {
+		http.Error(w, "database unavailable: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	writeText(w, st, d)
 }
@@ -214,7 +225,18 @@ func (s *Server) height(w http.ResponseWriter, r *http.Request) {
 		s.missing(w, r, "Heights are whole numbers.")
 		return
 	}
-	sh, _ := s.st.ShareAtHeight(r.Context(), h)
+	sh, err := s.st.ShareAtHeight(r.Context(), h)
+	s.writeHeightResult(w, r, h, sh, err)
+}
+
+// writeHeightResult is split out of height() so the failure path — a
+// database error must become a 503, not the "no share at this height" 404
+// that s.missing renders — is directly testable without a database.
+func (s *Server) writeHeightResult(w http.ResponseWriter, r *http.Request, h int, sh *store.ShareRow, err error) {
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	if sh == nil {
 		s.missing(w, r, "Nothing on the main chain at height "+num(h)+" yet.")
 		return
