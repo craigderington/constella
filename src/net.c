@@ -10,7 +10,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #define MAX_PEERS 32
@@ -63,29 +65,29 @@ static int reserve_tx(peer_t *p, size_t need) {
     return 0;
 }
 
-static int random_bytes(uint8_t *out, size_t n, int fd) {
-    int rfd = open("/dev/urandom", O_RDONLY);
-    if (rfd >= 0) {
-        size_t got = 0;
-        while (got < n) {
-            ssize_t r = read(rfd, out + got, n - got);
-            if (r <= 0) break;
-            got += (size_t)r;
-        }
-        close(rfd);
-        if (got == n) return 0;
+/* Fails closed: a predictable challenge repeats the session key with the
+ * counter back at 0, so a handshake that cannot get real entropy must abort
+ * rather than fall back to a clock-derived hash. getrandom(2) needs no fd and
+ * cannot be starved by an fd limit or a missing /dev; this node is Linux-only
+ * anyway (/proc, /sys, poll), so there is nothing to fall back to. */
+static int random_bytes(uint8_t *out, size_t n) {
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = getrandom(out + got, n - got, 0);
+        if (r <= 0) { if (errno == EINTR) continue; return -1; }
+        got += (size_t)r;
     }
-    uint8_t seed[32];
-    memset(seed, 0, sizeof seed);
-    uint64_t t = (uint64_t)now_ns();
-    memcpy(seed, &t, sizeof t);
-    memcpy(seed + 8, &fd, sizeof fd);
-    crypto_blake2b(out, n, seed, sizeof seed);
     return 0;
 }
 
 static void put64le(uint8_t *p, uint64_t v) {
     for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (8 * i));
+}
+
+static void put_hdr(uint8_t *h, uint8_t type, uint16_t len) {
+    uint32_t m = NET_MAGIC;
+    for (int k = 0; k < 4; k++) h[k] = (uint8_t)(m >> 8 * k);
+    h[4] = type; h[5] = (uint8_t)len; h[6] = (uint8_t)(len >> 8);
 }
 
 static void auth_proof(uint8_t out[32], const uint8_t challenge[32]) {
@@ -117,9 +119,7 @@ static int append_plain(peer_t *p, uint8_t type, const void *pay, uint16_t len) 
     size_t need = p->txn + HDR + len;
     if (reserve_tx(p, need)) return -1;
     uint8_t *h = p->tx + p->txn;
-    uint32_t m = NET_MAGIC;
-    for (int k = 0; k < 4; k++) h[k] = (uint8_t)(m >> 8 * k);
-    h[4] = type; h[5] = (uint8_t)len; h[6] = (uint8_t)(len >> 8);
+    put_hdr(h, type, len);
     if (len) memcpy(h + HDR, pay, len);
     p->txn = need;
     return 0;
@@ -131,9 +131,7 @@ static int append_encrypted(peer_t *p, uint8_t type, const void *pay, uint16_t l
     size_t need = p->txn + HDR + wire_len;
     if (reserve_tx(p, need)) return -1;
     uint8_t *h = p->tx + p->txn;
-    uint32_t m = NET_MAGIC;
-    for (int k = 0; k < 4; k++) h[k] = (uint8_t)(m >> 8 * k);
-    h[4] = type; h[5] = (uint8_t)wire_len; h[6] = (uint8_t)(wire_len >> 8);
+    put_hdr(h, type, wire_len);
     uint8_t nonce[24];
     make_nonce(nonce, p->txseq++);
     crypto_aead_lock(h + HDR, h + HDR + len, p->txkey, nonce, h, HDR, pay, len);
@@ -224,7 +222,7 @@ int net_peers(void) {
 static int start_auth(int i) {
     peer_t *p = &P[i];
     if (!p->secure || p->auth_sent) return 0;
-    random_bytes(p->challenge, 32, p->fd);
+    if (random_bytes(p->challenge, 32)) return -1;   /* no entropy: never send a guessable challenge */
     uint8_t payload[64];
     memcpy(payload, p->challenge, 32);
     auth_proof(payload + 32, p->challenge);
@@ -240,6 +238,9 @@ static int finish_auth(int i, const uint8_t *payload, uint16_t len) {
     uint8_t proof[32];
     auth_proof(proof, payload);
     if (crypto_verify32(proof, payload + 32)) return -1;
+    /* equal challenges leave memcmp() < 0 false on both ends, so both peers
+     * would name the same key "lo" and encrypt with it from nonce 0. */
+    if (!memcmp(payload, p->challenge, 32)) return -1;
     memcpy(p->remote_challenge, payload, 32);
     p->auth_recv = 1;
     if (!p->auth_sent) return 0;
@@ -323,6 +324,133 @@ int net_init(uint16_t port, const char *csv, const char *psk_hex,
     return 0;
 }
 
+/* --- short-lived request/response client (the wallet CLI) ------------------
+ * The gate that keeps unauthenticated peers out of inbound slots applies to
+ * every connection, so the wallet does the same handshake a gossip peer does:
+ * AUTH when a key is set, then HELLO, then its request. Exempting clients
+ * instead would mean an unauthenticated stranger could hold a slot for as
+ * long as it liked, which is the thing the gate exists to stop. It reuses the
+ * module's `psk`: a process is either a node or a CLI invocation, never both.
+ * Blocking I/O throughout - this runs for one round trip and then exits. */
+
+static int cxfer(int fd, void *b, size_t n, int wr) {
+    uint8_t *p = b;
+    while (n) {
+        ssize_t r = wr ? send(fd, p, n, MSG_NOSIGNAL) : recv(fd, p, n, 0);
+        if (r <= 0) return -1;
+        p += (size_t)r; n -= (size_t)r;
+    }
+    return 0;
+}
+
+static int cframe_send(int fd, uint8_t type, const void *p, uint16_t len) {
+    uint8_t h[HDR];
+    put_hdr(h, type, len);
+    if (cxfer(fd, h, HDR, 1)) return -1;
+    return len ? cxfer(fd, (void *)(uintptr_t)p, len, 1) : 0;
+}
+
+/* One raw frame into hdr/buf (buf must hold MAXPAY); payload length, or -1. */
+static int cframe_recv(int fd, uint8_t *hdr, uint8_t *buf) {
+    if (cxfer(fd, hdr, HDR, 0)) return -1;
+    uint32_t m = (uint32_t)hdr[0] | (uint32_t)hdr[1] << 8 |
+                 (uint32_t)hdr[2] << 16 | (uint32_t)hdr[3] << 24;
+    uint16_t len = (uint16_t)(hdr[5] | hdr[6] << 8);
+    if (m != NET_MAGIC || len > MAXPAY) return -1;
+    if (len && cxfer(fd, buf, len, 0)) return -1;
+    return len;
+}
+
+int net_client_send(net_client_t *c, uint8_t type, const void *pay, uint16_t len) {
+    if (len > NET_MAXPAY) return -1;
+    if (!c->secure) return cframe_send(c->fd, type, pay, len);
+    uint8_t h[HDR], nonce[24];
+    static uint8_t ct[MAXPAY];
+    put_hdr(h, type, (uint16_t)(len + 16));
+    make_nonce(nonce, c->txseq++);
+    crypto_aead_lock(ct, ct + len, c->txkey, nonce, h, HDR, pay, len);
+    return cxfer(c->fd, h, HDR, 1) || cxfer(c->fd, ct, (size_t)len + 16, 1) ? -1 : 0;
+}
+
+/* Read frames until one of `want` arrives; the node also gossips at us. */
+int net_client_wait(net_client_t *c, uint8_t want, uint8_t *out, uint16_t *len) {
+    static uint8_t buf[MAXPAY];
+    uint8_t hdr[HDR];
+    for (int i = 0; i < 4096; i++) {
+        int n = cframe_recv(c->fd, hdr, buf);
+        if (n < 0) return -1;
+        if (c->secure) {
+            if (hdr[4] == MSG_AUTH || n < 16) return -1;
+            uint8_t nonce[24];
+            make_nonce(nonce, c->rxseq++);
+            if (crypto_aead_unlock(buf, buf + n - 16, c->rxkey, nonce, hdr, HDR,
+                                   buf, (size_t)n - 16)) return -1;
+            n -= 16;
+        }
+        if (n > NET_MAXPAY) return -1;
+        if (hdr[4] == want) { memcpy(out, buf, (size_t)n); *len = (uint16_t)n; return 0; }
+    }
+    return -1;
+}
+
+void net_client_close(net_client_t *c) {
+    if (c->fd >= 0) close(c->fd);
+    crypto_wipe(c, sizeof *c);
+    c->fd = -1;
+}
+
+int net_client_open(net_client_t *c, const char *hostport, const char *psk_hex) {
+    memset(c, 0, sizeof *c);
+    c->fd = -1;
+    char host[256];
+    snprintf(host, sizeof host, "%s", hostport);
+    char *sep = strrchr(host, ':');
+    const char *port = "7043";
+    if (sep) { *sep = 0; port = sep + 1; }
+    struct addrinfo hints = {0}, *res;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, port, &hints, &res)) return -1;
+    int fd = socket(res->ai_family, SOCK_STREAM, 0);
+    if (fd >= 0 && connect(fd, res->ai_addr, res->ai_addrlen)) { close(fd); fd = -1; }
+    freeaddrinfo(res);
+    if (fd < 0) return -1;
+    struct timeval tv = {10, 0};       /* a wedged node must not wedge the wallet */
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    c->fd = fd;
+    if (psk_hex && *psk_hex) {
+        uint8_t local[32], pay[64], hdr[HDR], proof[32];
+        static uint8_t buf[MAXPAY];
+        if (hex_dec(psk, sizeof psk, psk_hex) || random_bytes(local, 32)) goto fail;
+        c->secure = 1;
+        memcpy(pay, local, 32);
+        auth_proof(pay + 32, local);
+        if (cframe_send(fd, MSG_AUTH, pay, sizeof pay)) goto fail;
+        if (cframe_recv(fd, hdr, buf) != 64 || hdr[4] != MSG_AUTH) goto fail;
+        auth_proof(proof, buf);
+        if (crypto_verify32(proof, buf + 32)) goto fail;
+        if (!memcmp(local, buf, 32)) goto fail;   /* see finish_auth */
+        const uint8_t *low = local, *high = buf;
+        int local_low = memcmp(low, high, 32) < 0;
+        if (!local_low) { low = buf; high = local; }
+        session_key(local_low ? c->txkey : c->rxkey, "lo", low, high);
+        session_key(local_low ? c->rxkey : c->txkey, "hi", low, high);
+    }
+    uint8_t tip[32] = {0};   /* an unknown tip: it only opens the gate */
+    if (net_client_send(c, MSG_HELLO, tip, sizeof tip)) goto fail;
+    return 0;
+fail:
+    net_client_close(c);
+    return -1;
+}
+
+/* tests host a listener in-process and need a clean slate between runs. */
+void net_stop(void) {
+    for (int i = 0; i < MAX_PEERS; i++) drop(i);
+    if (lfd >= 0) close(lfd);
+    lfd = -1; nseeds = 0; n_inbound = 0;
+}
+
 int net_pollfds(struct pollfd *pf, int max) {
     int n = 0;
     pf[n].fd = lfd; pf[n].events = POLLIN; pmap[n++] = -1;
@@ -333,6 +461,18 @@ int net_pollfds(struct pollfd *pf, int max) {
         pmap[n++] = i;
     }
     return n;
+}
+
+/* A mismatched key looks exactly like a rude peer from here, and the two env
+ * vars are separately settable, so say it once per process - once, because a
+ * hostile peer could otherwise drive the log. */
+static void gate_hint(int on_auth) {
+    static int said;
+    if (said) return;
+    said = 1;
+    log_msg("p2p: dropped a peer at the gate - %s", on_auth
+            ? "no valid AUTH (wrong or missing CONSTELLA_P2P_KEY on its side)"
+            : "first frame was not HELLO (a peer using a key this node lacks looks like this)");
 }
 
 static void readable(int i) {
@@ -352,7 +492,7 @@ static void readable(int i) {
 		const uint8_t *msg = p->rx + HDR;
 		uint16_t msglen = len;
 		if (p->secure && !p->auth_ready) {
-			if (p->rx[4] != MSG_AUTH || finish_auth(i, msg, len)) { drop(i); return; }
+			if (p->rx[4] != MSG_AUTH || finish_auth(i, msg, len)) { gate_hint(1); drop(i); return; }
 		} else {
 			if (p->secure) {
 				if (p->rx[4] == MSG_AUTH || len < 16) { drop(i); return; }
@@ -364,7 +504,7 @@ static void readable(int i) {
 				}
 				msg = plain; msglen = (uint16_t)(len - 16);
 			}
-			if (!p->hello && (p->rx[4] != MSG_HELLO || msglen != 32)) { drop(i); return; }
+			if (!p->hello && (p->rx[4] != MSG_HELLO || msglen != 32)) { gate_hint(0); drop(i); return; }
 			if (p->rx[4] == MSG_HELLO) p->hello = 1;
 			cb_msg(i, p->rx[4], msg, msglen);
 		}

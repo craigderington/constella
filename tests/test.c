@@ -4,6 +4,7 @@
 #include "chain.h"
 #include "ledger.h"
 #include "mempool.h"
+#include "net.h"
 #include "tx.h"
 #include "wallet.h"
 #include "share.h"
@@ -14,7 +15,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static int fails, runs;
@@ -559,6 +562,81 @@ static void t_chain_recovery(void) {
     rmdir(dir);
 }
 
+/* The wallet CLI is the only thing outside net.c that speaks the wire, and
+ * nothing exercised it over a socket - which is how a HELLO gate that locks
+ * `constella balance` out of every node shipped with a green suite. Host a
+ * real net.c listener here and drive the real binary against it, in the clear
+ * and with a PSK. */
+static const uint8_t cli_addr[32] = {0xab, 0xcd, 0x01, 0x02};
+
+static void cli_on_msg(int peer, uint8_t type, const uint8_t *p, uint16_t len) {
+    if (type != MSG_GETACCT || len != 32 || memcmp(p, cli_addr, 32)) return;
+    uint8_t out[28] = {0};
+    uint64_t amt = 125000000ULL;                 /* 1.25 coins */
+    for (int i = 0; i < 8; i++) out[i] = (uint8_t)(amt >> 8 * i);
+    out[8] = 3; out[16] = 4; out[24] = 7;        /* nonce, next nonce, height */
+    net_send(peer, MSG_ACCT, out, sizeof out);
+}
+
+static void cli_on_conn(int peer) {
+    uint8_t tip[32] = {0};
+    net_send(peer, MSG_HELLO, tip, 32);
+}
+
+/* Returns the CLI's exit status with its stdout in `out`; -1 if it never ran. */
+static int cli_probe(const char *psk, char *out, size_t cap) {
+    uint16_t port = 0;
+    for (uint16_t t = 17943; t < 17983 && !port; t++)
+        if (!net_init(t, NULL, psk, cli_on_msg, cli_on_conn)) port = t;
+    if (!port) return -1;
+    int pfd[2];
+    if (pipe(pfd)) { net_stop(); return -1; }
+    char hp[64], ah[65];
+    snprintf(hp, sizeof hp, "127.0.0.1:%u", port);
+    hex_enc(ah, cli_addr, 32);
+    pid_t pid = fork();
+    if (pid == 0) {
+        dup2(pfd[1], 1); close(pfd[0]); close(pfd[1]);
+        if (psk) setenv("CONSTELLA_P2P_KEY", psk, 1); else unsetenv("CONSTELLA_P2P_KEY");
+        execl("./constella", "constella", "balance", hp, ah, (char *)NULL);
+        _exit(127);
+    }
+    close(pfd[1]);
+    size_t n = 0;
+    int status = -1, eof = 0;
+    for (int64_t deadline = now_sec() + 15; now_sec() < deadline;) {
+        struct pollfd pf[34];
+        pf[0].fd = pfd[0]; pf[0].events = POLLIN;
+        int np = net_pollfds(pf + 1, 32);
+        poll(pf, (nfds_t)np + 1, 50);
+        net_process(pf + 1, np);
+        net_tick();
+        if (!(pf[0].revents & (POLLIN | POLLHUP))) continue;
+        if (n + 1 >= cap) { eof = 1; break; }
+        ssize_t r = read(pfd[0], out + n, cap - 1 - n);
+        if (r > 0) n += (size_t)r;
+        else { eof = 1; break; }
+    }
+    out[n] = 0;
+    close(pfd[0]);
+    if (!eof) kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    net_stop();
+    return eof && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+static void t_cli_socket(void) {
+    if (access("./constella", X_OK)) { fprintf(stderr, "SKIP cli socket: no ./constella\n"); return; }
+    static const char *want = "1.25000000  (nonce 3, next 4, height 7)";
+    char out[512];
+    CHECK(cli_probe(NULL, out, sizeof out) == 0);                 /* plaintext */
+    CHECK(strstr(out, want) != NULL);
+    /* same PSK on both ends: the CLI must authenticate, not be gated out */
+    static const char *psk = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
+    CHECK(cli_probe(psk, out, sizeof out) == 0);                  /* secure */
+    CHECK(strstr(out, want) != NULL);
+}
+
 int main(int argc, char **argv) {
     if (sieve_init()) return 1;
     char line[1024];
@@ -596,7 +674,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_cli_socket();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

@@ -332,8 +332,12 @@ int node_run(void) {
     hex_enc(a, payout, 32);
     tx_chain_id(tag);
     hex_enc(cid, tag, 8);
-    log_msg("constella: payout=%s%s threads=%d duty<=%d%% port=%d chain=%s", a,
-            wr == 1 ? " (new key)" : "", threads, atoi(env("CONSTELLA_DUTY", "50")), port, cid);
+    /* say the transport out loud: the key is one env var on each side and a
+     * one-sided setup is otherwise silent. */
+    const char *key = getenv("CONSTELLA_P2P_KEY");
+    log_msg("constella: payout=%s%s threads=%d duty<=%d%% port=%d chain=%s p2p=%s", a,
+            wr == 1 ? " (new key)" : "", threads, atoi(env("CONSTELLA_DUTY", "50")), port, cid,
+            key && *key ? "encrypted" : "PLAINTEXT");
 
     if (rebuild_state()) { log_msg("fatal: cannot rebuild ledger state"); return 1; }
     live = 1;

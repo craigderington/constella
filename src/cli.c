@@ -26,65 +26,30 @@ static const char *keypath(const char *arg) {
     return buf;
 }
 
-static int dial(const char *hostport) {
-    char host[256], *c;
-    snprintf(host, sizeof host, "%s", hostport);
-    c = strrchr(host, ':');
-    const char *port = "7043";
-    if (c) { *c = 0; port = c + 1; }
-    struct addrinfo hints = {0}, *res;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host, port, &hints, &res)) return -1;
-    int fd = socket(res->ai_family, SOCK_STREAM, 0);
-    if (fd >= 0 && connect(fd, res->ai_addr, res->ai_addrlen)) { close(fd); fd = -1; }
-    freeaddrinfo(res);
-    if (fd >= 0) {
-        struct timeval tv = {10, 0};
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    }
-    return fd;
-}
-
-static int xfer(int fd, void *b, size_t n, int wr) {
-    uint8_t *p = b;
-    while (n) {
-        ssize_t r = wr ? send(fd, p, n, MSG_NOSIGNAL) : recv(fd, p, n, 0);
-        if (r <= 0) return -1;
-        p += r; n -= (size_t)r;
-    }
-    return 0;
-}
-
-static int frame_send(int fd, uint8_t type, const void *p, uint16_t len) {
-    uint8_t h[NET_HDR] = {(uint8_t)NET_MAGIC, (uint8_t)(NET_MAGIC >> 8), (uint8_t)(NET_MAGIC >> 16),
-                          (uint8_t)(NET_MAGIC >> 24), type, (uint8_t)len, (uint8_t)(len >> 8)};
-    return xfer(fd, h, NET_HDR, 1) || (len && xfer(fd, (void *)p, len, 1)) ? -1 : 0;
-}
-
-/* Read frames until one of `want` arrives (the node also gossips at us). */
-static int frame_wait(int fd, uint8_t want, uint8_t *out, uint16_t *len) {
-    static uint8_t buf[NET_MAXPAY];
-    for (int i = 0; i < 4096; i++) {
-        uint8_t h[NET_HDR];
-        if (xfer(fd, h, NET_HDR, 0)) return -1;
-        uint32_t magic = (uint32_t)h[0] | (uint32_t)h[1] << 8 |
-                         (uint32_t)h[2] << 16 | (uint32_t)h[3] << 24;
-        if (magic != NET_MAGIC) return -1;
-        uint16_t l = (uint16_t)(h[5] | h[6] << 8);
-        if (l > NET_MAXPAY || xfer(fd, buf, l, 0)) return -1;
-        if (h[4] == want) { memcpy(out, buf, l); *len = l; return 0; }
-    }
-    return -1;
-}
-
 static uint64_t g64(const uint8_t *p) { uint64_t v = 0; for (int i = 7; i >= 0; i--) v = v << 8 | p[i]; return v; }
 
 typedef struct { uint64_t amt, nonce, next; uint32_t height; } acct_info;
 
-static int query(int fd, const uint8_t addr[32], acct_info *a) {
+static const char *p2p_key(void) {
+    const char *k = getenv("CONSTELLA_P2P_KEY");
+    return k && *k ? k : NULL;
+}
+
+/* The two ends of the PSK are configured separately, so a one-sided setup
+ * otherwise shows up as a bare connection drop. Name the likely cause. */
+static void unreachable(const char *hostport) {
+    fprintf(stderr, "node unreachable: %s%s\n", hostport, p2p_key()
+            ? " (CONSTELLA_P2P_KEY set here; the node must have the same key)"
+            : " (no CONSTELLA_P2P_KEY here; set the node's key if it runs encrypted)");
+}
+
+/* Opens, handshakes and asks for one account; leaves the connection up. */
+static int query(net_client_t *c, const char *hostport, const uint8_t addr[32], acct_info *a) {
     uint8_t out[NET_MAXPAY];
     uint16_t l;
-    if (frame_send(fd, MSG_GETACCT, addr, 32) || frame_wait(fd, MSG_ACCT, out, &l) || l != 28) return -1;
+    if (net_client_open(c, hostport, p2p_key())) return -1;
+    if (net_client_send(c, MSG_GETACCT, addr, 32) ||
+        net_client_wait(c, MSG_ACCT, out, &l) || l != 28) { net_client_close(c); return -1; }
     a->amt = g64(out); a->nonce = g64(out + 8); a->next = g64(out + 16);
     a->height = (uint32_t)(out[24] | out[25] << 8 | out[26] << 16 | (uint32_t)out[27] << 24);
     return 0;
@@ -119,10 +84,10 @@ int cli_balance(int argc, char **argv) {
         memcpy(addr, w.pk, 32);
         memset(&w, 0, sizeof w);
     }
-    int fd = dial(argv[2]);
+    net_client_t c;
     acct_info a;
-    if (fd < 0 || query(fd, addr, &a)) { fprintf(stderr, "node unreachable: %s\n", argv[2]); return 1; }
-    close(fd);
+    if (query(&c, argv[2], addr, &a)) { unreachable(argv[2]); return 1; }
+    net_client_close(&c);
     char s[32];
     fmt_amount(s, a.amt);
     printf("%s  (nonce %llu, next %llu, height %u)\n", s, (unsigned long long)a.nonce,
@@ -141,9 +106,9 @@ int cli_send(int argc, char **argv) {
     if (wallet_load(&w, keypath(NULL), 0)) { fprintf(stderr, "no wallet (try: wallet new)\n"); return 1; }
     memcpy(t.from, w.pk, 32);
 
-    int fd = dial(argv[2]);
+    net_client_t c;
     acct_info a;
-    if (fd < 0 || query(fd, t.from, &a)) { fprintf(stderr, "node unreachable: %s\n", argv[2]); return 1; }
+    if (query(&c, argv[2], t.from, &a)) { unreachable(argv[2]); return 1; }
     t.nonce = a.next;
     tx_sign(&t, w.sk);
     memset(&w, 0, sizeof w);
@@ -151,12 +116,13 @@ int cli_send(int argc, char **argv) {
     uint8_t raw[TX_SIZE], r[NET_MAXPAY], id[32];
     uint16_t l;
     tx_ser(raw, &t);
-    if (frame_send(fd, MSG_TX, raw, TX_SIZE) || frame_wait(fd, MSG_TXRES, r, &l) || l != 1 || r[0] > 4) {
+    if (net_client_send(&c, MSG_TX, raw, TX_SIZE) ||
+        net_client_wait(&c, MSG_TXRES, r, &l) || l != 1 || r[0] > 4) {
         fprintf(stderr, "no response from node\n");
-        close(fd);
+        net_client_close(&c);
         return 1;
     }
-    close(fd);
+    net_client_close(&c);
     char ih[65];
     tx_id(id, &t);
     hex_enc(ih, id, 32);
