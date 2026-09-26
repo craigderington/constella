@@ -398,6 +398,39 @@ static void t_sci_check(void) {
     }
 }
 
+static uint32_t sci_ticks;
+static int keep_count(void *c) { (void)c; sci_ticks++; return 1; }
+
+/* BUG: sci_search() used to tick the throttle only when the absolute span
+ * index was both an un-sieved survivor and a multiple of 64. Survivors of the
+ * small-prime sieve in mark_composites() sit on only one parity (whichever
+ * side p itself isn't on), and every multiple of 64 is even - so depending on
+ * which parity a given region's survivors land on, the intersection can be
+ * anywhere from a healthy fraction of grid points down to almost none. This
+ * k0 (SCI_K_MAX + 1, odd) lands the region's survivors on the parity that
+ * essentially never lines up with a multiple of 64: measured, the old code
+ * ticked keep() exactly once across the entire 65536-span scan below - the
+ * "on battery, paused" case from the live run, where the science worker kept
+ * grinding for tens of seconds between throttle checks. The fix ticks once
+ * per 64 *tested* survivors instead, the same cadence job_search() uses for
+ * the constellation path, so it is insensitive to which parity the survivors
+ * happen to land on: measured, 47 ticks over this same scan. k0 is pinned
+ * above SCI_K_MAX so no candidate gap can satisfy the acceptance range check;
+ * the search scans the entire span deterministically and keep_count() counts
+ * every throttle check. */
+static void t_sci_search_throttle(void) {
+    uint8_t a0[32] = {0}, m1[32];
+    memset(m1, 1, 32);
+    bn base;
+    sci_region(&base, a0, m1);
+    sci_t found;
+    uint32_t span = 1u << 16;
+    sci_ticks = 0;
+    int r = sci_search(&base, SCI_K_MAX + 1, span, &found, keep_count, NULL);
+    CHECK(r == 0);                  /* full span scanned, no claim accepted */
+    CHECK(sci_ticks >= 30);         /* fixed: 47 measured; old code: 1 measured */
+}
+
 static void t_sci_msg(void) {
     share_t s = {0};
     s.version = SHARE_VERSION; s.height = 7; s.bits = 256; s.k = 12345;
@@ -735,7 +768,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_cli_socket();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_cli_socket();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

@@ -102,11 +102,18 @@ int sci_search(const bn *base, uint64_t k0, uint32_t span, sci_t *out,
     comp[0] = 0;
     int64_t last = -1;
     int rc = 0;
+    uint32_t tests = 0;
+    if (!keep(ctx)) { free(comp); return -1; }
     for (uint32_t i = 0; i < span; i++) {
         if (comp[i]) continue;
-        if ((i & 63) == 0 && !keep(ctx)) { rc = -1; break; }
         bn_add_u64(&q, &p, i, n);
-        if (!bn_is_prp2(&q, n)) continue;
+        int prp = bn_is_prp2(&q, n);
+        /* tick on tested survivors, not on the absolute index: survivors are
+         * only ~5-10% of positions, so gating on i left the throttle firing
+         * roughly once per 1,000 positions instead of once per 64 Fermat
+         * tests, same cadence as job_search()'s constellation path. */
+        if ((++tests & 63) == 0 && !keep(ctx)) { rc = -1; break; }
+        if (!prp) continue;
         if (last >= 0 && i - (uint64_t)last >= SCI_G_MIN &&
             i - (uint64_t)last <= SCI_G_MAX && k0 + (uint64_t)last < SCI_K_MAX) {
             out->k = k0 + (uint64_t)last;
