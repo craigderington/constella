@@ -30,6 +30,7 @@ block lands, P2Pool-style, instead of racing for blocks.
 |---|---|---|
 | `CONSTELLA_PORT` | 7043 | P2P listen |
 | `CONSTELLA_PEERS` | – | `host:port,...` |
+| `CONSTELLA_P2P_KEY` | – | shared 64-hex PSK; enables authenticated encrypted P2P |
 | `CONSTELLA_KEY` | $DATA/wallet.key | node key, auto-created |
 | `CONSTELLA_ADDR` | node key | 64-hex payout override (e.g. a cold wallet) |
 | `CONSTELLA_THREADS` | physical cores − 1 | hyperthreads add ~7% for much more heat |
@@ -39,7 +40,8 @@ block lands, P2Pool-style, instead of racing for blocks.
 | `CONSTELLA_DATA` | ./constella-data | append-only `shares.v3` + key |
 
 ## Testnet
-    docker compose up --build -d
+    P2P_KEY=$(openssl rand -hex 32)
+    CONSTELLA_P2P_KEY=$P2P_KEY EXPLORER_P2P_KEY=$P2P_KEY docker compose up --build -d
     docker compose logs -f node1 explorer
     curl 127.0.0.1:3071                    # text dashboard; open it in a browser for the UI
 
@@ -53,7 +55,8 @@ consensus uses.
 
     make explorer-test                     # go vet + tests (incl. params.h drift guard)
     make explorer                          # static ./constella-explorer
-    EXPLORER_NODE=127.0.0.1:7043 EXPLORER_DB=postgres://... EXPLORER_HTTP=:3071 ./constella-explorer
+     EXPLORER_NODE=127.0.0.1:7043 EXPLORER_DB=postgres://... EXPLORER_HTTP=:3071 \
+     EXPLORER_P2P_KEY=... ./constella-explorer
 
 Routes: `/`, `/share/{id}`, `/height/{n}`, `/address/{addr}`, `/records`, `/search?q=`,
 and the JSON routes `/api/stats`, `/api/blocks`, `/api/share/{id}`, `/api/address/{addr}`.

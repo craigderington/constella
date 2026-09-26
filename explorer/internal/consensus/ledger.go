@@ -38,6 +38,20 @@ type Ledger struct {
 	SciPayable map[TxKey]bool // one entry per (share, claim index), set once, never cleared
 }
 
+func addBalance(a *Account, v uint64) {
+	if ^uint64(0)-a.Balance < v {
+		panic("ledger balance overflow")
+	}
+	a.Balance += v
+}
+
+func addEarned(a *Account, v uint64) {
+	if ^uint64(0)-a.Earned < v {
+		panic("ledger earned overflow")
+	}
+	a.Earned += v
+}
+
 func (l *Ledger) acct(a proto.Hash) *Account {
 	x := l.Accounts[a]
 	if x == nil {
@@ -49,19 +63,48 @@ func (l *Ledger) acct(a proto.Hash) *Account {
 
 func (l *Ledger) applyTx(t *proto.Tx, miner proto.Hash) bool {
 	f := l.Accounts[t.From]
-	if f == nil || t.Amount == 0 || t.Nonce != f.Nonce {
+	if f == nil || t.Amount == 0 || t.Nonce != f.Nonce || f.Nonce == ^uint64(0) {
 		return false
 	}
 	if t.Fee > ^uint64(0)-t.Amount || f.Balance < t.Amount+t.Fee {
 		return false
 	}
+	if l.Txs == ^uint64(0) {
+		return false
+	}
+	to := l.acct(t.To)
+	var m *Account
+	if t.Fee > 0 {
+		m = l.acct(miner)
+	}
+	if t.To == t.From {
+		if t.Fee > f.Balance-t.Amount {
+			return false
+		}
+	} else {
+		if ^uint64(0)-to.Balance < t.Amount {
+			return false
+		}
+		if t.Fee > 0 {
+			if m == to {
+				if ^uint64(0)-to.Balance < t.Amount+t.Fee {
+					return false
+				}
+			} else if ^uint64(0)-m.Balance < t.Fee {
+				return false
+			}
+		}
+	}
 	f.Balance -= t.Amount + t.Fee
 	f.Nonce++
-	l.acct(t.To).Balance += t.Amount
+	if to == f {
+		addBalance(f, t.Amount)
+	} else {
+		addBalance(to, t.Amount)
+	}
 	if t.Fee > 0 {
-		m := l.acct(miner)
-		m.Balance += t.Fee
-		m.Earned += t.Fee
+		addBalance(m, t.Fee)
+		addEarned(m, t.Fee)
 	}
 	l.Txs++
 	return true
@@ -93,8 +136,8 @@ func splitPay(l *Ledger, owners []proto.Hash, w []uint64, finder proto.Hash, poo
 	}
 	if tot == 0 {
 		x := l.acct(finder)
-		x.Balance += pool
-		x.Earned += pool
+		addBalance(x, pool)
+		addEarned(x, pool)
 		*dst = append(*dst, Payout{block, finder, pool})
 		return
 	}
@@ -108,8 +151,8 @@ func splitPay(l *Ledger, owners []proto.Hash, w []uint64, finder proto.Hash, poo
 	agg[finder] += pool - paid
 	for a, v := range agg {
 		x := l.acct(a)
-		x.Balance += v
-		x.Earned += v
+		addBalance(x, v)
+		addEarned(x, v)
 		*dst = append(*dst, Payout{block, a, v})
 	}
 }
@@ -167,9 +210,17 @@ func Build(path []*Node) *Ledger {
 			owners = append(owners, path[i].Msg.Share.Miner)
 			w = append(w, Work(path[i].Msg.Share.Bits))
 		}
+		finder := l.acct(s.Miner)
+		if finder.Blocks == ^uint32(0) {
+			panic("ledger block count overflow")
+		}
 		splitPay(l, owners, w, s.Miner, pool, e.ID, &l.Payouts)
-		l.acct(s.Miner).Blocks++
-		l.Escrow += proto.BlockReward - pool // accrue first: the release below reads this new balance
+		finder.Blocks++
+		in := proto.BlockReward - pool
+		if ^uint64(0)-l.Escrow < in {
+			panic("ledger escrow overflow")
+		}
+		l.Escrow += in // accrue first: the release below reads this new balance
 
 		slo := j - proto.SciWindow + 1
 		if slo < 1 {
@@ -187,15 +238,24 @@ func Build(path []*Node) *Ledger {
 				sciWork = append(sciWork, SciWork(claim.G))
 			}
 		}
+		if uint64(l.SciClaims)+uint64(len(sciOwners)) > uint64(^uint32(0)) {
+			panic("ledger science claim count overflow")
+		}
 		l.SciClaims += uint32(len(sciOwners))
 		if len(sciOwners) > 0 {
 			if rel := SciRelease(l.Escrow); rel > 0 {
+				if ^uint64(0)-l.SciPaid < rel {
+					panic("ledger science payout overflow")
+				}
 				splitPay(l, sciOwners, sciWork, s.Miner, rel, e.ID, &l.SciPayouts)
 				l.Escrow -= rel
 				l.SciPaid += rel
 			}
 		}
 
+		if l.Blocks == ^uint32(0) {
+			panic("ledger block count overflow")
+		}
 		l.Blocks++
 	}
 	return l

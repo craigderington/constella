@@ -15,7 +15,7 @@ independently.
 - The node binary stays under 150 KB (`make size` enforces this).
 
 ## Commands
-    make test            # C unit tests (149) + thermal sim + Python cross-checks
+    make test            # C unit tests (158) + thermal sim + Python cross-checks
     make size            # size gate
     make explorer-test   # go vet + go test (includes params.h drift guard)
     docker compose up --build -d && docker compose logs -f node1 explorer
@@ -57,6 +57,10 @@ independently.
 - `docker compose up --build` on real Docker: all services came up and the
   explorer's ledger check matched the node.
 - Explorer UI reviewed in a browser and approved as-is. Keep the star-chart design.
+- The node now uses tip-bound disposable ledger snapshots and reconstructs the
+  256-share payout/science tail on load; stale or malformed snapshots fall back
+  to full replay. This was exercised on the live Compose volume across a node
+  restart.
 - Chain id in the tx signing domain, live on a fresh testnet under
   `SHARE_VERSION` 2: all 5 nodes logged `chain=352fcee542df9981`, and a signed
   transfer went through end to end (sender -1.25 -0.002 fee, recipient +1.25,
@@ -65,42 +69,47 @@ independently.
   (the science lane) changed the packed chain-id inputs, so the ids moved to
   testnet `a8f4562e57e74f9d` / mainnet `a2da89e8309ab40b` (computed
   independently and pinned in `tests/test.c` and
-  `explorer/internal/proto/chainid_test.go`). The live confirmation — nodes
-  actually logging the new id, a signed transfer holding end to end — has
-  not been re-run since the bump; see "Not yet verified."
-- Science lane (v1) implemented and locally verified: 149/149 C unit tests
+  `explorer/internal/proto/chainid_test.go`). This was re-run on a fresh reset:
+  all five nodes logged the new testnet id and a signed transfer held end to
+  end (sender -1.25 -0.002 fee, recipient +1.25, nonce 0->1, explorer
+  `txs 1` with `ledger ok`).
+- Science lane (v1) implemented and locally verified: 158/158 C unit tests
   (claim record, region/epoch derivation, all seven validity rules, payout
   weight, dedup, release arithmetic), `tests/crosscheck.py` cross-checks
   claim validity and payout weight against independent Python, and
   `make explorer-test` is green with the Go mirror (`SciCheck`, `SciRegion`,
-  `SciWork`, ledger science-pay) agreeing bit for bit with the C node. Node
-  binary 141,080/153,600 bytes. **Not yet live-verified** — no multi-node
-  testnet has run this version; see "Not yet verified" for the checklist.
+  `SciWork`, ledger science-pay) agreeing bit for bit with the C node. The
+  deterministic explorer suite also covers a pre-rollover claim paying at
+  height 257. Node binary 145,176/153,600 bytes.
 - Thermal controller live on this laptop, 300 s traces at 1 Hz, 5 nodes x 1
   thread. It regulates exactly on target (die mean 82.2 C against a target of
   82). Fixing the cap and spike-proofing the stop took useful work from 0.263
   to 0.486 cores (+85%), shares/min from 11.8 to 23.8, and hard stops from
   near-constant to 2 of 80 status lines.
+- Science-lane smoke test on fresh Compose volumes: all 5 nodes logged
+  `chain=a8f4562e57e74f9d`, shares at heights 1 through 4 propagated with no
+  rejections, and the explorer reported `ledger ok`. This did not exercise
+  science claims: Compose uses one thread per node, so the science worker was
+  explicitly idle, and thermal protection stopped mining at 98-100 C.
+- Fresh-reset live science test: a two-thread science-enabled node produced
+  claim-bearing shares at heights 40, 41, and 42; all five nodes accepted
+  them (`sci=2`), with six claims at gaps 396..934. Block 121 paid
+  `science-paid=7.00000000`; all five nodes and the explorer agreed. The
+  chain then crossed heights 256, 257, 512, and 513 with no rejections;
+  explorer remained `ledger ok` through height 518.
+- Optional PSK transport was exercised across the five-node Compose network and
+  explorer with matching `CONSTELLA_P2P_KEY`/`EXPLORER_P2P_KEY`; peers reached
+  height 589 with `ledger ok` and no handshake failures. Node binary was
+  145,232/153,600 bytes in that build.
+- Final operating decisions: retain the thermal controller at an 82 C target,
+  88 C cap, and 95 C hard stop; use shared-PSK transport only on trusted
+  testnet. Mainnet remains gated on per-peer identities and key rotation.
 
 ## Not yet verified
-- [ ] Whether 82 C mean / 100 C peak die temperature is acceptable to Craig on
-      this laptop. The controller holds the target exactly; the target is the
-      only knob that trades heat for work, and 88/82 is where it sits now.
-- [ ] The science lane on a live multi-node testnet. Needs `docker compose
-      down -v && docker compose up --build -d` (destroys the current wallets,
-      sharechain and Postgres volume — Craig's call, not automatable). Check:
-      all 5 nodes log `chain=a8f4562e57e74f9d` (not the old
-      `352fcee542df9981`); shares carrying `sci=1`/`sci=2` are accepted, none
-      rejected; the escrow rises then falls as claims pay; `report_balance`
-      shows non-zero `science-paid` and a claim count; explorer `ledger ok`
-      *with* science payouts included; claim table shows plausible merits
-      (2-5 at `SCI_BITS=256`); the chain crosses height 513 (two epoch
-      rollovers) with no node's shares rejected shortly after 256, 257, 512
-      or 513 — name the heights actually observed, not "no rejections"; and
-      a claim first listed before a rollover still pays at a block after it
-      (`SCI_WINDOW` and `SCI_EPOCH` are both 256 but independent). Until this
-      runs, the signed-transfer-holds-on-the-new-chain-id claim above is also
-      unconfirmed.
+- [ ] A naturally mined block in the narrow h257..295 window remains
+      observationally unverified. The deterministic Go fixture explicitly
+      proves a claim first listed at h40 pays in a block at h257, after the
+      h256 epoch rollover.
 
 ## Tuning (i7-8850H, 6C/12T)
 - Default threads = physical cores - 1. HT buys ~7% for a lot more heat.
@@ -132,7 +141,7 @@ independently.
   the gap range suggested.
 - `make size` quantises in 4096-byte pages for code, so growth shows up in
   4 KB steps and a sub-page change is invisible in the reported number.
-  Current: 141,080/153,600 bytes, one page step used since the science lane
+  Current: 145,176/153,600 bytes, one page step used since the science lane
   began - an unchanged number means "no page crossed," not "nothing changed."
 - One miner worker goes to science when `threads >= 2`, costing ~1/threads of
   constellation throughput (~17% at the default 6: 5 of 6 workers left
@@ -141,22 +150,22 @@ independently.
   the pre-science numbers.
 
 ## Backlog
-- Ledger snapshots. `node.c` calls `ledger_build()` on every tip change and it
-  replays genesis..tip, so cost is O(n) per share. Invisible at these heights,
-  a real ceiling later.
-- Mempool: fee priority remains open; reorged transactions are returned to the
-  mempool after tip changes.
+- The explorer still replays its ledger from genesis on every tip change; a Go
+  snapshot design remains separate work if explorer-scale growth requires it.
+- Mempool: fee priority is implemented; reorged transactions are returned to
+  the mempool after tip changes.
 - Mainnet params: BLOCK_K=6. One constant, but it makes blocks ~77x rarer
   (measured 4->5 ratio), so the economics need thinking through first.
-- Open: Craig's call on the 88/82 thermal cap (see "Not yet verified").
+- Thermal policy is decided: target 82 C, cap 88 C, hard stop 95 C.
 - Thermal protection now fails safe on a sensor outage: the sampler stops
   workers when no temperature samples arrive in a control window.
 <!--
   Removed stale detail: the old sampler failed open here.
 -->
-- P2P is testnet-grade only: `src/net.c` listens on `INADDR_ANY` with no
-  authentication or encryption and limited peer admission control. Fine for
-  a local/trusted testnet; not something to expose before mainnet.
+- P2P defaults to testnet-compatible plaintext, but optional PSK mode now
+  authenticates the handshake and encrypts subsequent frames. Per-peer identity
+  and key rotation remain a mainnet launch gate by decision.
 - Operational hardening is still minimal: Compose credentials are configurable
-  but there is no migration/versioning strategy for the Postgres schema and no
-  CI workflow running `make test` / `make explorer-test` / `make size` on push.
+  and schema version 1 now migrates signed numeric columns transactionally,
+  with a Postgres-backed migration test. CI now runs `make test`,
+  `make explorer-test`, and `make size` on push.

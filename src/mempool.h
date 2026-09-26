@@ -1,5 +1,5 @@
 /* Pending transactions, validated against best-tip state plus earlier pending txs.
- * Insertion order keeps each sender's nonces contiguous, so any prefix is minable. */
+ * Selection is fee-priority while preserving each sender's nonce order. */
 #ifndef MEMPOOL_H
 #define MEMPOOL_H
 #include "ledger.h"

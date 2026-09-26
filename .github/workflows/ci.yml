@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  c:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run C tests and cross-checks
+        run: make test
+      - name: Enforce node size limit
+        run: make size
+
+  explorer:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: constella
+          POSTGRES_PASSWORD: constella
+          POSTGRES_DB: explorer
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U constella -d explorer"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      EXPLORER_TEST_DB: postgres://constella:constella@127.0.0.1:5432/explorer?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: explorer/go.mod
+          cache: false
+      - name: Run Go vet and tests
+        run: make explorer-test

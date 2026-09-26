@@ -66,6 +66,7 @@ const (
 	MsgGetAcct  = 6
 	MsgAcct     = 7
 	MsgTxRes    = 8
+	MsgAuth     = 9
 )
 
 type Hash = [32]byte
@@ -253,13 +254,25 @@ func ParseMsg(raw []byte) (*Msg, error) {
 }
 
 func WriteFrame(w io.Writer, typ byte, payload []byte) error {
+	if len(payload) > MaxPay {
+		return errors.New("frame too large")
+	}
 	b := make([]byte, FrameHdr+len(payload))
 	binary.LittleEndian.PutUint32(b, Magic)
 	b[4] = typ
 	binary.LittleEndian.PutUint16(b[5:], uint16(len(payload)))
 	copy(b[FrameHdr:], payload)
-	_, err := w.Write(b)
-	return err
+	for len(b) > 0 {
+		n, err := w.Write(b)
+		if err != nil {
+			return err
+		}
+		if n <= 0 {
+			return io.ErrShortWrite
+		}
+		b = b[n:]
+	}
+	return nil
 }
 
 func ReadFrame(r io.Reader) (byte, []byte, error) {

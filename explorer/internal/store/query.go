@@ -37,14 +37,14 @@ type ClaimRow struct {
 
 type AccountRow struct {
 	Addr                   []byte
-	Balance, Nonce, Earned int64
+	Balance, Nonce, Earned uint64
 	Shares, Blocks         int
 }
 
 type TxRow struct {
 	ID, ShareID, From, To []byte
 	Idx                   int
-	Amount, Fee, Nonce    int64
+	Amount, Fee, Nonce    uint64
 	Status                string
 	Height                int
 	Time                  time.Time
@@ -52,7 +52,7 @@ type TxRow struct {
 
 type PayoutRow struct {
 	Block, Addr []byte
-	Amount      int64
+	Amount      uint64
 	Height      int
 	Time        time.Time
 }
@@ -117,15 +117,28 @@ func (s *Store) Stats(ctx context.Context) (*Stats, error) {
 	}
 	for rows.Next() {
 		var k, v string
-		rows.Scan(&k, &v)
+		if err := rows.Scan(&k, &v); err != nil {
+			rows.Close()
+			return nil, err
+		}
 		st.Meta[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
 	}
 	rows.Close()
 	var n int
-	s.DB.QueryRowContext(ctx, `SELECT count(*) FROM shares WHERE on_main AND time > now() - interval '5 minutes'`).Scan(&n)
+	if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM shares WHERE on_main AND time > now() - interval '5 minutes'`).Scan(&n); err != nil {
+		return nil, err
+	}
 	st.SharesPerMin = float64(n) / 5
-	s.DB.QueryRowContext(ctx, `SELECT count(*) FROM accounts WHERE shares > 0`).Scan(&st.Miners)
-	s.DB.QueryRowContext(ctx, `SELECT coalesce(max(time), 'epoch') FROM shares WHERE on_main AND is_block`).Scan(&st.LastBlockTime)
+	if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM accounts WHERE shares > 0`).Scan(&st.Miners); err != nil {
+		return nil, err
+	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT coalesce(max(time), 'epoch') FROM shares WHERE on_main AND is_block`).Scan(&st.LastBlockTime); err != nil {
+		return nil, err
+	}
 	return st, nil
 }
 

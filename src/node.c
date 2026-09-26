@@ -45,10 +45,10 @@ static int sci_pool_has(uint64_t k) {
     return 0;
 }
 
-static int sci_main_has(const int *path, int n, uint64_t k) {
+static int sci_main_has(const int *path, int n, uint32_t epoch, uint64_t k) {
     for (int i = 1; i < n; i++) {
         const entry_t *e = chain_entry(path[i]);
-        if (memcmp(e->s.miner, payout, 32)) continue;
+        if (sci_epoch(e->height) != epoch || memcmp(e->s.miner, payout, 32)) continue;
         for (int c = 0; c < e->nsci; c++) if (e->sci[c].k == k) return 1;
     }
     return 0;
@@ -70,17 +70,21 @@ static void recover_side_claims(const int *path, int n, int total) {
         chain_epoch_anchor(tip, e->height, anchor);
         bn base;
         sci_region(&base, anchor, payout);
+        uint32_t epoch = sci_epoch(e->height);
         for (int c = 0; c < e->nsci && nscipool < SCI_POOL; c++) {
-            if (sci_main_has(path, n, e->sci[c].k) || sci_pool_has(e->sci[c].k) ||
+            if (sci_main_has(path, n, epoch, e->sci[c].k) || sci_pool_has(e->sci[c].k) ||
                 sci_check(&base, &e->sci[c])) continue;
             scipool[nscipool++] = e->sci[c];
         }
     }
 }
 
-static void rebuild_state(void) {
+static int rebuild_state(void) {
     ledger_free(&L);
-    ledger_build(&L);
+    if (ledger_build(&L)) {
+        ledger_free(&L);
+        return -1;
+    }
 
     /* Re-offer transactions from side branches after a reorg. The mempool
      * filters duplicates and transactions invalid in the new ledger state. */
@@ -99,6 +103,7 @@ static void rebuild_state(void) {
     recover_side_claims(path, n, total);
     free(path);
     mempool_revalidate(&L);
+    return 0;
 }
 
 static void update_job(void) {
@@ -301,6 +306,10 @@ int node_run(void) {
     int port = atoi(env("CONSTELLA_PORT", "7043"));
     int threads = atoi(env("CONSTELLA_THREADS", "0"));
     if (threads <= 0) threads = default_threads();
+    if (port < 1 || port > 65535 || threads > 256) {
+        log_msg("fatal: invalid port or thread count");
+        return 1;
+    }
     throttle_init(atoi(env("CONSTELLA_DUTY", "50")), atoi(env("CONSTELLA_TEMP_MAX", "0")),
                   atoi(env("CONSTELLA_BATTERY_PAUSE", "1")));
     throttle_start();
@@ -308,6 +317,7 @@ int node_run(void) {
             throttle_target_c(), throttle_has_battery() ? " (laptop)" : "");
 
     if (chain_init(data, on_accept)) { log_msg("fatal: cannot open data dir %s", data); return 1; }
+    ledger_snapshot_set_path(data);
 
     wallet_t w;
     int wr = wallet_load(&w, env("CONSTELLA_KEY", keypath), 1);
@@ -325,17 +335,21 @@ int node_run(void) {
     log_msg("constella: payout=%s%s threads=%d duty<=%d%% port=%d chain=%s", a,
             wr == 1 ? " (new key)" : "", threads, atoi(env("CONSTELLA_DUTY", "50")), port, cid);
 
-    rebuild_state();
+    if (rebuild_state()) { log_msg("fatal: cannot rebuild ledger state"); return 1; }
     live = 1;
     int pfd[2], spfd[2];
     if (pipe(pfd) || pipe(spfd)) return 1;
     fcntl(pfd[0], F_SETFL, O_NONBLOCK);
     fcntl(spfd[0], F_SETFL, O_NONBLOCK);
-    if (net_init((uint16_t)port, getenv("CONSTELLA_PEERS"), on_msg, send_hello)) {
+    if (net_init((uint16_t)port, getenv("CONSTELLA_PEERS"), getenv("CONSTELLA_P2P_KEY"),
+                 on_msg, send_hello)) {
         log_msg("fatal: cannot listen on %d", port);
         return 1;
     }
-    miner_start(threads, pfd[1], spfd[1], &running);
+    if (miner_start(threads, pfd[1], spfd[1], &running)) {
+        log_msg("fatal: cannot start miner workers");
+        return 1;
+    }
     update_job();
 
     int64_t t_status = now_sec() + 30;
@@ -351,7 +365,7 @@ int node_run(void) {
         if (pf[1].revents & POLLIN) drain_sci(spfd[0]);
         net_process(pf + 2, n);
         if (tip_dirty) {
-            rebuild_state();
+            if (rebuild_state()) { log_msg("fatal: cannot rebuild ledger state"); running = 0; break; }
             if (L.blocks != last_blocks) { report_balance(); last_blocks = L.blocks; }
             tip_dirty = 0;
             job_dirty = 1;
@@ -382,6 +396,7 @@ int node_run(void) {
 }
 
 int bench_run(unsigned bits, int secs, int threads) {
+    if (bits < BITS_MIN || bits > BITS_MAX || secs <= 0 || threads <= 0 || threads > 256) return 1;
     int pfd[2];
     if (pipe(pfd)) return 1;
     fcntl(pfd[0], F_SETFL, O_NONBLOCK);

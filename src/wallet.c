@@ -46,8 +46,9 @@ int parse_amount(uint64_t *out, const char *s) {
     uint64_t whole = 0, frac = 0;
     int fd = 0, any = 0;
     for (; *s >= '0' && *s <= '9'; s++, any = 1) {
-        if (whole > (UINT64_MAX / COIN - 9) / 10) return -1;
-        whole = whole * 10 + (uint64_t)(*s - '0');
+        uint64_t digit = (uint64_t)(*s - '0');
+        if (whole > (UINT64_MAX - digit) / 10) return -1;
+        whole = whole * 10 + digit;
     }
     if (*s == '.') {
         for (s++; *s >= '0' && *s <= '9'; s++, any = 1) {
@@ -57,6 +58,7 @@ int parse_amount(uint64_t *out, const char *s) {
     }
     if (*s || !any) return -1;
     while (fd++ < 8) frac *= 10;
+    if (whole > (UINT64_MAX - frac) / COIN) return -1;
     *out = whole * COIN + frac;
     return 0;
 }

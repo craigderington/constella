@@ -152,8 +152,9 @@ static int read_temp(void) {
     char buf[32];
     for (int i = 0; i < nsens; i++)
         if (!read_line(sens[i], buf, sizeof buf)) {
-            int v = atoi(buf);
-            if (v > best && v < 150000) best = v;
+            char *end;
+            long v = strtol(buf, &end, 10);
+            if (*buf && !*end && v >= -50000 && v < 150000 && v > best) best = (int)v;
         }
     return best;
 }
@@ -238,7 +239,12 @@ static void *sampler(void *arg) {
 
 void throttle_start(void) {
     pthread_t th;
-    if (pthread_create(&th, NULL, sampler, NULL) == 0) pthread_detach(th);
+    if (pthread_create(&th, NULL, sampler, NULL) == 0) {
+        pthread_detach(th);
+    } else {
+        atomic_store(&duty, 0);
+        atomic_store(&reason, TH_SENSOR);
+    }
 }
 
 void throttle_lower_thread(void) {

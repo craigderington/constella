@@ -79,6 +79,8 @@ static void t_amount(void) {
     CHECK(!parse_amount(&v, "0.00000001") && v == 1);
     CHECK(!parse_amount(&v, "42") && v == 42 * COIN);
     CHECK(parse_amount(&v, "1.000000001")); CHECK(parse_amount(&v, "abc")); CHECK(parse_amount(&v, ""));
+    CHECK(!parse_amount(&v, "184467440737.09551615") && v == UINT64_MAX);
+    CHECK(parse_amount(&v, "184467440737.09551616"));
     fmt_amount(s, 150000001ULL); CHECK(!strcmp(s, "1.50000001"));
 }
 
@@ -153,7 +155,24 @@ static void t_tx(void) {
     ledger_apply_tx(&L, &m0, miner);                              /* m0 mined */
     mempool_revalidate(&L);
     CHECK(mempool_count() == 1);
+    tx_t hi = {0}, selected;
+    memcpy(hi.from, b.pk, 32); memcpy(hi.to, a.pk, 32);
+    hi.amount = 1; hi.fee = 9000; hi.nonce = 0; tx_sign(&hi, b.sk);
+    CHECK(mempool_add(&hi, &L) == MP_ADDED);
+    CHECK(mempool_select(&selected, 1) == 1);
+    CHECK(!memcmp(selected.from, b.pk, 32));                    /* fee priority */
     ledger_free(&L);
+
+    /* A transaction at the final nonce must be skipped, not wrap the sender
+     * nonce back to zero and make an old transaction valid again. */
+    ledger_t N = {0};
+    tx_t last = {0};
+    memcpy(last.from, a.pk, 32); memcpy(last.to, b.pk, 32);
+    last.amount = 1; last.nonce = UINT64_MAX; tx_sign(&last, a.sk);
+    CHECK(ledger_credit(&N, a.pk, UINT64_MAX) == 0);
+    CHECK(ledger_apply_tx(&N, &last, miner) == -1);
+    CHECK(ledger_acct(&N, a.pk, 0)->nonce == 0);
+    ledger_free(&N);
 }
 
 static void t_share_root(void) {
@@ -194,6 +213,19 @@ static void t_share_root(void) {
     share_root(as_tx,  ftx, 3, NULL, 0);
     share_root(as_sci, NULL, 0, fsci, 38);
     CHECK(memcmp(as_tx, as_sci, 32));
+}
+
+static void t_pow_commits_to_root(void) {
+    share_t a = {0}, b;
+    uint8_t sa[32], sb[32];
+    a.version = SHARE_VERSION;
+    a.bits = 64;
+    a.time = GENESIS_TIME + 1;
+    b = a;
+    b.tx_root[0] = 1;
+    share_seed(sa, &a);
+    share_seed(sb, &b);
+    CHECK(memcmp(sa, sb, sizeof sa)); /* changing tx_root changes the PoW seed */
 }
 
 static void t_serial(void) {
@@ -564,7 +596,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

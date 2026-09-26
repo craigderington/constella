@@ -12,8 +12,8 @@ import (
 // writeText is the curl dashboard: `curl localhost:3071`.
 func writeText(w io.Writer, st *store.Stats, d *overviewData) {
 	m := st.Meta
-	esc, _ := strconv.ParseInt(m["escrow"], 10, 64)
-	paid, _ := strconv.ParseInt(m["sci_paid"], 10, 64)
+	esc, _ := strconv.ParseUint(m["escrow"], 10, 64)
+	paid, _ := strconv.ParseUint(m["sci_paid"], 10, 64)
 	fmt.Fprintf(w, "constella explorer\n\n")
 	// Same derivation as the HTML band (proto.NetworkName/ChainIDHex, both
 	// pure functions of BlockK) — not a second source of truth, and not
