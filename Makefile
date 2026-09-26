@@ -10,7 +10,7 @@ LDFLAGS += -static -flto -pthread -Wl,--gc-sections -s -lm
 SIZE_MAX_BYTES ?= 196608
 
 CORE := src/blake2b.c src/bn.c src/share.c src/science.c src/tx.c src/wallet.c src/sieve.c src/throttle.c \
-        src/miner.c src/chain.c src/ledger.c src/mempool.c src/net.c src/util.c src/vendor/monocypher.c
+        src/miner.c src/chain.c src/ledger.c src/mempool.c src/net.c src/util.c src/addr.c src/vendor/monocypher.c
 APP  := src/node.c src/cli.c src/main.c
 
 all: constella
