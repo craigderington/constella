@@ -24,10 +24,9 @@ const (
 	vecKeyLo     = "64e678befc6f30cc634c3fab917765710082860242940aab5efa6e61fe321938"
 	vecKeyHi     = "e267cd603f4c9e72797c67a49a384b2fd18f41ba87974d76859f2a51332167fd"
 	// header || ciphertext || tag, type 2, counter 0, "constella", lo key
-	vecFrameLo = "43535432021900c06b492f10b0316862380df3530a8a21f6c9473c227ffc4c5c"
+	vecFrameLo = "43535433021900c06b492f10b03168623a1f5ab88274c4992382b1d6e10fdc9a"
 	// type 5, counter 1, "second frame, counter 1", hi key
-	vecFrameHi = "43535432052700c6f1bead58b05daad2fe578fc92c49eafa0cfccaa041f7674e" +
-		"21633320c31486931bf13fabd0c6"
+	vecFrameHi = "43535433052700c6f1bead58b05daad2fe578fc92c49eafa0cfccaa041f7bd4268dcc6a8fc028f66a6d658dcda7d"
 )
 
 // vecPSK is 00..1f; the two challenges are 32 * 0x11 and 32 * 0x22.
