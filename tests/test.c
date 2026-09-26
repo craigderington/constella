@@ -1,4 +1,5 @@
 /* Unit tests + stdin modes used by crosscheck.py. */
+#include "addr.h"
 #include "blake2b.h"
 #include "bn.h"
 #include "chain.h"
@@ -730,6 +731,51 @@ static void t_cli_socket(void) {
     rmdir(dir);
 }
 
+static void mk4(uint8_t ip[16], uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
+    memset(ip, 0, 10); ip[10] = 0xff; ip[11] = 0xff;
+    ip[12] = a; ip[13] = b; ip[14] = c; ip[15] = d;
+}
+
+static void t_netgroup(void) {
+    uint8_t ip[16], g1[8], g2[8];
+    int n1, n2;
+
+    /* IPv4: the /16 is the group, so the last two octets must not matter */
+    mk4(ip, 203, 0, 113, 7);   n1 = addr_netgroup(ip, g1);
+    mk4(ip, 203, 0, 200, 99);  n2 = addr_netgroup(ip, g2);
+    CHECK(n1 == n2 && n1 == 2 && !memcmp(g1, g2, (size_t)n1));
+
+    /* a different /16 is a different group */
+    mk4(ip, 203, 1, 113, 7);   addr_netgroup(ip, g2);
+    CHECK(memcmp(g1, g2, 2));
+
+    /* Review Focus 1: a v4-mapped v6 address groups by the IPv4 /16, not the
+     * v6 /32. Otherwise an attacker gets a fresh bucket per address simply by
+     * connecting over v6, and eclipse resistance quietly disappears. */
+    mk4(ip, 203, 0, 113, 7);
+    CHECK(addr_netgroup(ip, g2) == 2 && !memcmp(g1, g2, 2));
+
+    /* native IPv6 groups by the /32 */
+    uint8_t v6[16] = {0x20, 0x01, 0x0d, 0xb8, 1, 2, 3, 4};
+    CHECK(addr_netgroup(v6, g1) == 4);
+    v6[7] = 99;                                   /* below the /32 */
+    CHECK(addr_netgroup(v6, g2) == 4 && !memcmp(g1, g2, 4));
+    v6[3] = 0xb9;                                 /* inside the /32 */
+    CHECK(addr_netgroup(v6, g2) == 4 && memcmp(g1, g2, 4));
+
+    /* routability: gossiping these fills honest tables with dead entries */
+    mk4(ip, 8, 8, 8, 8);        CHECK(addr_is_routable(ip));
+    mk4(ip, 127, 0, 0, 1);      CHECK(!addr_is_routable(ip));
+    mk4(ip, 0, 0, 0, 0);        CHECK(!addr_is_routable(ip));
+    mk4(ip, 10, 0, 0, 1);       CHECK(!addr_is_routable(ip));
+    mk4(ip, 192, 168, 1, 1);    CHECK(!addr_is_routable(ip));
+    mk4(ip, 172, 16, 0, 1);     CHECK(!addr_is_routable(ip));
+    mk4(ip, 169, 254, 1, 1);    CHECK(!addr_is_routable(ip));
+    uint8_t lo6[16] = {0}; lo6[15] = 1;
+    CHECK(!addr_is_routable(lo6));
+    uint8_t ula[16] = {0xfd}; CHECK(!addr_is_routable(ula));
+}
+
 int main(int argc, char **argv) {
     if (sieve_init()) return 1;
     char line[1024];
@@ -767,7 +813,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_cli_socket();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_cli_socket(); t_netgroup();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
