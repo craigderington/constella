@@ -3,9 +3,14 @@ package web
 import (
 	"bytes"
 	"database/sql"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	_ "github.com/lib/pq"
 
 	"github.com/craig/constella/explorer/internal/proto"
 	"github.com/craig/constella/explorer/internal/store"
@@ -116,5 +121,82 @@ func TestConstellationEncodesTuple(t *testing.T) {
 	svg := string(constellation("97", 5))
 	if strings.Count(svg, `class="star"`) != 5 || strings.Count(svg, `class="void"`) != 1 || strings.Count(svg, `class="link"`) != 4 {
 		t.Errorf("expected 5 stars, 1 void, 4 links:\n%s", svg)
+	}
+}
+
+// TestOverviewTextReportsErrorInsteadOfPanicking pins the fix for the
+// curl dashboard: overview() used to discard Stats()'s error and hand a
+// possibly-nil *store.Stats to writeText, which dereferences st.Meta. Before
+// the fix, writeOverviewText's body was effectively
+//
+//	w.Header().Set(...)
+//	writeText(w, st, d)
+//
+// with no error check, and calling it with a nil st (exactly what Stats()
+// returns alongside a non-nil error) panics instead of producing the 503
+// the rest of the app gives on a database hiccup.
+func TestOverviewTextReportsErrorInsteadOfPanicking(t *testing.T) {
+	rec := httptest.NewRecorder()
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("writeOverviewText panicked on a Stats() error: %v", r)
+			}
+		}()
+		writeOverviewText(rec, nil, errors.New("db down"), &overviewData{})
+	}()
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+// TestHeightSurfacesDatabaseErrorAsServiceUnavailable pins the fix for
+// height(): it used to discard ShareAtHeight's error and treat any failure
+// (including a database outage) the same as "no share at this height",
+// rendering a 404 that tells the user the share does not exist instead of
+// that the database is unavailable.
+func TestHeightSurfacesDatabaseErrorAsServiceUnavailable(t *testing.T) {
+	// A DSN nothing listens on: QueryContext fails fast with "connection
+	// refused" rather than hanging, so ShareAtHeight returns a real error
+	// without needing a live Postgres.
+	db, err := sql.Open("postgres", "host=127.0.0.1 port=1 sslmode=disable connect_timeout=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := New(&store.Store{DB: db})
+
+	req := httptest.NewRequest("GET", "/height/5", nil)
+	req.SetPathValue("h", "5")
+	rec := httptest.NewRecorder()
+	s.height(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code = %d, want %d (body: %s)", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+	}
+}
+
+// TestIndexerLive pins healthz's staleness rule: peer disconnected is
+// unhealthy outright, a stale flush despite a nominally connected peer is
+// unhealthy (the "stalled peer connection" wedge this exists to catch), a
+// fresh flush with a connected peer is healthy, and no meta yet (before the
+// indexer's first flush) is unhealthy rather than a false "ok".
+func TestIndexerLive(t *testing.T) {
+	fresh := time.Now().UTC().Format(time.RFC3339)
+	stale := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339)
+	cases := []struct {
+		name string
+		meta map[string]string
+		want bool
+	}{
+		{"connected and fresh", map[string]string{"peer": "true", "updated_at": fresh}, true},
+		{"disconnected but fresh", map[string]string{"peer": "false", "updated_at": fresh}, false},
+		{"connected but stale", map[string]string{"peer": "true", "updated_at": stale}, false},
+		{"no meta yet", map[string]string{}, false},
+	}
+	for _, c := range cases {
+		if got := indexerLive(c.meta); got != c.want {
+			t.Errorf("%s: indexerLive = %v, want %v", c.name, got, c.want)
+		}
 	}
 }

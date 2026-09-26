@@ -444,6 +444,29 @@ fail:
     return -1;
 }
 
+/* Cross-language vector hooks. The AEAD construction is implemented twice, in
+ * here and in the Go explorer, and the params drift guard only covers
+ * constants - nothing would catch the two drifting apart. These let a fixed
+ * input be asserted in both languages. The node references neither, so
+ * --gc-sections drops them from the shipped binary. */
+int net_auth_vector(uint8_t out[32], const uint8_t key[32], const uint8_t challenge[32]) {
+    memcpy(psk, key, 32);
+    auth_proof(out, challenge);
+    return 32;
+}
+
+int net_seal_vector(uint8_t *out, const uint8_t key[32], const uint8_t low[32],
+                    const uint8_t high[32], const char *dir, uint64_t seq,
+                    uint8_t type, const void *pay, uint16_t len) {
+    memcpy(psk, key, 32);
+    uint8_t sk[32], nonce[24];
+    session_key(sk, dir, low, high);
+    put_hdr(out, type, (uint16_t)(len + 16));
+    make_nonce(nonce, seq);
+    crypto_aead_lock(out + HDR, out + HDR + len, sk, nonce, out, HDR, pay, len);
+    return HDR + len + 16;
+}
+
 /* tests host a listener in-process and need a clean slate between runs. */
 void net_stop(void) {
     for (int i = 0; i < MAX_PEERS; i++) drop(i);

@@ -40,6 +40,13 @@ typedef struct {
     uint64_t txseq, rxseq;
 } net_client_t;
 
+/* Test-only: the same AEAD construction, on fixed input, asserted in C and in
+ * the Go explorer so the two implementations cannot drift apart. */
+int net_auth_vector(uint8_t out[32], const uint8_t key[32], const uint8_t challenge[32]);
+int net_seal_vector(uint8_t *out, const uint8_t key[32], const uint8_t low[32],
+                    const uint8_t high[32], const char *dir, uint64_t seq,
+                    uint8_t type, const void *p, uint16_t len);
+
 int  net_client_open(net_client_t *c, const char *hostport, const char *psk_hex);
 int  net_client_send(net_client_t *c, uint8_t type, const void *p, uint16_t len);
 int  net_client_wait(net_client_t *c, uint8_t want, uint8_t *out, uint16_t *len);
