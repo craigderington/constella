@@ -63,46 +63,48 @@ independently.
   OOM-during-restore check) and was consensus-adjacent. `ledger_build()` is
   back to unconditional full replay from genesis, reclaiming one 4096-byte
   page of binary size. See the O(n)-per-share backlog item below.
-- Chain id in the tx signing domain, live on a fresh testnet under
-  `SHARE_VERSION` 2: all 5 nodes logged `chain=352fcee542df9981`, and a signed
-  transfer went through end to end (sender -1.25 -0.002 fee, recipient +1.25,
-  nonce 0->1, explorer `txs 1` with `ledger ok`, 6 accounts cross-checked).
-  Mainnet's v2 id was `d4436b99b3070284`. **Superseded:** `SHARE_VERSION` 3
-  (the science lane) changed the packed chain-id inputs, so the ids moved to
-  testnet `a8f4562e57e74f9d` / mainnet `a2da89e8309ab40b` (computed
-  independently and pinned in `tests/test.c` and
-  `explorer/internal/proto/chainid_test.go`). This was re-run on a fresh reset:
-  all five nodes logged the new testnet id and a signed transfer held end to
-  end (sender -1.25 -0.002 fee, recipient +1.25, nonce 0->1, explorer
-  `txs 1` with `ledger ok`).
-- Science lane (v1) implemented and locally verified: 158/158 C unit tests
+- Chain id in the tx signing domain. Under `SHARE_VERSION` 2 the testnet id
+  was `352fcee542df9981` and mainnet's `d4436b99b3070284` (historical).
+  `SHARE_VERSION` 3 changed the packed inputs, so the ids are now testnet
+  `a8f4562e57e74f9d` / mainnet `a2da89e8309ab40b` — computed independently in
+  Python and pinned in `tests/test.c` and
+  `explorer/internal/proto/chainid_test.go`. Confirmed live 2026-09-26: every
+  node logged `chain=a8f4562e57e74f9d` on a fresh chain, and a signed transfer
+  held end to end (explorer `txs 1`, `ledger ok`).
+- Science lane (v1) implemented and verified: 174/174 C unit tests
   (claim record, region/epoch derivation, all seven validity rules, payout
   weight, dedup, release arithmetic), `tests/crosscheck.py` cross-checks
   claim validity and payout weight against independent Python, and
   `make explorer-test` is green with the Go mirror (`SciCheck`, `SciRegion`,
   `SciWork`, ledger science-pay) agreeing bit for bit with the C node. The
   deterministic explorer suite also covers a pre-rollover claim paying at
-  height 257. Node binary 145,176/153,600 bytes.
+  height 257. Node binary 149,272/153,600 bytes.
 - Thermal controller live on this laptop, 300 s traces at 1 Hz, 5 nodes x 1
   thread. It regulates exactly on target (die mean 82.2 C against a target of
   82). Fixing the cap and spike-proofing the stop took useful work from 0.263
   to 0.486 cores (+85%), shares/min from 11.8 to 23.8, and hard stops from
   near-constant to 2 of 80 status lines.
-- Science-lane smoke test on fresh Compose volumes: all 5 nodes logged
-  `chain=a8f4562e57e74f9d`, shares at heights 1 through 4 propagated with no
-  rejections, and the explorer reported `ledger ok`. This did not exercise
-  science claims: Compose uses one thread per node, so the science worker was
-  explicitly idle, and thermal protection stopped mining at 98-100 C.
-- Fresh-reset live science test: a two-thread science-enabled node produced
-  claim-bearing shares at heights 40, 41, and 42; all five nodes accepted
-  them (`sci=2`), with six claims at gaps 396..934. Block 121 paid
-  `science-paid=7.00000000`; all five nodes and the explorer agreed. The
-  chain then crossed heights 256, 257, 512, and 513 with no rejections;
-  explorer remained `ledger ok` through height 518.
-- Optional PSK transport was exercised across the five-node Compose network and
-  explorer with matching `CONSTELLA_P2P_KEY`/`EXPLORER_P2P_KEY`; peers reached
-  height 589 with `ledger ok` and no handshake failures. Node binary was
-  145,232/153,600 bytes in that build.
+- **Live run 2026-09-26** on `macbook-pro-v1`, fresh volumes (`down -v`), the
+  current build (`d00d40b`): 3 nodes x 2 threads, plus postgres and explorer.
+  All nodes logged `chain=a8f4562e57e74f9d`. Every share carried `sci=2`;
+  **zero rejections** node-side or explorer-side across the whole run. The
+  chain reached height 815 past both epoch rollovers (256/257 and 512/513).
+  The escrow **paid out**: 112.92313200 over 326 claims, sitting at
+  307.07686800 and converging on the predicted 9*inflow = 315 fixed point.
+  12 blocks, 1 tx, 5 accounts. The explorer reported `ledger ok at height 815
+  (5 accounts checked against the node)` — the Go implementation re-deriving
+  every science payout independently and agreeing with the C node throughout.
+  This is the run that made the science lane live-verified; earlier partial
+  runs on superseded builds have been removed rather than left to read as
+  current.
+- A second host, `asus-tuf-a16` (16-core), ran 2 nodes on the same build and
+  crossed the epoch boundary at 257 independently. Note both hosts mined
+  **separate forks from the same genesis** for an hour, because nothing can
+  discover anything — see `docs/superpowers/specs/2026-09-26-peer-discovery-design.md`.
+- The `CONSTELLA_P2P_KEY` transport was exercised on an earlier build and
+  worked, but the peer-discovery spec **removes it**: a network-wide shared key
+  cannot authenticate an open network, since any holder can impersonate any
+  node. Treat it as superseded, not as a feature to build on.
 - Final operating decisions: retain the thermal controller at an 82 C target,
   88 C cap, and 95 C hard stop; use shared-PSK transport only on trusted
   testnet. Mainnet remains gated on per-peer identities and key rotation.
@@ -143,7 +145,7 @@ independently.
   the gap range suggested.
 - `make size` quantises in 4096-byte pages for code, so growth shows up in
   4 KB steps and a sub-page change is invisible in the reported number.
-  Current: 145,176/153,600 bytes, one page step used since the science lane
+  Current: 149,272/153,600 bytes, two page steps used since the science lane
   began - an unchanged number means "no page crossed," not "nothing changed."
 - One miner worker goes to science when `threads >= 2`, costing ~1/threads of
   constellation throughput (~17% at the default 6: 5 of 6 workers left
