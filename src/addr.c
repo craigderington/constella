@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/random.h>
 #include <sys/stat.h>
@@ -331,13 +332,19 @@ static int addr_randbytes(uint8_t *out, size_t n) {
     return 0;
 }
 
-/* Generates a fresh secret and resets both tables to empty. Used both when
- * no file exists and when an existing one is discarded as corrupt/foreign -
- * either way the node must still start. */
-static int addr_reset_fresh(void) {
+/* Generates a fresh secret, resets both tables to empty, and immediately
+ * persists that state. Used both when no file exists and when an existing
+ * one is discarded as corrupt/foreign - either way the node must still
+ * start, AND the file on disk must not be left corrupt/foreign forever: a
+ * node that keeps crashing before a clean shutdown would otherwise churn a
+ * new secret (and relearn `tried` from nothing) on every single start
+ * without ever healing the file. Persisting here, uniformly, means the very
+ * next start finds a valid file instead. */
+static int addr_reset_fresh(const char *datadir) {
     uint8_t secret[16];
     if (addr_randbytes(secret, 16)) return -1;
     addr_init(secret);
+    addr_save(datadir);
     return 0;
 }
 
@@ -354,28 +361,34 @@ void addr_save(const char *datadir) {
     if (snprintf(path, sizeof path, "%s/peers.dat", datadir) >= (int)sizeof path) return;
     if (snprintf(tmp, sizeof tmp, "%s/peers.dat.tmp", datadir) >= (int)sizeof tmp) return;
 
-    static uint8_t buf[ADDR_FILE_MAX];
+    /* Exact record counts are known before any bytes are written, so the
+     * buffer is sized to precisely what this call will write - never a
+     * fixed worst-case allocation sitting around for the process lifetime.
+     * Single-threaded/single-owner throughout this module (no locks
+     * anywhere in addr.c), so the table contents counted here and the
+     * contents walked below cannot disagree. */
+    uint32_t n_new = (uint32_t)addr_count(0);
+    uint32_t n_tried = (uint32_t)addr_count(1);
+    size_t need = ADDR_HDR_SIZE + (size_t)(n_new + n_tried) * ADDR_REC_SIZE + ADDR_CSUM_SIZE;
+
+    uint8_t *buf = malloc(need);
+    if (!buf) return;   /* nothing persisted this call; in-memory tables are unaffected */
+
     uint8_t *p = buf;
     *p++ = 'A'; *p++ = 'D'; *p++ = 'R'; *p++ = '1';
     *p++ = 1;                                   /* version */
     memcpy(p, g_secret, 16); p += 16;
     aw32(p, g_max_seen); p += 4;
+    aw32(p, n_new); p += 4;
+    aw32(p, n_tried); p += 4;
 
-    uint8_t *n_new_at = p;   p += 4;             /* filled in once counted */
-    uint8_t *n_tried_at = p; p += 4;
-
-    uint32_t n_new = 0;
     for (int b = 0; b < ADDR_NEW_BUCKETS; b++)
         for (int i = 0; i < ADDR_BUCKET_SIZE; i++)
-            if (g_new[b][i].used) { p = write_record(p, &g_new[b][i].a); n_new++; }
+            if (g_new[b][i].used) p = write_record(p, &g_new[b][i].a);
 
-    uint32_t n_tried = 0;
     for (int b = 0; b < ADDR_TRIED_BUCKETS; b++)
         for (int i = 0; i < ADDR_BUCKET_SIZE; i++)
-            if (g_tried[b][i].used) { p = write_record(p, &g_tried[b][i].a); n_tried++; }
-
-    aw32(n_new_at, n_new);
-    aw32(n_tried_at, n_tried);
+            if (g_tried[b][i].used) p = write_record(p, &g_tried[b][i].a);
 
     size_t body_len = (size_t)(p - buf);
     uint8_t csum[ADDR_CSUM_SIZE];
@@ -388,14 +401,15 @@ void addr_save(const char *datadir) {
     /* mode 0600 from creation, not chmod'd on afterward - the secret must
      * never be briefly world-readable between fopen and a later chmod. */
     int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0) return;
+    if (fd < 0) { free(buf); return; }
     fchmod(fd, 0600);   /* covers a pre-existing tmp file with looser perms */
     FILE *f = fdopen(fd, "wb");
-    if (!f) { close(fd); return; }
+    if (!f) { close(fd); free(buf); return; }
 
     size_t written = fwrite(buf, 1, total, f);
     int ok = written == total && fflush(f) == 0 && fsync(fileno(f)) == 0;
     fclose(f);
+    free(buf);
     if (!ok) { unlink(tmp); return; }
     rename(tmp, path);
 }
@@ -403,47 +417,47 @@ void addr_save(const char *datadir) {
 int addr_load(const char *datadir) {
     char path[512];
     if (snprintf(path, sizeof path, "%s/peers.dat", datadir) >= (int)sizeof path)
-        return addr_reset_fresh();
+        return addr_reset_fresh(datadir);
 
     FILE *f = fopen(path, "rb");
-    if (!f) {
-        if (addr_reset_fresh()) return -1;
-        addr_save(datadir);     /* persist the fresh secret immediately */
-        return 0;
-    }
+    if (!f) return addr_reset_fresh(datadir);   /* also persists the fresh secret immediately */
 
-    if (fseek(f, 0, SEEK_END)) { fclose(f); return addr_reset_fresh(); }
+    if (fseek(f, 0, SEEK_END)) { fclose(f); return addr_reset_fresh(datadir); }
     long sz = ftell(f);
-    if (sz < 0 || fseek(f, 0, SEEK_SET)) { fclose(f); return addr_reset_fresh(); }
+    if (sz < 0 || fseek(f, 0, SEEK_SET)) { fclose(f); return addr_reset_fresh(datadir); }
     if ((uint64_t)sz < ADDR_FILE_MIN || (uint64_t)sz > ADDR_FILE_MAX) {
         fclose(f);
-        return addr_reset_fresh();
+        return addr_reset_fresh(datadir);
     }
 
-    static uint8_t buf[ADDR_FILE_MAX];
+    /* Allocated to the file's own (already bounds-checked) size, not a
+     * fixed worst-case buffer - freed before every return. */
+    uint8_t *buf = malloc((size_t)sz);
+    if (!buf) { fclose(f); return addr_reset_fresh(datadir); }
+
     size_t n = fread(buf, 1, (size_t)sz, f);
     fclose(f);
-    if (n != (size_t)sz) return addr_reset_fresh();
+    if (n != (size_t)sz) { free(buf); return addr_reset_fresh(datadir); }
 
     const uint8_t *p = buf;
-    if (p[0] != 'A' || p[1] != 'D' || p[2] != 'R' || p[3] != '1') return addr_reset_fresh();
+    if (p[0] != 'A' || p[1] != 'D' || p[2] != 'R' || p[3] != '1') { free(buf); return addr_reset_fresh(datadir); }
     p += 4;
-    if (*p != 1) return addr_reset_fresh();
+    if (*p != 1) { free(buf); return addr_reset_fresh(datadir); }
     p += 1;
     uint8_t secret[16]; memcpy(secret, p, 16); p += 16;
     uint32_t max_seen = ar32(p); p += 4;
     uint32_t n_new    = ar32(p); p += 4;
     uint32_t n_tried  = ar32(p); p += 4;
 
-    if (n_new > ADDR_MAX_NEW || n_tried > ADDR_MAX_TRIED) return addr_reset_fresh();
+    if (n_new > ADDR_MAX_NEW || n_tried > ADDR_MAX_TRIED) { free(buf); return addr_reset_fresh(datadir); }
 
     uint64_t expect = ADDR_HDR_SIZE + (uint64_t)(n_new + n_tried) * ADDR_REC_SIZE + ADDR_CSUM_SIZE;
-    if (expect != (uint64_t)n) return addr_reset_fresh();
+    if (expect != (uint64_t)n) { free(buf); return addr_reset_fresh(datadir); }
 
     size_t body_len = (size_t)n - ADDR_CSUM_SIZE;
     uint8_t csum[ADDR_CSUM_SIZE];
     blake2b(csum, ADDR_CSUM_SIZE, buf, body_len);
-    if (memcmp(csum, buf + body_len, ADDR_CSUM_SIZE)) return addr_reset_fresh();
+    if (memcmp(csum, buf + body_len, ADDR_CSUM_SIZE)) { free(buf); return addr_reset_fresh(datadir); }
 
     /* Validated end to end: adopt the persisted secret and rebuild both
      * tables from the persisted records. addr_init resets max_seen and the
@@ -482,5 +496,6 @@ int addr_load(const char *datadir) {
         s->a.port = port; s->a.seen = seen; s->a.tried = 1; s->a.ok = ok;
         s->used = 1;
     }
+    free(buf);
     return 0;
 }
