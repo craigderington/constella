@@ -24,7 +24,11 @@ typedef struct { uint8_t ip[16]; uint16_t port; uint32_t seen; uint8_t tried, ok
  * a victim's buckets and the whole defence collapses. */
 void addr_init(const uint8_t secret[16]);
 int  addr_add(const uint8_t ip[16], uint16_t port, uint32_t seen);
-int  addr_good(const uint8_t ip[16], uint16_t port);
+/* `attempt` identifies the connection attempt the handshake completed on.
+ * Promotion (new -> tried) requires two calls with DIFFERENT attempt ids -
+ * two successful handshakes on separate connection attempts, never a single
+ * connection self-promoting by being asked twice. */
+int  addr_good(const uint8_t ip[16], uint16_t port, uint64_t attempt);
 int  addr_select(addr_t *out, const uint8_t (*avoid)[8], int navoid);
 int  addr_count(int tried);
 int  addr_bucket_of(const uint8_t ip[16], int tried);

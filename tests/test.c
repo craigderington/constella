@@ -814,23 +814,48 @@ static void t_addr_tables(void) {
     mk4(ip, 127, 0, 0, 1); CHECK(addr_add(ip, 7043, 1) == 0);
     mk4(ip, 10, 0, 0, 1);  CHECK(addr_add(ip, 7043, 1) == 0);
 
-    /* promotion needs two handshakes on separate attempts */
+    /* promotion needs two handshakes on separate attempts: two addr_good
+     * calls with DIFFERENT attempt ids must promote */
     mk4(ip, 198, 51, 100, 4);
     CHECK(addr_add(ip, 7043, 1) == 1);
     CHECK(addr_count(1) == 0);
-    addr_good(ip, 7043);  CHECK(addr_count(1) == 0);   /* one is not enough */
-    addr_good(ip, 7043);  CHECK(addr_count(1) == 1);   /* two promotes */
+    addr_good(ip, 7043, 101);  CHECK(addr_count(1) == 0);   /* one is not enough */
+    addr_good(ip, 7043, 102);  CHECK(addr_count(1) == 1);   /* second, different attempt -> promotes */
 
-    /* selection honours the avoid list, so outbound stays netgroup-diverse */
+    /* Review Major 3: a single connection cannot self-promote by having
+     * addr_good called on it twice. Two calls with the SAME attempt id must
+     * NOT promote; only a subsequent call with a DIFFERENT id may. */
+    uint8_t ip2[16];
+    mk4(ip2, 198, 51, 101, 9);
+    CHECK(addr_add(ip2, 7043, 1) == 1);
+    addr_good(ip2, 7043, 55);  CHECK(addr_count(1) == 1);   /* first handshake: one is not enough */
+    addr_good(ip2, 7043, 55);  CHECK(addr_count(1) == 1);   /* SAME attempt id repeated -> still not promoted */
+    addr_good(ip2, 7043, 56);  CHECK(addr_count(1) == 2);   /* DIFFERENT attempt id -> promotes */
+
+    /* selection honours the avoid list, so outbound stays netgroup-diverse.
+     * Review Major 2: repopulate `new` from several DISTINCT netgroups
+     * first. With only the just-promoted (now-avoided) address in the
+     * tables, addr_select could only ever return 0 and the CHECK below
+     * would execute zero times - which is exactly how this test went
+     * vacuous before (sel_hits=0/20, caught in review). */
     uint8_t avoid[1][8] = {0}; int n = addr_netgroup(ip, avoid[0]);
     (void)n;
+    uint8_t other_ip[16];
+    mk4(other_ip, 5, 6, 7, 8);     addr_add(other_ip, 7043, 2000);
+    mk4(other_ip, 9, 9, 9, 9);     addr_add(other_ip, 7043, 2001);
+    mk4(other_ip, 44, 44, 1, 1);   addr_add(other_ip, 7043, 2002);
+    mk4(other_ip, 77, 3, 3, 3);    addr_add(other_ip, 7043, 2003);
+
     addr_t got;
+    int sel_hits = 0;
     for (int i = 0; i < 20; i++) {
         if (addr_select(&got, avoid, 1)) {
+            sel_hits++;
             uint8_t g[8]; addr_netgroup(got.ip, g);
-            CHECK(memcmp(g, avoid[0], 2));
+            CHECK(memcmp(g, avoid[0], 8));    /* the avoided netgroup is never returned */
         }
     }
+    CHECK(sel_hits > 0);   /* selection actually produced results - the check above ran */
 }
 
 int main(int argc, char **argv) {

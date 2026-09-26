@@ -19,12 +19,17 @@ int addr_netgroup(const uint8_t ip[16], uint8_t out[8]) {
 
 /* ---- address tables ------------------------------------------------- */
 
-typedef struct { addr_t a; int used; } slot_t;
+/* `has_attempt`/`last_attempt` are internal-only (never exposed through
+ * addr_t): they let addr_good tell "the same connection called us twice" apart
+ * from "two separate connection attempts both succeeded", which is what
+ * promotion is required to require. */
+typedef struct { addr_t a; int used; int has_attempt; uint64_t last_attempt; } slot_t;
 
 static uint8_t g_secret[16];
 static slot_t  g_new[ADDR_NEW_BUCKETS][ADDR_BUCKET_SIZE];
 static slot_t  g_tried[ADDR_TRIED_BUCKETS][ADDR_BUCKET_SIZE];
-static uint32_t g_sel_rr;
+static uint32_t g_max_seen;
+static uint64_t g_rand_ctr;
 
 /* Bucket placement is keyed by the per-node secret and the address's
  * network group (never the full address - see addr_bucket_of). Keying by
@@ -42,11 +47,29 @@ static uint32_t bucket_hash(const uint8_t group[8], uint32_t nbuckets) {
     return (uint32_t)(v % nbuckets);
 }
 
+/* Deterministic, seedable randomness for selection: keyed by the same
+ * per-node secret as bucketing, advanced by a monotonic call counter. Never
+ * time() or unseeded rand() - a run with the same secret and the same
+ * sequence of addr_select calls always makes the same choices, which is what
+ * keeps the test suite reproducible. */
+static uint64_t next_rand(void) {
+    uint8_t buf[16 + 8];
+    uint8_t h[8];
+    uint64_t v = 0;
+    uint64_t ctr = g_rand_ctr++;
+    memcpy(buf, g_secret, 16);
+    memcpy(buf + 16, &ctr, 8);
+    blake2b(h, sizeof h, buf, sizeof buf);
+    for (int i = 0; i < 8; i++) v = (v << 8) | h[i];
+    return v;
+}
+
 void addr_init(const uint8_t secret[16]) {
     memcpy(g_secret, secret, 16);
     memset(g_new, 0, sizeof g_new);
     memset(g_tried, 0, sizeof g_tried);
-    g_sel_rr = 0;
+    g_max_seen = 0;
+    g_rand_ctr = 0;
 }
 
 int addr_bucket_of(const uint8_t ip[16], int tried) {
@@ -83,6 +106,7 @@ static slot_t *bucket_stalest(slot_t bucket[ADDR_BUCKET_SIZE]) {
 
 int addr_add(const uint8_t ip[16], uint16_t port, uint32_t seen) {
     if (!addr_is_routable(ip)) return 0;
+    if (seen > g_max_seen) g_max_seen = seen;
 
     int tb = addr_bucket_of(ip, 1);
     slot_t *s = bucket_find(g_tried[tb], ip, port);
@@ -95,7 +119,7 @@ int addr_add(const uint8_t ip[16], uint16_t port, uint32_t seen) {
     s = bucket_free(g_new[nb]);
     if (!s) s = bucket_stalest(g_new[nb]);
 
-    memset(&s->a, 0, sizeof s->a);
+    memset(s, 0, sizeof *s);     /* also clears has_attempt/last_attempt for a reused slot */
     memcpy(s->a.ip, ip, 16);
     s->a.port = port;
     s->a.seen = seen;
@@ -105,15 +129,31 @@ int addr_add(const uint8_t ip[16], uint16_t port, uint32_t seen) {
     return 1;
 }
 
-int addr_good(const uint8_t ip[16], uint16_t port) {
+/* Returns 1 if `attempt` is a genuinely new connection attempt for this slot
+ * (and records it), 0 if it is the same attempt id already on file. This is
+ * what stops a single held-open connection from calling addr_good twice and
+ * self-promoting: promotion credit only ever accrues once per distinct
+ * attempt id, never per call. */
+static int record_attempt(slot_t *s, uint64_t attempt) {
+    if (s->has_attempt && attempt == s->last_attempt) return 0;
+    s->has_attempt = 1;
+    s->last_attempt = attempt;
+    return 1;
+}
+
+int addr_good(const uint8_t ip[16], uint16_t port, uint64_t attempt) {
     int tb = addr_bucket_of(ip, 1);
     slot_t *s = bucket_find(g_tried[tb], ip, port);
-    if (s) { if (s->a.ok < 255) s->a.ok++; return 1; }
+    if (s) {
+        if (record_attempt(s, attempt) && s->a.ok < 255) s->a.ok++;
+        return 1;
+    }
 
     int nb = addr_bucket_of(ip, 0);
     s = bucket_find(g_new[nb], ip, port);
     if (!s) return 0;                       /* never added - nothing to promote */
 
+    if (!record_attempt(s, attempt)) return 1;   /* same attempt as last time: no credit */
     if (s->a.ok < 255) s->a.ok++;
     if (s->a.ok < 2) return 1;              /* one handshake proves nothing durable */
 
@@ -126,6 +166,8 @@ int addr_good(const uint8_t ip[16], uint16_t port) {
     if (!t) t = bucket_stalest(g_tried[tb]);
     t->a = promoted;
     t->used = 1;
+    t->has_attempt = 1;
+    t->last_attempt = attempt;
     return 1;
 }
 
@@ -155,28 +197,56 @@ static int netgroup_avoided(const uint8_t ip[16], const uint8_t (*avoid)[8], int
     return 0;
 }
 
+/* An entry more than a quarter of the table's freshness range behind the
+ * freshest `seen` on record counts as stale. Relative to the table's own
+ * high-water mark rather than to a fixed constant, because `seen` is a
+ * caller-supplied logical timestamp with no fixed unit. */
+static int is_stale(uint32_t seen) {
+    if (seen >= g_max_seen) return 0;
+    return (g_max_seen - seen) > (g_max_seen / 4);
+}
+
+/* Two passes: the first gives stale entries a (deterministic, secret-seeded)
+ * chance to be skipped in favour of a fresher one further round the bucket
+ * scan - "stale entries are weighted down", not disqualified. The second
+ * pass takes the first eligible entry unconditionally, so a table that is
+ * entirely stale still yields a candidate instead of addr_select spuriously
+ * reporting nothing available. */
 static int scan_table(slot_t table[][ADDR_BUCKET_SIZE], int nbuckets,
                        const uint8_t (*avoid)[8], int navoid, addr_t *out) {
-    for (int k = 0; k < nbuckets; k++) {
-        int b = (int)(((uint32_t)k + g_sel_rr) % (uint32_t)nbuckets);
-        for (int i = 0; i < ADDR_BUCKET_SIZE; i++) {
-            slot_t *s = &table[b][i];
-            if (!s->used) continue;
-            if (netgroup_avoided(s->a.ip, avoid, navoid)) continue;
-            *out = s->a;
-            g_sel_rr++;
-            return 1;
+    int start = (int)(next_rand() % (uint32_t)nbuckets);
+    for (int pass = 0; pass < 2; pass++) {
+        for (int k = 0; k < nbuckets; k++) {
+            int b = (start + k) % nbuckets;
+            for (int i = 0; i < ADDR_BUCKET_SIZE; i++) {
+                slot_t *s = &table[b][i];
+                if (!s->used) continue;
+                if (netgroup_avoided(s->a.ip, avoid, navoid)) continue;
+                if (pass == 0 && is_stale(s->a.seen) && (next_rand() % 100) < 70)
+                    continue;              /* weighted down this round, not excluded */
+                *out = s->a;
+                return 1;
+            }
         }
     }
     return 0;
 }
 
-/* Draws from `tried` first - it is the pool of peers proven reachable twice
- * - and falls back to `new` only when nothing eligible survives the avoid
- * list. Skipping any candidate whose netgroup is already represented is what
+/* Draws mostly from `tried` - it is the pool of peers proven reachable
+ * twice - but takes an occasional (~1-in-8, secret-seeded) draw from `new`
+ * first instead, so a node whose `tried` peers have all gone dark still has
+ * a route back to fresh candidates rather than calcifying around addresses
+ * it can no longer reach. Either way the untried table is a fallback, so
+ * both tables stay reachable regardless of which one is preferred this
+ * call. Skipping any candidate whose netgroup is already represented is what
  * keeps an outbound set netgroup-diverse instead of collapsing onto whichever
  * netgroup happens to dominate the tables. */
 int addr_select(addr_t *out, const uint8_t (*avoid)[8], int navoid) {
+    int prefer_new = (next_rand() % 8) == 0;
+    if (prefer_new) {
+        if (scan_table(g_new, ADDR_NEW_BUCKETS, avoid, navoid, out)) return 1;
+        return scan_table(g_tried, ADDR_TRIED_BUCKETS, avoid, navoid, out);
+    }
     if (scan_table(g_tried, ADDR_TRIED_BUCKETS, avoid, navoid, out)) return 1;
     return scan_table(g_new, ADDR_NEW_BUCKETS, avoid, navoid, out);
 }
