@@ -31,7 +31,11 @@ static uint64_t found;
 static ledger_t L;
 static tmpl_t T[TMPL_RING];
 static int tnext;
-static struct { uint8_t id[32]; int64_t at; } lastreq[64];
+/* A repeated request is redundant only while neither end's state has changed.
+ * Remembering just the remote tip used to suppress the HELLO that terminates
+ * a full 500-share batch.  `chain_count` notices progress even when the batch
+ * extends a side branch that has not overtaken our current tip yet. */
+static struct { uint8_t id[32]; int chain_count; int64_t at; } lastreq[64];
 static sci_t scipool[SCI_POOL];
 static int nscipool;
 static uint32_t sci_epoch_cur = 0xffffffffu;
@@ -192,13 +196,37 @@ static void send_hello(int peer) {
     net_send(peer, MSG_HELLO, chain_entry(chain_tip())->id, 32);
 }
 
+static int chain_request_due(int peer, const uint8_t want[32],
+                             int local_count, int64_t t) {
+    if (peer < 0 || peer >= 64) return 1;
+    if (!memcmp(lastreq[peer].id, want, 32) &&
+        lastreq[peer].chain_count == local_count &&
+        t >= lastreq[peer].at && t - lastreq[peer].at < 5)
+        return 0;
+    memcpy(lastreq[peer].id, want, 32);
+    lastreq[peer].chain_count = local_count;
+    lastreq[peer].at = t;
+    return 1;
+}
+
 static void request_chain(int peer, const uint8_t want[32]) {
     int64_t t = now_sec();
-    if (peer < 64 && !memcmp(lastreq[peer].id, want, 32) && t - lastreq[peer].at < 5) return;
-    if (peer < 64) { memcpy(lastreq[peer].id, want, 32); lastreq[peer].at = t; }
+    if (!chain_request_due(peer, want, chain_count(), t)) return;
     uint8_t loc[32][32];
     int n = chain_locator(loc, 32);
     net_send(peer, MSG_GETCHAIN, loc, (uint16_t)(n * 32));
+}
+
+/* Test-only entry points for the batch-continuation guard.  Production calls
+ * the exact same helper above; --gc-sections removes these wrappers from the
+ * node binary. */
+int node_chain_request_due_vector(int peer, const uint8_t want[32],
+                                  int local_count, int64_t now) {
+    return chain_request_due(peer, want, local_count, now);
+}
+
+void node_chain_request_reset_vector(int peer) {
+    if (peer >= 0 && peer < 64) memset(&lastreq[peer], 0, sizeof lastreq[peer]);
 }
 
 static void serve_chain(int peer, const uint8_t *p, uint16_t len) {

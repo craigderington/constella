@@ -74,9 +74,9 @@ void net_set_self(const uint8_t ip[16], uint16_t port);
  * string alone - empty/oversized, missing port, non-numeric or
  * out-of-range port - so that half is unit-testable without a live
  * resolver. net_advertise does the parse and then the (untestable)
- * getaddrinfo resolution, recording the result via net_set_self and
- * addr_add. Both return 0 on success, -1 otherwise; a failure is never
- * fatal to the node. */
+ * getaddrinfo resolution, recording the result via net_set_self for direct
+ * gossip replies without inserting our own address in the peer tables. Both
+ * return 0 on success, -1 otherwise; a failure is never fatal to the node. */
 #define NET_ADVERTISE_HOST_MAX 128
 int net_parse_advertise(const char *s, char *host, size_t hostcap, uint16_t *port);
 int net_advertise(const char *hostport);
@@ -95,6 +95,12 @@ int net_advertise(const char *hostport);
 int  net_select_outbound_vector(addr_t *out, int max, const uint8_t (*have)[8], int nhave);
 void net_dial_vector(const uint8_t ip[16], uint16_t port);
 void net_handshake_ok_vector(void);
+/* Retained bootstrap and inbound-eviction regression hooks.  The inbound
+ * helper creates an already-authenticated synthetic connection in `ip`'s
+ * netgroup; net_stop clears all of them. */
+int  net_seed_count_vector(int fallback_only);
+int  net_inbound_add_vector(const uint8_t ip[16]);
+int  net_inbound_group_count_vector(const uint8_t ip[16]);
 
 typedef void (*net_msg_fn)(int peer, uint8_t type, const uint8_t *p, uint16_t len);
 typedef void (*net_conn_fn)(int peer);
