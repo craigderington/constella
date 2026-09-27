@@ -32,7 +32,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("store: %v", err)
 	}
-	peer := p2p.New(env("EXPLORER_NODE", "127.0.0.1:7043"), env("EXPLORER_P2P_KEY", ""))
+	peer := p2p.New(env("EXPLORER_NODE", "127.0.0.1:7043"))
 	ix := indexer.New(st, peer)
 	if err := ix.Load(ctx); err != nil {
 		log.Fatalf("load: %v", err)

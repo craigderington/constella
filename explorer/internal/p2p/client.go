@@ -57,15 +57,11 @@ type cipherAEAD interface {
 	Overhead() int
 }
 
-// New builds a client for addr. The optional argument is the superseded
-// EXPLORER_P2P_KEY; it is accepted and ignored so a stale environment does not
-// break startup. Removing the variable from main.go, docker-compose.yml and
-// README.md is Task 11's job (Ruling B).
-func New(addr string, pskHex ...string) *Client {
+// New builds a client for addr. There is no key argument: the node
+// authenticates every connection with per-peer static identities, and there is
+// no network-wide secret left to configure.
+func New(addr string) *Client {
 	c := &Client{Addr: addr, Frames: make(chan Frame, 4096), AddrBook: NewAddrBook()}
-	if len(pskHex) > 0 && pskHex[0] != "" {
-		c.initErr = errors.New("EXPLORER_P2P_KEY is set but ignored: the node now authenticates with per-peer static keys")
-	}
 	// One identity per process, generated at startup rather than loaded from
 	// disk: the explorer only dials out, so nothing has to recognise it across
 	// restarts yet. A persistent node.key belongs with address gossip.
@@ -227,13 +223,7 @@ func keyed(key []byte, parts ...[]byte) []byte {
 	return h.Sum(nil)
 }
 
-func authProof(key, challenge []byte) []byte {
-	return keyed(key, []byte("CSTL-AUTH1"), challenge)
-}
 
-func sessionKey(key []byte, direction string, low, high []byte) []byte {
-	return keyed(key, []byte("CSTL-P2P1"), []byte(direction), low, high)
-}
 
 func makeNonce(seq uint64) []byte {
 	n := make([]byte, chacha20poly1305.NonceSizeX)
@@ -281,19 +271,6 @@ func readRaw(r io.Reader) (byte, []byte, error) {
 	return h[4], p, err
 }
 
-func newSession(psk, local, remote []byte) (*session, error) {
-	low, high := local, remote
-	localLow := string(local) < string(remote)
-	if !localLow {
-		low, high = remote, local
-	}
-	txKey := sessionKey(psk, "lo", low, high)
-	rxKey := sessionKey(psk, "hi", low, high)
-	if !localLow {
-		txKey, rxKey = rxKey, txKey
-	}
-	return newSessionKeys(txKey, rxKey)
-}
 
 // newSessionKeys builds a session from the two derived direction keys.
 func newSessionKeys(txKey, rxKey []byte) (*session, error) {
