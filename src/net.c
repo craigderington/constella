@@ -392,6 +392,15 @@ static void handle_getaddr(int i, uint16_t len) {
     uint8_t avoid[ADDR_MAX_ENTRIES][8];
     uint8_t out[2 + ADDR_MAX_ENTRIES * ADDR_MSG_ENTRY_SIZE];
     int n = 0;
+    /* Our own advertised address, gossiped straight from self_ip so it never
+     * has to live in the tables (see net_advertise). Taking a netgroup slot in
+     * `avoid` keeps the reply netgroup-diverse on the same rule the loop below
+     * follows. */
+    if (self_port) {
+        addr_netgroup(self_ip, avoid[n]);
+        addr_msg_put(out + 2, self_ip, self_port, (uint32_t)now_sec());
+        n = 1;
+    }
     addr_t got;
     while (n < ADDR_MAX_ENTRIES && addr_select(&got, avoid, n)) {
         addr_netgroup(got.ip, avoid[n]);
@@ -573,9 +582,9 @@ static void peer_dial_begin(peer_t *p, const addr_t *a) {
 
 /* The handshake completed on the attempt recorded above. Only peers dialled
  * out of the address tables are eligible: an inbound peer's source port is
- * not its listen port, so there is no table entry it corresponds to, and a
- * seed is an operator's explicit choice rather than something the tables
- * learned (Task 10 owns putting seeds into them). */
+ * not its listen port, so there is no table entry it corresponds to. A
+ * routable seed IS eligible, because `dial` now adds it to `new` before
+ * dialling it (B1) - it is an address like any other once the tables hold it. */
 static void peer_handshake_done(const peer_t *p) {
     if (!p->from_addr) return;
     addr_good(p->dial_ip, p->dial_port, p->attempt);
@@ -611,10 +620,29 @@ static void dial(int s) {
     if (r < 0 && errno != EINPROGRESS) { close(fd); return; }
     int i = alloc_peer(fd, P_CONNECTING, s, 0);
     if (i < 0) { close(fd); return; }
-    /* Recorded but NOT marked from_addr: a seed occupies a netgroup for
-     * diversity accounting, while addr_good has nothing in the tables to
-     * promote it into. */
-    if (known) { memcpy(P[i].dial_ip, ip, 16); P[i].dial_port = port; P[i].has_ip = 1; }
+    /* B1: a resolved seed enters `new` like any other learned address.
+     * Without this, `addr_add` has only two call sites - gossip ingest and
+     * self-advertise - so the tables have NO injection point for a node that
+     * has never spoken to anyone, and a fresh node with no configuration can
+     * never discover a peer. That is the spec's first Goal and the exact
+     * incident this work exists to fix.
+     *
+     * addr_add applies the routability filter, so an unroutable seed is
+     * refused here exactly as a gossiped one would be; when it is accepted we
+     * go through peer_dial_begin so the peer carries a real per-attempt id and
+     * a seed that completes two SEPARATE handshakes earns `tried` standing
+     * like any other peer. */
+    if (known) {
+        if (addr_add(ip, port, (uint32_t)now_sec())) {
+            addr_t sa;
+            memset(&sa, 0, sizeof sa);
+            memcpy(sa.ip, ip, 16);
+            sa.port = port;
+            peer_dial_begin(&P[i], &sa);
+        } else {
+            memcpy(P[i].dial_ip, ip, 16); P[i].dial_port = port; P[i].has_ip = 1;
+        }
+    }
     S[s].peer = i;
 }
 
@@ -811,7 +839,13 @@ int net_advertise(const char *hostport) {
     freeaddrinfo(res);
     if (!ok) return -1;
     net_set_self(ip, port);
-    addr_add(ip, port, (uint32_t)now_sec());
+    /* B2: deliberately NOT addr_add(). A self entry in the tables is
+     * persisted by addr_save, and on the next start addr_load restores it so
+     * net_init's `addr_count(0) + addr_count(1) == 0` bootstrap gate is false
+     * and the DNS/hardcoded tiers never run - while select_outbound skips that
+     * same entry as our own. The node then has exactly one known address, no
+     * candidates, and no way back to the seeds, because nothing removes it.
+     * handle_getaddr gossips our address directly from self_ip instead. */
     return 0;
 }
 
