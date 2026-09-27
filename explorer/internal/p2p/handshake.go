@@ -55,13 +55,20 @@ func hsTranscript(ephSelf, ephPeer []byte) []byte {
 //	k_hi = BLAKE2b-256-keyed(shared, "CSTL-P2P2" || "hi" || lo_id || hi_id)
 //
 // The message is 9 + 2 + 32 + 32 = 75 bytes; the key is the shared secret.
-func hsSessionKeys(shared, idA, idB []byte) (kLo, kHi []byte) {
-	lo, hi := idA, idB
-	if string(idB) < string(idA) {
-		lo, hi = idB, idA
+//
+// selfIsLo — whether idSelf sorted lower, and so transmits under k_lo — is
+// returned rather than recomputed by the caller. The sort decides both the
+// hash input order and the direction split, and those two must never be able
+// to disagree: one fact, one place.
+func hsSessionKeys(shared, idSelf, idPeer []byte) (kLo, kHi []byte, selfIsLo bool) {
+	selfIsLo = string(idSelf) < string(idPeer)
+	lo, hi := idSelf, idPeer
+	if !selfIsLo {
+		lo, hi = idPeer, idSelf
 	}
 	return keyed(shared, []byte(kdfLabel), []byte("lo"), lo, hi),
-		keyed(shared, []byte(kdfLabel), []byte("hi"), lo, hi)
+		keyed(shared, []byte(kdfLabel), []byte("hi"), lo, hi),
+		selfIsLo
 }
 
 // hsDerive completes the key schedule. The side whose id_pub sorts lower
@@ -80,9 +87,9 @@ func hsDerive(ephSk, ephPeer, idSelf, idPeer []byte) (*session, error) {
 	if isZero(shared) {
 		return nil, errors.New("peer sent a low-order ephemeral key")
 	}
-	kLo, kHi := hsSessionKeys(shared, idSelf, idPeer)
+	kLo, kHi, selfIsLo := hsSessionKeys(shared, idSelf, idPeer)
 	txKey, rxKey := kLo, kHi
-	if string(idPeer) < string(idSelf) {
+	if !selfIsLo {
 		txKey, rxKey = kHi, kLo
 	}
 	return newSessionKeys(txKey, rxKey)

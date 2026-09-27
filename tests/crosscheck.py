@@ -179,6 +179,9 @@ for i, c in enumerate(hs_cases):
     hsbad += (got[i * 2], got[i * 2 + 1]) != (want[0].hex(), want[1].hex())
 print(f"hs:      {len(hs_cases) - hsbad}/{len(hs_cases)} match python x25519 + keyed blake2b")
 
+EPH_A_PK_HEX = "07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c"
+EPH_B_PK_HEX = "3ebcb692149344dc54e58160cf90bed9eea1dd14e81c8e91de557af7d7afd915"
+
 # 7. The handshake signature scheme, against a pure-Python EdDSA-BLAKE2b.
 #    This is NOT RFC 8032 Ed25519: monocypher hashes with BLAKE2b-512 where
 #    RFC 8032 uses SHA-512, so the two never interoperate. The structure is
@@ -236,8 +239,20 @@ def eddsa_b2_sign(seed, msg):
     k = _b2_modq(R + pub + msg)
     return pub, R + ((r + k * a) % ED_Q).to_bytes(32, "little")
 
-sig_cases = [(bytes((i * 7 + 13) & 0xff for i in range(32)),
-              b"constella handshake signature vector")]     # pinned in tests/test.c
+# A real 72-byte handshake transcript: "CSTL-HS1" || eph_self || eph_peer, with
+# the two ephemeral public keys from the pinned handshake vector above. The
+# 36-byte case below pins the scheme; this one pins it at the ONLY length the
+# live handshake ever signs, where a length-dependent hash-framing bug would
+# otherwise hide. It cannot be caught by a self-verifying round trip: verify
+# never recomputes the nonce, and sign and verify share the same hash call, so
+# a framing bug cancels out on both ends at once.
+_SIG_SEED = bytes((i * 7 + 13) & 0xff for i in range(32))
+_HS_TRANSCRIPT = (b"CSTL-HS1"
+                  + bytes.fromhex(EPH_A_PK_HEX)
+                  + bytes.fromhex(EPH_B_PK_HEX))
+sig_cases = [(_SIG_SEED, b"constella handshake signature vector"),  # pinned in tests/test.c
+             (_SIG_SEED, _HS_TRANSCRIPT)]  # pinned in the Go explorer, handshake_test.go
+assert len(_HS_TRANSCRIPT) == 72
 for n in (0, 1, 32, 72, 127, 128, 129, 200):                 # incl. the 72-byte transcript
     sig_cases.append((bytes(random.getrandbits(8) for _ in range(32)),
                       bytes(random.getrandbits(8) for _ in range(n))))
