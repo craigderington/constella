@@ -12,10 +12,11 @@ independently.
 - Ports are deliberately off the usual ranges: P2P 7043, explorer 3071, Postgres 5439.
   Pick new random-ish ports for any new service.
 - Sprints with a checklist: plan, work, assess, build, test, deploy, iterate.
-- The node binary stays under 150 KB (`make size` enforces this).
+- The node binary stays under 192 KB (`make size` enforces this; the gate rose
+  from 150 KB in 4ad73c1 to make room for peer discovery).
 
 ## Commands
-    make test            # C unit tests (158) + thermal sim + Python cross-checks
+    make test            # C unit tests + thermal sim + Python cross-checks
     make size            # size gate
     make explorer-test   # go vet + go test (includes params.h drift guard)
     docker compose up --build -d && docker compose logs -f node1 explorer
@@ -101,13 +102,13 @@ independently.
   crossed the epoch boundary at 257 independently. Note both hosts mined
   **separate forks from the same genesis** for an hour, because nothing can
   discover anything — see `docs/superpowers/specs/2026-09-26-peer-discovery-design.md`.
-- The `CONSTELLA_P2P_KEY` transport was exercised on an earlier build and
-  worked, but the peer-discovery spec **removes it**: a network-wide shared key
-  cannot authenticate an open network, since any holder can impersonate any
-  node. Treat it as superseded, not as a feature to build on.
+- `CONSTELLA_P2P_KEY` is **gone**. A network-wide shared key cannot
+  authenticate an open network: every holder can impersonate every node. It was
+  replaced by per-node static identities and a two-phase forward-secret
+  handshake; see `docs/protocol.md`.
 - Final operating decisions: retain the thermal controller at an 82 C target,
-  88 C cap, and 95 C hard stop; use shared-PSK transport only on trusted
-  testnet. Mainnet remains gated on per-peer identities and key rotation.
+  88 C cap, and 95 C hard stop. The shared-PSK transport is retired; per-peer
+  static identities are implemented, so that mainnet gate is closed.
 
 ## Not yet verified
 - [ ] A naturally mined block in the narrow h257..295 window remains
@@ -172,9 +173,10 @@ independently.
 <!--
   Removed stale detail: the old sampler failed open here.
 -->
-- P2P defaults to testnet-compatible plaintext, but optional PSK mode now
-  authenticates the handshake and encrypts subsequent frames. Per-peer identity
-  and key rotation remain a mainnet launch gate by decision.
+- P2P is always authenticated and encrypted: per-node static identities, an
+  X25519 ephemeral-ephemeral handshake signed with EdDSA-BLAKE2b, and
+  XChaCha20-Poly1305 frames. There is no plaintext mode. Key rotation is still
+  unimplemented.
 - Operational hardening is still minimal: Compose credentials are configurable
   and schema version 1 now migrates signed numeric columns transactionally,
   with a Postgres-backed migration test. CI now runs `make test`,
