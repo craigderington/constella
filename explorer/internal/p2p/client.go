@@ -32,6 +32,10 @@ type Client struct {
 	sess    *session
 	id      *identity
 	initErr error
+	// AddrBook is the explorer's mirror of the node's address gossip
+	// (Ruling AG): shared across reconnects, unlike the per-connection
+	// "answered" latch in gossipHandler below.
+	AddrBook *AddrBook
 }
 
 // The counter is the nonce, so seal-and-bump has to be one critical section:
@@ -58,7 +62,7 @@ type cipherAEAD interface {
 // break startup. Removing the variable from main.go, docker-compose.yml and
 // README.md is Task 11's job (Ruling B).
 func New(addr string, pskHex ...string) *Client {
-	c := &Client{Addr: addr, Frames: make(chan Frame, 4096)}
+	c := &Client{Addr: addr, Frames: make(chan Frame, 4096), AddrBook: NewAddrBook()}
 	if len(pskHex) > 0 && pskHex[0] != "" {
 		c.initErr = errors.New("EXPLORER_P2P_KEY is set but ignored: the node now authenticates with per-peer static keys")
 	}
@@ -170,11 +174,31 @@ func (c *Client) runConn(ctx context.Context) (time.Duration, bool) {
 	if !c.emit(ctx, Frame{}) {
 		return 0, false
 	}
+	// gossip is per-connection state (the "answered once" latch resets on
+	// every reconnect, same as the node's peer_t does on a fresh accept()),
+	// but AddrBook itself persists across reconnects on c.
+	gh := newGossipHandler(c.AddrBook)
+	gossipSend := func(typ byte, payload []byte) error {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.sendLocked(typ, payload)
+	}
 	for {
 		typ, p, err := readSecure(r, sess)
 		if err != nil {
 			log.Printf("p2p: %v", err)
 			break
+		}
+		// GETADDR/ADDR are gossip wire format (Ruling AG), handled here and
+		// never forwarded to Frames: the indexer has no case for them, and
+		// a malformed one is dropped the same way net.c's handle_getaddr/
+		// handle_addr_msg drop a peer on bad framing.
+		if handled, gerr := gh.handle(gossipSend, typ, p, uint32(time.Now().Unix())); handled {
+			if gerr != nil {
+				log.Printf("p2p: gossip: %v", gerr)
+				break
+			}
+			continue
 		}
 		if !c.emit(ctx, Frame{typ, p}) {
 			return 0, false
