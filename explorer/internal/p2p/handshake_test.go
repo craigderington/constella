@@ -1,0 +1,473 @@
+package p2p
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/hex"
+	"io"
+	"net"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/craig/constella/explorer/internal/proto"
+	"golang.org/x/crypto/curve25519"
+)
+
+// These literals are the C node's, pinned in tests/test.c (t_signature_vector,
+// t_handshake_vector) and derived independently in Python first
+// (tests/crosscheck.py --sig, --hs). They are NOT to be regenerated from this
+// implementation's output: if Go disagrees, Go is wrong, or the wire has moved
+// and both sides have to move together.
+//
+// Why this matters more than it looks: a mutation on the C side proved that
+// feeding the signature the WRONG HASH (SHA-512, i.e. RFC 8032 Ed25519, the
+// mistake a Go implementer actually makes) leaves every live two-party test
+// GREEN, because both ends share the mistake. Only an external pin catches it.
+// The same is true of the "CSTL-P2P2" KDF label.
+const (
+	// EdDSA-BLAKE2b, message "constella handshake signature vector".
+	vecSigSeed = "0d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6"
+	vecSigMsg  = "constella handshake signature vector"
+	vecSigPub  = "0bf162db1218e66408e2bedc4e74fee762832abe71faa8303838fa7c1740c2e7"
+	vecSig     = "e3aaa7173ef7fef39f104ba4e5c9e7929305ed274d0a800fdd9cca8954ed5bc0" +
+		"e610c0342c5569a031ece5e1ef11ca95fb0549b1ae38e971fddd1f93f87f4401"
+
+	// Handshake key schedule. eph_a_sk[i] = i+1, eph_b_sk[i] = 255-i,
+	// id_a = 0xaa * 32, id_b = 0x55 * 32 (so lo_id = id_b).
+	vecEphAPub = "07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c"
+	vecEphBPub = "3ebcb692149344dc54e58160cf90bed9eea1dd14e81c8e91de557af7d7afd915"
+	vecShared  = "cef531834c2843a22541cc4a0f40492e7b0c34baea021fbf7d1caab2f35a4263"
+	vecHsKeyLo = "6d66ba6be4ed702e831b1c892f516c4c78306abd11609b42a5c406f96026e9bb"
+	vecHsKeyHi = "272167ef59a047be10a9180e8ae3f07509413099a5d4ad0e120f13f82a415c89"
+)
+
+func unhex(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// TestSignatureVector pins the signature scheme itself, independently of the
+// transcript layout: the message is deliberately not a handshake transcript.
+func TestSignatureVector(t *testing.T) {
+	id, err := newIdentity(unhex(t, vecSigSeed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hex.EncodeToString(id.pub); got != vecSigPub {
+		t.Errorf("public key: got %s, want %s", got, vecSigPub)
+	}
+	msg := []byte(vecSigMsg)
+	if len(msg) != 36 {
+		t.Fatalf("vector message is %d bytes, want 36", len(msg))
+	}
+	sig := id.sign(msg)
+	if got := hex.EncodeToString(sig); got != vecSig {
+		t.Errorf("signature: got %s, want %s", got, vecSig)
+	}
+
+	// A pin on the bytes alone does not catch a verifier that always returns
+	// true, so check both directions.
+	pub := unhex(t, vecSigPub)
+	want := unhex(t, vecSig)
+	if !eddsaVerify(pub, want, msg) {
+		t.Error("verify rejected the pinned signature")
+	}
+	bad := append([]byte(nil), want...)
+	bad[32] ^= 1 // one bit of S
+	if eddsaVerify(pub, bad, msg) {
+		t.Error("verify accepted a signature with one bit of S flipped")
+	}
+	if eddsaVerify(pub, want, append(msg, '!')) {
+		t.Error("verify accepted the signature over a different message")
+	}
+}
+
+// Signing is deterministic: the nonce is H(prefix || message), so a given
+// (seed, message) has exactly one valid signature. The C node relies on this
+// and so does the pin above.
+func TestSignatureDeterministic(t *testing.T) {
+	id, err := newIdentity(unhex(t, vecSigSeed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := id.sign([]byte(vecSigMsg))
+	for i := 0; i < 3; i++ {
+		if !bytes.Equal(first, id.sign([]byte(vecSigMsg))) {
+			t.Fatal("signature is not deterministic")
+		}
+	}
+}
+
+// Sizes that straddle BLAKE2b's 128-byte block boundary, plus the 72-byte
+// transcript size the handshake actually uses.
+func TestSignRoundTripSizes(t *testing.T) {
+	seed := make([]byte, seedSize)
+	for i := range seed {
+		seed[i] = byte(0x40 + i)
+	}
+	id, err := newIdentity(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []int{0, 1, 32, 72, 127, 128, 129, 200} {
+		msg := bytes.Repeat([]byte{byte(n)}, n)
+		if !eddsaVerify(id.pub, id.sign(msg), msg) {
+			t.Errorf("round trip failed at message length %d", n)
+		}
+	}
+}
+
+// TestHandshakeVector pins the key schedule: the "CSTL-P2P2" label, the
+// "lo"/"hi" direction strings, the byte order of the two identities in the
+// hash, the 75-byte message layout and the use of the raw X25519 output as the
+// BLAKE2b key.
+func TestHandshakeVector(t *testing.T) {
+	ephA, ephB := make([]byte, 32), make([]byte, 32)
+	for i := range ephA {
+		ephA[i] = byte(i + 1)
+		ephB[i] = byte(255 - i)
+	}
+	idA := bytes.Repeat([]byte{0xaa}, 32)
+	idB := bytes.Repeat([]byte{0x55}, 32)
+
+	pubA, err := curve25519.X25519(ephA, curve25519.Basepoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB, err := curve25519.X25519(ephB, curve25519.Basepoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := curve25519.X25519(ephA, pubB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedB, err := curve25519.X25519(ephB, pubA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(shared, sharedB) {
+		t.Fatal("X25519 disagreed between the two sides")
+	}
+	kLo, kHi := hsSessionKeys(shared, idA, idB)
+	for _, c := range []struct{ name, got, want string }{
+		{"eph_a_pk", hex.EncodeToString(pubA), vecEphAPub},
+		{"eph_b_pk", hex.EncodeToString(pubB), vecEphBPub},
+		{"shared", hex.EncodeToString(shared), vecShared},
+		{"k_lo", hex.EncodeToString(kLo), vecHsKeyLo},
+		{"k_hi", hex.EncodeToString(kHi), vecHsKeyHi},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s: got %s, want %s", c.name, c.got, c.want)
+		}
+	}
+	// The sort is on the identities, not on the argument order.
+	kLo2, kHi2 := hsSessionKeys(shared, idB, idA)
+	if !bytes.Equal(kLo, kLo2) || !bytes.Equal(kHi, kHi2) {
+		t.Error("key schedule is not symmetric in its identity arguments")
+	}
+}
+
+// The transcript is 72 bytes and the two ends sign different ones.
+func TestTranscriptLayout(t *testing.T) {
+	a := bytes.Repeat([]byte{1}, 32)
+	b := bytes.Repeat([]byte{2}, 32)
+	tr := hsTranscript(a, b)
+	if len(tr) != 72 {
+		t.Fatalf("transcript is %d bytes, want 72", len(tr))
+	}
+	if string(tr[:8]) != "CSTL-HS1" {
+		t.Errorf("transcript label %q", tr[:8])
+	}
+	if !bytes.Equal(tr[8:40], a) || !bytes.Equal(tr[40:72], b) {
+		t.Error("transcript operand order")
+	}
+	if bytes.Equal(tr, hsTranscript(b, a)) {
+		t.Error("the two ends must sign different transcripts")
+	}
+}
+
+// socketPair returns two connected TCP endpoints. net.Pipe is unusable here:
+// it is synchronous and unbuffered, and both ends of a symmetric handshake
+// write before they read.
+func socketPair(t *testing.T) (net.Conn, net.Conn) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	type res struct {
+		c   net.Conn
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		c, err := ln.Accept()
+		ch <- res{c, err}
+	}()
+	dial, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := <-ch
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	t.Cleanup(func() { dial.Close(); r.c.Close() })
+	return dial, r.c
+}
+
+func testIdentity(t *testing.T, fill byte) *identity {
+	t.Helper()
+	id, err := newIdentity(bytes.Repeat([]byte{fill}, seedSize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// Both ends run the same code. The positive control: the handshake completes
+// and the two sessions are mirror images, so a frame sealed by one opens on
+// the other in both directions.
+func TestHandshakeLive(t *testing.T) {
+	a, b := socketPair(t)
+	idA, idB := testIdentity(t, 0x01), testIdentity(t, 0x02)
+	type res struct {
+		s   *session
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		s, err := staticHandshake(b, bufio.NewReader(b), idB)
+		ch <- res{s, err}
+	}()
+	sa, err := staticHandshake(a, bufio.NewReader(a), idA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rb := <-ch
+	if rb.err != nil {
+		t.Fatal(rb.err)
+	}
+	for _, dir := range []struct {
+		name       string
+		send, recv *session
+	}{{"a->b", sa, rb.s}, {"b->a", rb.s, sa}} {
+		frame := sealFrame(dir.send, proto.MsgShare, []byte("after the handshake"))
+		typ, p, err := readSecure(bufio.NewReader(bytes.NewReader(frame)), dir.recv)
+		if err != nil {
+			t.Fatalf("%s: %v", dir.name, err)
+		}
+		if typ != proto.MsgShare || string(p) != "after the handshake" {
+			t.Errorf("%s: got type=%d payload=%q", dir.name, typ, p)
+		}
+	}
+}
+
+// probe drives the peer side of the handshake by hand so each rejection can be
+// provoked on its own.
+type probe struct {
+	id      *identity
+	sendEph []byte // what it claims as its ephemeral key
+	sendID  []byte // what it claims as its identity
+	corrupt bool   // flip a bit of its signature
+
+	// got is how many of the peer's handshake frames arrived before it
+	// dropped: 1 means it sent phase 1 and then rejected, 2 means it also
+	// answered with its own phase 2. Which of the two is the whole point of
+	// these cases — see §2's "reject at phase 1" vs "reject at phase 2".
+	got int
+}
+
+func (p *probe) run(conn net.Conn) {
+	// Bounded, because a phase-1 rejection means the peer's phase 2 never
+	// arrives and this read would otherwise block until the test times out.
+	conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+	r := bufio.NewReader(conn)
+	auth := append(append([]byte{}, p.sendEph...), p.sendID...)
+	if err := proto.WriteFrame(conn, proto.MsgAuth, auth); err != nil {
+		return
+	}
+	peer, err := readHS(r, proto.MsgAuth)
+	if err != nil {
+		return
+	}
+	p.got = 1
+	sig := p.id.sign(hsTranscript(p.sendEph, peer[:32]))
+	if p.corrupt {
+		sig[0] ^= 1
+	}
+	if err := proto.WriteFrame(conn, proto.MsgAuth2, sig); err != nil {
+		return
+	}
+	if _, err := readHS(r, proto.MsgAuth2); err != nil {
+		return
+	}
+	p.got = 2
+}
+
+// newProbe builds an honest probe with a real ephemeral key.
+func newProbe(t *testing.T, seedFill byte) *probe {
+	t.Helper()
+	sk := bytes.Repeat([]byte{seedFill ^ 0x5a}, 32)
+	pub, err := curve25519.X25519(sk, curve25519.Basepoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := testIdentity(t, seedFill)
+	return &probe{id: id, sendEph: pub, sendID: id.pub}
+}
+
+// runProbe returns the error the peer under test produced and how many
+// handshake frames it sent before dropping. The probe is drained before the
+// sockets close, so a lost phase 2 is a rejection and not a race with the
+// teardown.
+func runProbe(t *testing.T, id *identity, p *probe) (error, int) {
+	t.Helper()
+	a, b := socketPair(t)
+	done := make(chan struct{})
+	go func() { p.run(b); close(done) }()
+	_, err := staticHandshake(a, bufio.NewReader(a), id)
+	<-done
+	return err, p.got
+}
+
+func TestHandshakeRejections(t *testing.T) {
+	id := testIdentity(t, 0x11)
+
+	t.Run("self identity", func(t *testing.T) {
+		// Identical identities make lo_id == hi_id, so both ends would name
+		// the same key "lo" and encrypt from nonce 0 with it.
+		p := newProbe(t, 0x22)
+		p.sendID = id.pub
+		err, frames := runProbe(t, id, p)
+		if err == nil || !strings.Contains(err.Error(), "own identity") {
+			t.Fatalf("got %v, want a self-identity rejection", err)
+		}
+		// Rejected AT PHASE 1: our phase 2 never went out. Asserting only
+		// "the handshake failed" would not be pinned to this guard, since
+		// without it the connection still collapses later on a key mismatch —
+		// a different failure at a later point.
+		if frames != 1 {
+			t.Errorf("peer sent %d handshake frames; the rejection must precede its phase 2", frames)
+		}
+	})
+
+	t.Run("bad signature", func(t *testing.T) {
+		p := newProbe(t, 0x33)
+		p.corrupt = true
+		err, frames := runProbe(t, id, p)
+		if err == nil || !strings.Contains(err.Error(), "signature") {
+			t.Fatalf("got %v, want a signature rejection", err)
+		}
+		// Rejected AT PHASE 2, which is what distinguishes it from the above:
+		// our own phase 2 did go out first.
+		if frames != 2 {
+			t.Errorf("peer sent %d handshake frames, want 2", frames)
+		}
+	})
+
+	t.Run("low order ephemeral", func(t *testing.T) {
+		// The probe signs the transcript containing the key it actually sent,
+		// so its signature verifies; only the shared-secret guard is under
+		// test. Both identities travel in the clear in phase 1, so an
+		// all-zero shared secret hands the whole key schedule to any passive
+		// observer.
+		p := newProbe(t, 0x44)
+		p.sendEph = make([]byte, 32)
+		err, frames := runProbe(t, id, p)
+		if err == nil || !strings.Contains(err.Error(), "low-order") {
+			t.Fatalf("got %v, want a low-order rejection", err)
+		}
+		// After the signature check, so the peer's phase 2 went out. A bad
+		// signature never reaches the key schedule; a low-order ephemeral
+		// carries a perfectly valid one.
+		if frames != 2 {
+			t.Errorf("peer sent %d handshake frames, want 2", frames)
+		}
+	})
+
+	t.Run("wrong phase type", func(t *testing.T) {
+		// A frame whose type does not match the phase is a protocol error.
+		a, b := socketPair(t)
+		go func() {
+			proto.WriteFrame(b, proto.MsgAuth2, make([]byte, 64))
+			io.Copy(io.Discard, b)
+		}()
+		if _, err := staticHandshake(a, bufio.NewReader(a), id); err == nil {
+			t.Fatal("phase 2 accepted in place of phase 1")
+		}
+	})
+
+	t.Run("wrong phase length", func(t *testing.T) {
+		a, b := socketPair(t)
+		go func() {
+			proto.WriteFrame(b, proto.MsgAuth, make([]byte, 63))
+			io.Copy(io.Discard, b)
+		}()
+		if _, err := staticHandshake(a, bufio.NewReader(a), id); err == nil {
+			t.Fatal("a 63-byte phase 1 was accepted")
+		}
+	})
+}
+
+// Once the session keys are live, MSG_AUTH and MSG_AUTH2 are refused: a peer
+// must not be able to restart the handshake inside an established session.
+func TestSecureFrameRefusesHandshakeTypes(t *testing.T) {
+	s, err := newSessionKeys(bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{1}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, typ := range []byte{proto.MsgAuth, proto.MsgAuth2} {
+		frame := sealFrame(s, typ, []byte("x"))
+		s.tx = 0
+		if _, _, err := readSecure(bufio.NewReader(bytes.NewReader(frame)), s); err == nil {
+			t.Errorf("type %d accepted after the handshake", typ)
+		}
+	}
+}
+
+// Verification edge cases, matching monocypher exactly (see eddsaVerify).
+func TestVerifyEdgeCases(t *testing.T) {
+	pub := unhex(t, vecSigPub)
+	msg := []byte(vecSigMsg)
+	sig := unhex(t, vecSig)
+
+	// S >= L is monocypher's is_above_l malleability guard. L's encoding is
+	// ...10, and 0xff*32 is far above it.
+	high := append([]byte(nil), sig...)
+	for i := 32; i < 64; i++ {
+		high[i] = 0xff
+	}
+	if eddsaVerify(pub, high, msg) {
+		t.Error("accepted S >= L")
+	}
+
+	// R must decode to a curve point. y = 2 is not on the curve.
+	offCurve := append([]byte(nil), sig...)
+	for i := 0; i < 32; i++ {
+		offCurve[i] = 0
+	}
+	offCurve[0] = 2
+	if eddsaVerify(pub, offCurve, msg) {
+		t.Error("accepted an off-curve R")
+	}
+
+	// An off-curve public key is rejected before any arithmetic.
+	badPub := make([]byte, 32)
+	badPub[0] = 2
+	if eddsaVerify(badPub, sig, msg) {
+		t.Error("accepted an off-curve public key")
+	}
+
+	// Wrong lengths must not panic.
+	if eddsaVerify(pub[:31], sig, msg) || eddsaVerify(pub, sig[:63], msg) {
+		t.Error("accepted a short input")
+	}
+}

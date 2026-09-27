@@ -30,7 +30,7 @@ type Client struct {
 	mu      sync.Mutex
 	conn    net.Conn
 	sess    *session
-	psk     []byte
+	id      *identity
 	initErr error
 }
 
@@ -53,16 +53,29 @@ type cipherAEAD interface {
 	Overhead() int
 }
 
+// New builds a client for addr. The optional argument is the superseded
+// EXPLORER_P2P_KEY; it is accepted and ignored so a stale environment does not
+// break startup. Removing the variable from main.go, docker-compose.yml and
+// README.md is Task 11's job (Ruling B).
 func New(addr string, pskHex ...string) *Client {
 	c := &Client{Addr: addr, Frames: make(chan Frame, 4096)}
 	if len(pskHex) > 0 && pskHex[0] != "" {
-		key, err := hex.DecodeString(pskHex[0])
-		if err != nil || len(key) != chacha20poly1305.KeySize {
-			c.initErr = errors.New("EXPLORER_P2P_KEY must be 64 hex characters")
-		} else {
-			c.psk = key
-		}
+		c.initErr = errors.New("EXPLORER_P2P_KEY is set but ignored: the node now authenticates with per-peer static keys")
 	}
+	// One identity per process, generated at startup rather than loaded from
+	// disk: the explorer only dials out, so nothing has to recognise it across
+	// restarts yet. A persistent node.key belongs with address gossip.
+	seed := make([]byte, seedSize)
+	if _, err := rand.Read(seed); err != nil {
+		c.initErr = err
+		return c
+	}
+	id, err := newIdentity(seed)
+	if err != nil {
+		c.initErr = err
+		return c
+	}
+	c.id = id
 	return c
 }
 
@@ -92,15 +105,11 @@ func (c *Client) sendLocked(typ byte, payload []byte) error {
 func (c *Client) Run(ctx context.Context) {
 	if c.initErr != nil {
 		log.Printf("p2p: %v", c.initErr)
+	}
+	if c.id == nil {
 		return
 	}
-	// The node's key and ours are separate env vars that both default to
-	// empty, so a half-configured pair is otherwise a silent no-connect.
-	if len(c.psk) != 0 {
-		log.Printf("p2p: transport encrypted (EXPLORER_P2P_KEY set); the node needs the same CONSTELLA_P2P_KEY")
-	} else {
-		log.Printf("p2p: transport PLAINTEXT (EXPLORER_P2P_KEY unset); the node must also run without CONSTELLA_P2P_KEY")
-	}
+	log.Printf("p2p: identity %s (EdDSA-BLAKE2b, generated at startup)", hex.EncodeToString(c.id.pub[:8]))
 	for ctx.Err() == nil {
 		backoff, cont := c.runConn(ctx)
 		if !cont {
@@ -142,12 +151,10 @@ func (c *Client) runConn(ctx context.Context) (time.Duration, bool) {
 	}()
 	log.Printf("p2p: connected to %s", c.Addr)
 	r := bufio.NewReaderSize(conn, 64<<10)
-	var sess *session
-	if len(c.psk) != 0 {
-		if sess, err = clientHandshake(conn, r, c.psk); err != nil {
-			log.Printf("p2p: auth: %v (node key must equal EXPLORER_P2P_KEY)", err)
-			return 2 * time.Second, true
-		}
+	sess, err := staticHandshake(conn, r, c.id)
+	if err != nil {
+		log.Printf("p2p: handshake: %v", err)
+		return 2 * time.Second, true
 	}
 	// Publish and greet under one lock. Connected() goes true the moment the
 	// pointers land, and the node drops any peer whose first frame is not
@@ -164,13 +171,7 @@ func (c *Client) runConn(ctx context.Context) (time.Duration, bool) {
 		return 0, false
 	}
 	for {
-		var typ byte
-		var p []byte
-		if sess != nil {
-			typ, p, err = readSecure(r, sess)
-		} else {
-			typ, p, err = proto.ReadFrame(r)
-		}
+		typ, p, err := readSecure(r, sess)
 		if err != nil {
 			log.Printf("p2p: %v", err)
 			break
@@ -267,6 +268,11 @@ func newSession(psk, local, remote []byte) (*session, error) {
 	if !localLow {
 		txKey, rxKey = rxKey, txKey
 	}
+	return newSessionKeys(txKey, rxKey)
+}
+
+// newSessionKeys builds a session from the two derived direction keys.
+func newSessionKeys(txKey, rxKey []byte) (*session, error) {
 	tx, err := chacha20poly1305.NewX(txKey)
 	if err != nil {
 		return nil, err
@@ -276,37 +282,6 @@ func newSession(psk, local, remote []byte) (*session, error) {
 		return nil, err
 	}
 	return &session{send: tx, recv: rx}, nil
-}
-
-func clientHandshake(conn net.Conn, r io.Reader, psk []byte) (*session, error) {
-	// Bound both halves: without a deadline a hung or hostile server parks Run
-	// here forever and the reconnect loop never fires.
-	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		return nil, err
-	}
-	defer conn.SetDeadline(time.Time{})
-	local := make([]byte, 32)
-	if _, err := rand.Read(local); err != nil {
-		return nil, err
-	}
-	auth := append(append([]byte{}, local...), authProof(psk, local)...)
-	if err := proto.WriteFrame(conn, proto.MsgAuth, auth); err != nil {
-		return nil, err
-	}
-	typ, remoteAuth, err := readRaw(r)
-	if err != nil {
-		return nil, err
-	}
-	if typ != proto.MsgAuth || len(remoteAuth) != 64 ||
-		!equal(authProof(psk, remoteAuth[:32]), remoteAuth[32:]) {
-		return nil, errors.New("invalid peer authentication")
-	}
-	// Equal challenges leave the "which side is low" test false on both ends,
-	// so both peers would send under the same key from nonce 0.
-	if equal(local, remoteAuth[:32]) {
-		return nil, errors.New("peer echoed our challenge")
-	}
-	return newSession(psk, local, remoteAuth[:32])
 }
 
 func equal(a, b []byte) bool {
@@ -345,7 +320,7 @@ func readSecure(r io.Reader, s *session) (byte, []byte, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	if typ == proto.MsgAuth || len(ciphertext) < s.recv.Overhead() {
+	if typ == proto.MsgAuth || typ == proto.MsgAuth2 || len(ciphertext) < s.recv.Overhead() {
 		return 0, nil, errors.New("invalid encrypted frame")
 	}
 	s.rxmu.Lock()

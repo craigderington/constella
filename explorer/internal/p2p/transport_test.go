@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
-	"io"
 	"net"
 	"sync"
 	"testing"
@@ -188,12 +187,29 @@ func TestDropClearsConnected(t *testing.T) {
 	defer ln.Close()
 	greeted := make(chan struct{}, 4)
 	go func() {
+		// A real peer: the handshake is symmetric, so the server side runs
+		// the same staticHandshake the client does. Before Task 6 this
+		// goroutine read 39 plaintext bytes and hung up, which after the wire
+		// change meant the client never got past the handshake and
+		// Connected() was never true - the assertion below would have passed
+		// vacuously.
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			io.ReadFull(conn, make([]byte, proto.FrameHdr+32)) // its HELLO, then hang up
+			id, err := newIdentity(bytes.Repeat([]byte{0x7e}, seedSize))
+			if err != nil {
+				conn.Close()
+				return
+			}
+			r := bufio.NewReader(conn)
+			sess, err := staticHandshake(conn, r, id)
+			if err != nil {
+				conn.Close()
+				continue
+			}
+			readSecure(r, sess) // its HELLO, then hang up
 			conn.Close()
 			select {
 			case greeted <- struct{}{}:
