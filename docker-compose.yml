@@ -21,7 +21,13 @@ services:
     <<: *node
     build: .
     ports: ["127.0.0.1:7043:7043"]
-    environment: { <<: *env }
+    # CONSTELLA_ADVERTISE exercises the self-advertisement parse/resolve path
+    # (Task 10). node1:7043 resolves inside the compose network but lands on
+    # a container-private address, which addr_is_routable correctly refuses
+    # to store or gossip - this is here to prove the code path runs cleanly
+    # end to end, not to demonstrate real inbound reachability, which needs
+    # a publicly routable address.
+    environment: { <<: *env, CONSTELLA_ADVERTISE: "node1:7043" }
     volumes: [node1:/data]
   node2:
     <<: *node

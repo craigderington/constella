@@ -375,6 +375,14 @@ int node_run(void) {
         log_msg("fatal: cannot listen on %d", port);
         return 1;
     }
+    /* Self-advertisement (Task 10): unset means "connects out, syncs, mines,
+     * receives no inbound" - the documented and correct default for a node
+     * behind NAT. A failure to resolve is logged, not fatal. */
+    const char *adv = getenv("CONSTELLA_ADVERTISE");
+    if (adv && *adv) {
+        if (net_advertise(adv)) log_msg("advertise: could not resolve %s; not advertising", adv);
+        else log_msg("advertise: %s", adv);
+    }
     if (miner_start(threads, pfd[1], spfd[1], &running)) {
         log_msg("fatal: cannot start miner workers");
         return 1;

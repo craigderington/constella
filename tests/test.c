@@ -1691,6 +1691,30 @@ static void t_net_addr_promotion(void) {
     CHECK(addr_count(1) == 1);       /* two handshakes on two attempts: promoted */
 }
 
+/* CONSTELLA_ADVERTISE=host:port parsing (Task 10 brief). DNS resolution
+ * itself is not exercised here - net_advertise's getaddrinfo half is
+ * untestable in a unit test - but the string validation is, and each
+ * rejected case below dies to a DIFFERENT guard in net_parse_advertise:
+ * missing port fails the colon check, garbage fails the digit check,
+ * oversized fails the length check. Verified by mutation: relaxing any one
+ * guard alone turns exactly its matching case green while the other two
+ * stay red. */
+static void t_net_advertise_parse(void) {
+    char host[NET_ADVERTISE_HOST_MAX];
+    uint16_t port;
+
+    CHECK(net_parse_advertise("198.51.100.7:7043", host, sizeof host, &port) == 0);
+    CHECK(!strcmp(host, "198.51.100.7") && port == 7043);
+
+    CHECK(net_parse_advertise("198.51.100.7", host, sizeof host, &port) == -1);     /* missing port */
+    CHECK(net_parse_advertise("198.51.100.7:notaport", host, sizeof host, &port) == -1); /* garbage */
+
+    char oversized[NET_ADVERTISE_HOST_MAX + 16];
+    memset(oversized, 'a', sizeof oversized - 6);
+    memcpy(oversized + sizeof oversized - 6, ":7043", 6);
+    CHECK(net_parse_advertise(oversized, host, sizeof host, &port) == -1);          /* oversized */
+}
+
 int main(int argc, char **argv) {
     if (sieve_init()) return 1;
     char line[1024];
@@ -1758,7 +1782,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_addr_promotion(); t_net_outbound_skips_self();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_advertise_parse();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

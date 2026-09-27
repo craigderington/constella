@@ -4,6 +4,7 @@
 #include "addr.h"
 #include "wallet.h"
 #include <poll.h>
+#include <stddef.h>
 #include <stdint.h>
 
 enum {
@@ -65,6 +66,20 @@ int addr_msg_ingest(const uint8_t *buf, uint16_t len, uint16_t count, uint32_t n
  * it can never match a table entry. net.c fills it in when a dial turns out
  * to reach our own identity; the advertise path may also set it. */
 void net_set_self(const uint8_t ip[16], uint16_t port);
+
+/* CONSTELLA_ADVERTISE=host:port: the address a node behind no NAT tells
+ * peers about itself, so it can receive inbound connections (design doc,
+ * "Self-advertisement"). If unset the node still connects out, syncs and
+ * mines; it just advertises nothing. net_parse_advertise validates the
+ * string alone - empty/oversized, missing port, non-numeric or
+ * out-of-range port - so that half is unit-testable without a live
+ * resolver. net_advertise does the parse and then the (untestable)
+ * getaddrinfo resolution, recording the result via net_set_self and
+ * addr_add. Both return 0 on success, -1 otherwise; a failure is never
+ * fatal to the node. */
+#define NET_ADVERTISE_HOST_MAX 128
+int net_parse_advertise(const char *s, char *host, size_t hostcap, uint16_t *port);
+int net_advertise(const char *hostport);
 
 /* Test-only. `net_select_outbound_vector` runs one round of the selection
  * net_tick's outbound fill runs, with `nhave` netgroups already occupied

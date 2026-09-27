@@ -681,6 +681,42 @@ void net_tick(void) {
     if (t >= out_next) { out_next = t + OUTBOUND_RETRY; fill_outbound(); }
 }
 
+/* One "host:port" (or bare "host", defaulting to 7043) into the seed table.
+ * Shared by CONSTELLA_PEERS' csv tokens and by the DNS/hardcoded bootstrap
+ * lists below - all three are the same seed_t mechanism, since dial()
+ * already resolves a hostname through getaddrinfo and there is nothing
+ * DNS-specific for a seed to do differently (Task 10 brief). */
+static void add_seed(const char *tok) {
+    if (nseeds >= MAX_SEEDS) return;
+    const char *c = strrchr(tok, ':');
+    seed_t *s = &S[nseeds];
+    snprintf(s->host, sizeof s->host, "%.*s", c ? (int)(c - tok) : (int)strlen(tok), tok);
+    snprintf(s->port, sizeof s->port, "%s", c ? c + 1 : "7043");
+    s->peer = -1; s->next = 0;
+    nseeds++;
+}
+
+/* Bootstrap order (design doc, "Bootstrap"): peers.dat, then DNS seeds, then
+ * hardcoded fallbacks. peers.dat is loaded by addr_load before net_init runs
+ * (node.c), so "does the address table already have something" is exactly
+ * addr_count(0) + addr_count(1) > 0 here - most restarts never reach this
+ * list at all. No real seed infrastructure is deployed for this project yet:
+ * DNS_SEEDS names the hostname the design doc settled on, and the hardcoded
+ * array is deliberately empty rather than filled with invented addresses
+ * that would read as live infrastructure but are not. Both are ordinary
+ * seeds once resolved - a DNS failure just means that seed never connects,
+ * exactly like an unreachable CONSTELLA_PEERS entry does today. */
+static const char *DNS_SEEDS[] = {
+    "seed.catasterism.xyz:7043",
+};
+#define N_DNS_SEEDS (sizeof DNS_SEEDS / sizeof DNS_SEEDS[0])
+/* Hardcoded fallbacks: none yet - no real seed infrastructure is deployed
+ * for this project. The mechanism is add_seed() on each "host:port", the
+ * same as DNS_SEEDS above; populating it is future work once real nodes
+ * exist to list here. N_HARDCODED_SEEDS stays defined so the bootstrap
+ * order below reads the same shape it will once that list is non-empty. */
+#define N_HARDCODED_SEEDS 0u
+
 int net_init(uint16_t port, const char *csv, const wallet_t *id,
              net_msg_fn on_msg, net_conn_fn on_conn) {
     if (!id) return -1;                    /* there is no unauthenticated mode */
@@ -696,20 +732,86 @@ int net_init(uint16_t port, const char *csv, const wallet_t *id,
 		close(lfd); lfd = -1; return -1;
 	}
     nonblock(lfd);
-    if (csv) {
+    if (csv && *csv) {
+        /* CONSTELLA_PEERS is a manual override (design doc): an operator's
+         * explicit choice for a private network or a test replaces the
+         * bootstrap chain below rather than adding to it. */
         char buf[1024];
         snprintf(buf, sizeof buf, "%s", csv);
         for (char *sv, *tok = strtok_r(buf, ",", &sv); tok && nseeds < MAX_SEEDS;
-             tok = strtok_r(NULL, ",", &sv)) {
-            char *c = strrchr(tok, ':');
-            seed_t *s = &S[nseeds];
-            snprintf(s->host, sizeof s->host, "%.*s", c ? (int)(c - tok) : (int)strlen(tok), tok);
-            snprintf(s->port, sizeof s->port, "%s", c ? c + 1 : "7043");
-            s->peer = -1; s->next = 0;
-            nseeds++;
-        }
+             tok = strtok_r(NULL, ",", &sv))
+            add_seed(tok);
+    } else if (addr_count(0) + addr_count(1) == 0) {
+        for (size_t k = 0; k < N_DNS_SEEDS && nseeds < MAX_SEEDS; k++)
+            add_seed(DNS_SEEDS[k]);
+        /* N_HARDCODED_SEEDS is 0 today; see the comment above it. */
     }
     net_tick();
+    return 0;
+}
+
+/* CONSTELLA_ADVERTISE=host:port parsing, separated from resolution so the
+ * validation is testable without a live resolver (Task 10 brief). Three
+ * guards, each its own `if` and each covering exactly one of the required
+ * test categories with no overlap between them - a case that failed two
+ * guards at once would still "pass" a test with either one deleted, which
+ * is the failure mode this project's testing discipline calls out:
+ *
+ *   1. length, against `hostcap` (the caller's buffer): catches empty and
+ *      oversized in one branch. The host portion is always shorter than the
+ *      whole string (":" plus at least one port digit is consumed), so this
+ *      alone bounds `hlen` too - no separate host-length guard is needed or
+ *      tested.
+ *   2. the colon: catches "no colon at all" and "colon with nothing after
+ *      it" in one branch - both are "missing port" from a caller's point of
+ *      view, so one guard and one test category, not two.
+ *   3. `strtol` plus an end-of-string check: catches non-numeric text
+ *      (`*end` is where parsing stopped, not the string's end) and an
+ *      out-of-range number in one branch - both are "garbage port".
+ *
+ * Returns 0 and fills `host` (NUL-terminated within `hostcap`) and `port`,
+ * or -1. */
+int net_parse_advertise(const char *s, char *host, size_t hostcap, uint16_t *port) {
+    if (!s || !host || !hostcap || !port) return -1;
+    size_t len = strlen(s);
+    if (len == 0 || len >= hostcap) return -1;                 /* empty / oversized */
+    const char *c = strrchr(s, ':');
+    if (!c || !c[1]) return -1;                                /* missing port */
+    char *end;
+    long p = strtol(c + 1, &end, 10);
+    if (*end || p < 1 || p > 65535) return -1;                 /* garbage port */
+    size_t hlen = (size_t)(c - s);
+    memcpy(host, s, hlen);
+    host[hlen] = 0;
+    *port = (uint16_t)p;
+    return 0;
+}
+
+/* Resolves an already-validated host:port and records it as this node's own
+ * address: net_set_self (so outbound selection never dials it, exactly as a
+ * self-dial discovers it - see finish_auth) and addr_add (so it becomes
+ * gossippable: the one way a peer's handle_getaddr reply can ever mention
+ * us). This spends no extra wire message and so nothing from the
+ * ADDR-rate-limiter budget - it only enriches what handle_getaddr was
+ * already going to send. A resolution failure is reported to the caller but
+ * is not fatal to the node; it only means this node advertises nothing. */
+int net_advertise(const char *hostport) {
+    char host[NET_ADVERTISE_HOST_MAX];
+    uint16_t port;
+    if (net_parse_advertise(hostport, host, sizeof host, &port)) return -1;
+    char portbuf[8];
+    snprintf(portbuf, sizeof portbuf, "%u", port);
+    struct addrinfo hints = {0}, *res;
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, portbuf, &hints, &res)) return -1;
+    uint8_t ip[16];
+    uint16_t rport;
+    int ok = sa_unpack(res->ai_addr, ip, &rport) == 0;
+    freeaddrinfo(res);
+    if (!ok) return -1;
+    net_set_self(ip, port);
+    addr_add(ip, port, (uint32_t)now_sec());
     return 0;
 }
 
