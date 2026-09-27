@@ -176,38 +176,84 @@ AEAD's associated data.
   and relays it if added.
 - `6 GETACCT`: address → `7 ACCT`: `amt | nonce | next_nonce | height`.
 - `8 TXRES`: u8 result (0 added, 1 duplicate, 2 bad signature, 3 balance/nonce, 4 full).
-- `9 AUTH`: transport challenge and keyed proof (32-byte challenge followed by
-  32-byte BLAKE2b proof). When `CONSTELLA_P2P_KEY` is configured, both peers
-  authenticate before HELLO and all later frames use directional
-  XChaCha20-Poly1305 with monotonically increasing nonces. The explorer uses
-  the matching `EXPLORER_P2P_KEY`; the wallet CLI reads `CONSTELLA_P2P_KEY`.
-  Challenges come from `getrandom(2)` and the handshake aborts if it fails: a
-  repeated challenge repeats the session key with the counter back at zero. A
-  peer that echoes our own challenge is rejected for the same reason.
+- `9 AUTH`: handshake phase 1, `eph_pub[32] || id_pub[32]` (64 bytes).
+- `12 AUTH2`: handshake phase 2, `sig[64]` over the transcript.
+- `10 GETADDR`: empty payload. Answered **once per connection**; a repeat is
+  ignored, never punished by dropping the peer.
+- `11 ADDR`: `u16 count` (little-endian) then `count x { ip[16] v4-mapped,
+  u16 port, u32 last_seen }`, 22 bytes per entry, at most 180 entries
+  (3,962 bytes with the count header). The length must equal `count * 22`
+  exactly: a mismatch is rejected, never truncated. Unsolicited ADDR is
+  rate-limited to 3 per 60-second window per peer, and a solicited reply
+  counts against the same budget.
 
-The wallet is a peer like any other. `balance` and `send` run the AUTH
-exchange when a key is set, then send HELLO, then their request — the 10-second
-HELLO gate exists so an unauthenticated stranger cannot sit in an inbound slot,
-and nothing is exempt from it.
+### The handshake
+Every connection is authenticated. There is no unauthenticated mode and no
+shared secret to distribute.
 
-### What the pre-shared key is not
-It authenticates the *network*, not a peer, and it is worth being explicit
-about the three things it does not do:
+Each node has a static Ed25519-style identity at `<datadir>/node.key`,
+generated on first run and deliberately **not** the payout key: network
+identity should not leak earnings, and a compromised node key must not cost
+coins. A node's ID is `BLAKE2b-256(node_pubkey)`.
 
-- **No forward secrecy.** Session keys are `BLAKE2b(psk; "CSTL-P2P1" ‖ dir ‖
-  challenges)` and the challenges travel in the clear, so anyone who learns the
-  PSK later can decrypt any session they recorded earlier. Rotating the key
-  protects future traffic only.
-- **One key for the whole network.** Every node holds the same secret, so any
-  holder can impersonate any other node to any peer. It keeps strangers off the
-  wire; it does not tell two members apart, and it is not an authorisation
-  boundary between them.
-- **The AUTH proof is replayable.** It is a keyed hash of the challenge the
-  prover itself chose, with nothing binding it to this connection or this
-  moment. Anyone who has seen one valid AUTH frame can replay it to pass the
-  gate. They still cannot read or forge the session that follows — the frame
-  keys depend on both challenges and the session counter starts at zero — so
-  this costs an inbound slot, not confidentiality.
+The exchange is symmetric and takes two phases, because a signature that binds
+the session cannot be sent before both ephemerals are known:
+
+```
+phase 1   both sides:  MSG_AUTH   eph_pub[32] || id_pub[32]
+phase 2   both sides:  MSG_AUTH2  sig[64] over "CSTL-HS1" || eph_self || eph_peer
+shared  = X25519(eph_sk, eph_peer_pub)
+k_lo/hi = BLAKE2b-keyed(shared, "CSTL-P2P2" || "lo"|"hi" || min(id) || max(id))
+```
+
+Three conditions reject the peer: an identity equal to our own (a node dialling
+itself), a signature that does not verify, and an all-zero X25519 shared secret.
+The last matters more than it looks — both identities travel in the clear in
+phase 1, so a peer that forces `shared = 0` would let any passive observer
+derive the session keys and read the whole conversation.
+
+**The signature is EdDSA over Curve25519 with BLAKE2b** (Monocypher
+`crypto_eddsa_sign` / `crypto_eddsa_check`), **not** RFC 8032 Ed25519, which
+uses SHA-512. Go's `crypto/ed25519` cannot verify these signatures. Verification
+is **cofactored** — `[8]([S]B - [k]A - R) == O` — not the strict
+`R == [S]B - [k]A`; a strict verifier rejects signatures this node accepts.
+Both languages pin the same signature vector in their test suites for exactly
+this reason: a live two-party test passes when both ends are wrong together.
+
+What this buys, and what the superseded pre-shared key never did:
+
+- **Forward secrecy.** Ephemeral keys are discarded after the handshake, so a
+  later key compromise does not decrypt recorded sessions.
+- **Per-peer identity.** You learn *who* you are talking to. Discovery depends
+  on it: gossiped addresses are worthless if any peer can claim to be any node.
+- **No secret to distribute**, which is what makes an open network possible.
+
+The wallet is a peer like any other. `balance` and `send` run the same
+handshake, using an ephemeral identity generated per invocation — a short-lived
+client needs a key to sign the transcript with, not a durable name. They then
+send HELLO, then their request. The 10-second HELLO gate exists so a stranger
+cannot sit in an inbound slot, and nothing is exempt from it: the first
+decrypted frame must be a 32-byte HELLO or the peer is dropped.
+
+### Peer discovery
+A node bootstraps from `peers.dat`, then DNS seeds, then hardcoded fallbacks;
+`CONSTELLA_PEERS` overrides all of it.
+
+Addresses live in two tables, `new` (unverified, heard about) and `tried`
+(handshake-confirmed). Both are bucketed by **network group** — the /16 for
+IPv4, the /32 for IPv6 — keyed by a per-node secret that is random, persisted
+in `peers.dat`, and never gossiped. Bucketing by netgroup rather than by
+address is what bounds how much of a table one attacker can occupy; keying it
+with a secret is what stops them computing a victim's layout offline.
+
+Promotion from `new` to `tried` requires **two successful handshakes on
+separate connection attempts**, not two calls on one held-open connection.
+Outbound selection fills 8 slots, each in a distinct netgroup, drawing mostly
+from `tried` with an occasional draw from `new` so the table keeps discovering
+rather than calcifying. Gossiped `last_seen` is clamped to now on receipt:
+left unclamped, a future-dated entry is never the stalest, so it is never
+evicted, and it drags the staleness high-water mark up until every honest entry
+looks stale.
 
 Consensus does not rest on any of this: shares carry their own proof of work
 and transactions their own signatures, both verified independently of the

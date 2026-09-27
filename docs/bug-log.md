@@ -298,13 +298,22 @@ tip-bound snapshot subsystem was removed (no round-trip, corrupt-file, reorg,
 or OOM-during-restore coverage, and it was consensus-adjacent); this remains
 a real cost ceiling at height, not yet addressed.
 
-### DESIGN-004: P2P authentication is PSK-configured
+### DESIGN-004: P2P authentication is PSK-configured — **SUPERSEDED 2026-09-27**
 
 HELLO timeouts, a 16-peer inbound cap, partial-frame timeouts, and bounded
 queues reduce resource abuse. Operators can set a shared 32-byte
 `CONSTELLA_P2P_KEY` and matching `EXPLORER_P2P_KEY` to enable authenticated,
 encrypted transport. The unauthenticated default remains trusted-testnet-only;
 per-peer identities and key rotation are separate operational design work.
+
+**Superseded by the peer-discovery work.** Both env vars are gone and there is
+no unauthenticated mode left. Every connection now runs a two-phase handshake:
+each side sends an ephemeral X25519 key and its static identity, then a
+signature over `"CSTL-HS1" || eph_self || eph_peer`. Session keys come from the
+ephemeral-ephemeral DH, so compromising a node key does not decrypt recorded
+sessions. The plaintext path was deleted rather than left switchable — it had
+lost its last caller and shipped untested, which is how an unauthenticated path
+gets reached by accident.
 
 ### DESIGN-005: Consensus calls Fermat probable primes "prime"
 
@@ -314,11 +323,17 @@ the Go explorer mirrors that exact rule and separately records a stronger
 Baillie-PSW/Miller-Rabin certification for display. Replacing `PRP2` in
 consensus would be a network fork, not a local validation fix.
 
-### DECISION-006: Shared PSK is testnet-only
+### DECISION-006: Shared PSK is testnet-only — **RESOLVED 2026-09-27**
 
 The optional PSK transport is accepted for trusted testnet operation. Mainnet
 deployment is blocked until peers have distinct identities and a documented
 key-rotation procedure; a shared secret is not treated as per-peer admission.
+
+**Half resolved.** Peers now have distinct identities (`node.key`, separate
+from the payout key, ID = `BLAKE2b-256(pubkey)`), so the shared secret is gone
+and that half of the gate is closed. **Key rotation remains unimplemented** and
+is still a mainnet gate — losing a node key today means generating a new one
+and losing the `tried`-table standing that two-handshake promotion earned.
 
 ### DECISION-007: Thermal operating point
 
