@@ -301,8 +301,9 @@ int node_run(void) {
     signal(SIGPIPE, SIG_IGN);
 
     const char *data = env("CONSTELLA_DATA", "./constella-data");
-    char keypath[512];
+    char keypath[512], idpath[512];
     snprintf(keypath, sizeof keypath, "%s/wallet.key", data);
+    snprintf(idpath, sizeof idpath, "%s/node.key", data);
     int port = atoi(env("CONSTELLA_PORT", "7043"));
     int threads = atoi(env("CONSTELLA_THREADS", "0"));
     if (threads <= 0) threads = default_threads();
@@ -326,17 +327,24 @@ int node_run(void) {
     if (ov && *ov && hex_dec(payout, 32, ov)) { log_msg("fatal: CONSTELLA_ADDR must be 64 hex chars"); return 1; }
     memset(&w, 0, sizeof w);                    /* the node never signs */
 
-    char a[65], cid[17];
+    /* The network identity is deliberately not the payout key: a compromised
+     * node key must not cost coins, and who you talk to must not leak what you
+     * earn. Created on first run exactly as wallet.key is. */
+    wallet_t nid;
+    if (wallet_load(&nid, idpath, 1) < 0) { log_msg("fatal: cannot load or create %s", idpath); return 1; }
+
+    char a[65], cid[17], nh[65];
     uint8_t tag[8];
     hex_enc(a, payout, 32);
     tx_chain_id(tag);
     hex_enc(cid, tag, 8);
-    /* say the transport out loud: the key is one env var on each side and a
-     * one-sided setup is otherwise silent. */
-    const char *key = getenv("CONSTELLA_P2P_KEY");
-    log_msg("constella: payout=%s%s threads=%d duty<=%d%% port=%d chain=%s p2p=%s", a,
-            wr == 1 ? " (new key)" : "", threads, atoi(env("CONSTELLA_DUTY", "50")), port, cid,
-            key && *key ? "encrypted" : "PLAINTEXT");
+    /* Say the network identity out loud. There is no key to configure any
+     * more, so what an operator needs to see is which node this is - the same
+     * 16 hex chars a peer sees in the handshake. */
+    hex_enc(nh, nid.pk, 32);
+    nh[16] = 0;
+    log_msg("constella: payout=%s%s threads=%d duty<=%d%% port=%d chain=%s node=%s", a,
+            wr == 1 ? " (new key)" : "", threads, atoi(env("CONSTELLA_DUTY", "50")), port, cid, nh);
 
     if (rebuild_state()) { log_msg("fatal: cannot rebuild ledger state"); return 1; }
     live = 1;
@@ -344,8 +352,7 @@ int node_run(void) {
     if (pipe(pfd) || pipe(spfd)) return 1;
     fcntl(pfd[0], F_SETFL, O_NONBLOCK);
     fcntl(spfd[0], F_SETFL, O_NONBLOCK);
-    if (net_init((uint16_t)port, getenv("CONSTELLA_PEERS"), getenv("CONSTELLA_P2P_KEY"),
-                 on_msg, send_hello)) {
+    if (net_init((uint16_t)port, getenv("CONSTELLA_PEERS"), &nid, on_msg, send_hello)) {
         log_msg("fatal: cannot listen on %d", port);
         return 1;
     }

@@ -11,12 +11,18 @@
 #include "share.h"
 #include "sieve.h"
 #include "science.h"
+#include "params.h"
 #include "util.h"
+#include "vendor/monocypher.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <time.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -625,11 +631,43 @@ static void t_transport_vector(void) {
     CHECK(!strcmp(hx, "43535433052700c6f1bead58b05daad2fe578fc92c49eafa0cfccaa041f7bd4268dcc6a8fc028f66a6d658dcda7d"));
 }
 
+/* The static-key handshake. `k_lo`/`k_hi` here were computed by the pure-Python
+ * RFC 7748 ladder + stdlib keyed BLAKE2b in tests/crosscheck.py, independently
+ * of monocypher, *before* this file was written - so the vector pins what the
+ * protocol specifies, not what this C happens to do. The Go explorer asserts
+ * the same strings, which is the only thing standing between the two
+ * implementations and a network fork. */
+static void t_handshake_vector(void) {
+    uint8_t eph_a[32], eph_b[32], id_a[32], id_b[32], lo[32], hi[32];
+    char hx[65];
+    for (int i = 0; i < 32; i++) {
+        eph_a[i] = (uint8_t)(i + 1);
+        eph_b[i] = (uint8_t)(255 - i);
+        id_a[i] = 0xaa;
+        id_b[i] = 0x55;
+    }
+    CHECK(net_handshake_vector(lo, hi, eph_a, eph_b, id_a, id_b) == 0);
+    hex_enc(hx, lo, 32);
+    CHECK(!strcmp(hx, "6d66ba6be4ed702e831b1c892f516c4c78306abd11609b42a5c406f96026e9bb"));
+    hex_enc(hx, hi, 32);
+    CHECK(!strcmp(hx, "272167ef59a047be10a9180e8ae3f07509413099a5d4ad0e120f13f82a415c89"));
+
+    /* min(id)||max(id), not the order they arrived in: swapping the two
+     * identities must not change either key, or the two ends of one link
+     * would derive different keys depending on who dialled. */
+    uint8_t lo2[32], hi2[32];
+    CHECK(net_handshake_vector(lo2, hi2, eph_b, eph_a, id_b, id_a) == 0);
+    CHECK(!memcmp(lo, lo2, 32) && !memcmp(hi, hi2, 32));
+    CHECK(memcmp(lo, hi, 32));               /* the two directions differ */
+}
+
 /* The wallet CLI is the only thing outside net.c that speaks the wire, and
  * nothing exercised it over a socket - which is how a HELLO gate that locks
  * `constella balance` out of every node shipped with a green suite. Host a
- * real net.c listener here and drive the real binary against it, in the clear
- * and with a PSK. */
+ * real net.c listener here and drive the real binary against it. Both probes
+ * run the static-key handshake, under two unrelated node identities: the node
+ * has no unauthenticated mode left to test, and the CLI carries no configured
+ * key, so it must authenticate against whichever node it is pointed at. */
 static const uint8_t cli_addr[32] = {0xab, 0xcd, 0x01, 0x02};
 static uint8_t cli_asked[32];
 static int cli_got_tx;
@@ -655,10 +693,10 @@ static void cli_on_conn(int peer) {
 }
 
 /* Returns the CLI's exit status with its stdout in `out`; -1 if it never ran. */
-static int cli_probe(const char *psk, const char *sub, char *out, size_t cap) {
+static int cli_probe(const wallet_t *node_id, const char *sub, char *out, size_t cap) {
     uint16_t port = 0;
     for (uint16_t t = 17943; t < 17983 && !port; t++)
-        if (!net_init(t, NULL, psk, cli_on_msg, cli_on_conn)) port = t;
+        if (!net_init(t, NULL, node_id, cli_on_msg, cli_on_conn)) port = t;
     if (!port) return -1;
     int pfd[2];
     if (pipe(pfd)) { net_stop(); return -1; }
@@ -668,7 +706,6 @@ static int cli_probe(const char *psk, const char *sub, char *out, size_t cap) {
     pid_t pid = fork();
     if (pid == 0) {
         dup2(pfd[1], 1); close(pfd[0]); close(pfd[1]);
-        if (psk) setenv("CONSTELLA_P2P_KEY", psk, 1); else unsetenv("CONSTELLA_P2P_KEY");
         if (!strcmp(sub, "send"))
             execl("./constella", "constella", "send", hp, ah, "1.5", "0.002", (char *)NULL);
         else
@@ -702,14 +739,18 @@ static int cli_probe(const char *psk, const char *sub, char *out, size_t cap) {
 static void t_cli_socket(void) {
     if (access("./constella", X_OK)) { fprintf(stderr, "SKIP cli socket: no ./constella\n"); return; }
     static const char *want = "1.25000000  (nonce 3, next 4, height 7)";
-    /* same PSK on both ends: the CLI must authenticate, not be gated out */
-    static const char *psk = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
+    wallet_t n1, n2;
+    uint8_t seed[32];
+    for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(0x31 + i);
+    wallet_from_seed(&n1, seed);
+    for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(0xc7 - i);
+    wallet_from_seed(&n2, seed);
     char out[512];
 
-    CHECK(cli_probe(NULL, "balance", out, sizeof out) == 0);      /* plaintext */
+    CHECK(cli_probe(&n1, "balance", out, sizeof out) == 0);
     CHECK(strstr(out, want) != NULL);
     CHECK(!memcmp(cli_asked, cli_addr, 32));
-    CHECK(cli_probe(psk, "balance", out, sizeof out) == 0);       /* secure */
+    CHECK(cli_probe(&n2, "balance", out, sizeof out) == 0);       /* a different node key */
     CHECK(strstr(out, want) != NULL);
 
     /* `send` opened with MSG_TX and was gated out just as hard as `balance`. */
@@ -720,7 +761,7 @@ static void t_cli_socket(void) {
     CHECK(wallet_load(&w, kf, 1) == 1);
     setenv("CONSTELLA_KEY", kf, 1);
     cli_got_tx = 0;
-    CHECK(cli_probe(psk, "send", out, sizeof out) == 0);
+    CHECK(cli_probe(&n2, "send", out, sizeof out) == 0);
     CHECK(cli_got_tx);                                  /* the tx reached the node */
     CHECK(strstr(out, "accepted  tx ") != NULL);
     CHECK(strstr(out, "nonce 4") != NULL);              /* it used the next nonce we served */
@@ -729,6 +770,136 @@ static void t_cli_socket(void) {
     memset(&w, 0, sizeof w);
     unlink(kf);
     rmdir(dir);
+}
+
+/* Drive the real net.c listener over a real socket and watch it refuse a bad
+ * handshake. Each case below is pinned to one guard and goes green again only
+ * when that guard is restored: HS_SELF must be refused *before* the node
+ * answers with its phase 2 (the self-identity check), HS_BADSIG *after* it
+ * (crypto_eddsa_check). Asserting only "the connection died" would let one
+ * guard cover both cases, which is one property wearing two hats. */
+enum { HS_GOOD, HS_BADSIG, HS_SELF };
+
+/* Give the listener `ms` of real time. Counting poll() calls instead would be
+ * a lie whenever something in the set is already writable: the loop then spins
+ * without waiting, and a peer that is merely slow looks dead. */
+static void net_pump(int ms) {
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (;;) {
+        struct pollfd pf[34];
+        int np = net_pollfds(pf, 33);
+        poll(pf, (nfds_t)np, 5);
+        net_process(pf, np);
+        net_tick();
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        long el = (long)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000);
+        if (el >= ms) return;
+    }
+}
+
+/* One 64-byte MSG_AUTH frame, header and payload in a single write. */
+static int hs_send(int fd, const uint8_t payload[64]) {
+    uint8_t f[NET_HDR + 64];
+    uint32_t m = NET_MAGIC;
+    for (int k = 0; k < 4; k++) f[k] = (uint8_t)(m >> 8 * k);
+    f[4] = MSG_AUTH; f[5] = 64; f[6] = 0;
+    memcpy(f + NET_HDR, payload, 64);
+    return send(fd, f, sizeof f, 0) == (ssize_t)sizeof f ? 0 : -1;
+}
+
+static void hs_tr(uint8_t out[72], const uint8_t self[32], const uint8_t peer[32]) {
+    memcpy(out, "CSTL-HS1", 8);
+    memcpy(out + 8, self, 32);
+    memcpy(out + 40, peer, 32);
+}
+
+/* 0: the handshake completed and the node's HELLO came back encrypted.
+ * -1: refused at phase 1 (its phase 2 never arrived). -2: refused at phase 2.
+ * -3: the exchange broke down somewhere this test does not model. */
+static int hs_try(uint16_t port, const wallet_t *id, int mode, const wallet_t *node_id) {
+    struct sockaddr_in a = {0};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(port);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -3;
+    struct timeval tv = {2, 0};
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    if (connect(fd, (struct sockaddr *)&a, sizeof a)) { close(fd); return -3; }
+    net_pump(200);
+
+    uint8_t eph_sk[32], eph_pk[32], peer_eph[32];
+    uint8_t hdr[NET_HDR], buf[96], tr[72], sig[64], pay[64];
+    int rc = -3;
+    ssize_t r = 0;
+    for (int i = 0; i < 32; i++) eph_sk[i] = (uint8_t)(0x5a + i);
+    crypto_x25519_public_key(eph_pk, eph_sk);
+
+    /* their phase 1: ephemeral, then the identity they claim */
+    if (recv(fd, hdr, NET_HDR, MSG_WAITALL) != NET_HDR) goto out;
+    if (hdr[4] != MSG_AUTH || hdr[5] != 64 || hdr[6] != 0) goto out;
+    if (recv(fd, buf, 64, MSG_WAITALL) != 64) goto out;
+    memcpy(peer_eph, buf, 32);
+    if (memcmp(buf + 32, node_id->pk, 32)) goto out;
+
+    /* our phase 1 */
+    memcpy(pay, eph_pk, 32);
+    memcpy(pay + 32, id->pk, 32);
+    if (hs_send(fd, pay)) goto out;
+    net_pump(200);
+
+    /* their phase 2, or a closed socket if they refused the identity we claimed */
+    r = recv(fd, hdr, NET_HDR, MSG_WAITALL);
+    if (r == 0) { rc = -1; goto out; }
+    if (r != NET_HDR || hdr[4] != MSG_AUTH || hdr[5] != 64 || hdr[6] != 0) goto out;
+    if (recv(fd, buf, 64, MSG_WAITALL) != 64) goto out;
+    /* their signature covers their ephemeral first: this pins the transcript
+     * byte order the Go explorer has to reproduce exactly. */
+    hs_tr(tr, peer_eph, eph_pk);
+    if (crypto_eddsa_check(buf, node_id->pk, tr, sizeof tr)) goto out;
+
+    /* our phase 2 */
+    hs_tr(tr, eph_pk, peer_eph);
+    crypto_eddsa_sign(sig, id->sk, tr, sizeof tr);
+    if (mode == HS_BADSIG) sig[0] = (uint8_t)(sig[0] ^ 1);
+    if (hs_send(fd, sig)) goto out;
+    net_pump(200);
+
+    /* the HELLO queued at accept time, now sealed: 32 bytes + a 16-byte tag */
+    r = recv(fd, hdr, NET_HDR, MSG_WAITALL);
+    if (r == 0) { rc = -2; goto out; }
+    if (r != NET_HDR) goto out;
+    if (hdr[4] != MSG_HELLO || hdr[5] != 48 || hdr[6] != 0) goto out;
+    rc = 0;
+out:
+    close(fd);
+    net_pump(200);
+    return rc;
+}
+
+static void t_handshake_live(void) {
+    wallet_t nid, cid;
+    uint8_t seed[32];
+    for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(0x11 + i);
+    wallet_from_seed(&nid, seed);
+    for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(0xf0 - i);
+    wallet_from_seed(&cid, seed);
+    CHECK(memcmp(nid.pk, cid.pk, 32) != 0);
+
+    uint16_t port = 0;
+    for (uint16_t t = 17993; t < 18033 && !port; t++)
+        if (!net_init(t, NULL, &nid, cli_on_msg, cli_on_conn)) port = t;
+    CHECK(port != 0);
+    if (!port) return;
+
+    CHECK(hs_try(port, &cid, HS_GOOD, &nid) == 0);      /* a good handshake completes */
+    CHECK(net_peers() == 0);                            /* and the node let it go cleanly */
+    CHECK(hs_try(port, &cid, HS_BADSIG, &nid) == -2);   /* pinned to crypto_eddsa_check */
+    CHECK(hs_try(port, &nid, HS_SELF, &nid) == -1);     /* pinned to the self-identity check */
+    net_stop();
 }
 
 static void mk4(uint8_t ip[16], uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
@@ -988,9 +1159,22 @@ int main(int argc, char **argv) {
         }
         return 0;
     }
+    if (argc > 1 && !strcmp(argv[1], "--hs")) {   /* eph_a_sk eph_b_sk id_a id_b -> k_lo k_hi */
+        while (fgets(line, sizeof line, stdin)) {
+            char ah[80], bh[80], ch[80], dh[80], x[65], y[65];
+            uint8_t ea[32], eb[32], ia[32], ib[32], lo[32], hi[32];
+            if (sscanf(line, "%79s %79s %79s %79s", ah, bh, ch, dh) != 4) break;
+            if (hex_dec(ea, 32, ah) || hex_dec(eb, 32, bh) ||
+                hex_dec(ia, 32, ch) || hex_dec(ib, 32, dh)) return 1;
+            if (net_handshake_vector(lo, hi, ea, eb, ia, ib)) return 1;
+            hex_enc(x, lo, 32); hex_enc(y, hi, 32);
+            printf("%s %s\n", x, y);
+        }
+        return 0;
+    }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
