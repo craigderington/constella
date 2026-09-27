@@ -21,8 +21,8 @@ constella: $(CORE) $(APP) src/*.h
 fast:
 	$(MAKE) -B constella OPT="-O2"
 
-test_constella: $(CORE) tests/test.c src/*.h
-	$(CC) $(CFLAGS) -Isrc -o $@ $(CORE) tests/test.c $(LDFLAGS)
+test_constella: $(CORE) src/node.c tests/test.c src/*.h
+	$(CC) $(CFLAGS) -Isrc -o $@ $(CORE) src/node.c tests/test.c $(LDFLAGS)
 
 thermal_sim: src/throttle.c src/util.c tests/thermal_sim.c src/throttle.h
 	$(CC) $(CFLAGS) -Isrc -o $@ src/throttle.c src/util.c tests/thermal_sim.c $(LDFLAGS)

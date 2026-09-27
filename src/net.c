@@ -26,6 +26,7 @@
 #define MAXPAY    (NET_MAXPAY + 16)
 #define CONNECT_TIMEOUT 10
 #define OUTBOUND_RETRY  5
+#define SEED_FALLBACK_DELAY 30
 /* Room for every current peer's netgroup plus a full batch of candidates:
  * fill_outbound seeds the avoid list from the peers it already has and then
  * extends it in place as it picks, and neither half may overflow it. */
@@ -80,9 +81,16 @@ typedef struct {
 	uint16_t dial_port;
 	int has_ip, from_addr, getaddr_sent;
 	uint64_t attempt;
+	/* Inbound eviction keeps established, netgroup-diverse connections and
+	 * makes a flood displace its own newest sockets.  `born` is a strict
+	 * sequence because second-resolution timestamps cannot order an accept
+	 * burst. */
+	uint8_t netgroup[8];
+	int has_netgroup;
+	uint64_t born;
 } peer_t;
 
-typedef struct { char host[128], port[8]; int peer; int64_t next; } seed_t;
+typedef struct { char host[128], port[8]; int peer, fallback; int64_t next; } seed_t;
 
 static peer_t P[MAX_PEERS];
 static seed_t S[MAX_SEEDS];
@@ -91,8 +99,8 @@ static net_msg_fn cb_msg;
 static net_conn_fn cb_conn;
 static int n_inbound;
 static wallet_t node_id;
-static uint64_t attempt_ctr;
-static int64_t out_next;
+static uint64_t attempt_ctr, conn_ctr;
+static int64_t out_next, fallback_at;
 /* This node's own address, so outbound selection never picks it (Review
  * Focus 3). All-zero means "not known yet", and costs no separate flag: an
  * all-zero address is unroutable, so addr_add can never have stored one and
@@ -103,6 +111,7 @@ static uint16_t self_port;
 /* Defined with the rest of the outbound machinery below; finish_auth needs
  * them well before that, and the two halves read better kept together. */
 static void peer_handshake_done(const peer_t *p);
+static void drop(int i);
 
 static void nonblock(int fd) { fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK); }
 
@@ -258,13 +267,45 @@ static int encrypt_pending(peer_t *p) {
  * an address-table dial has no seed index either, and inferring direction
  * from the seed would have filed every one of them as inbound - charging
  * them against MAX_INBOUND and hiding them from the outbound accounting. */
-static int alloc_peer(int fd, int state, int seed, int inbound) {
-	if (inbound && n_inbound >= MAX_INBOUND) return -1;
+static int inbound_victim(const uint8_t incoming_ip[16]) {
+	uint8_t incoming_group[8];
+	int have_incoming = incoming_ip != NULL;
+	if (have_incoming) addr_netgroup(incoming_ip, incoming_group);
+	int newest = -1, duplicate = -1;
+	for (int i = 0; i < MAX_PEERS; i++) {
+		if (P[i].state == P_FREE || !P[i].inbound) continue;
+		if (newest < 0 || P[i].born > P[newest].born) newest = i;
+		int copies = 0;
+		if (P[i].has_netgroup) {
+			for (int j = 0; j < MAX_PEERS; j++)
+				if (P[j].state != P_FREE && P[j].inbound && P[j].has_netgroup &&
+				    !memcmp(P[i].netgroup, P[j].netgroup, 8))
+					copies++;
+			if (have_incoming && !memcmp(P[i].netgroup, incoming_group, 8)) copies++;
+		}
+		if (copies > 1 && (duplicate < 0 || P[i].born > P[duplicate].born))
+			duplicate = i;
+	}
+	return duplicate >= 0 ? duplicate : newest;
+}
+
+static int alloc_peer(int fd, int state, int seed, int inbound,
+                      const uint8_t inbound_ip[16]) {
+	if (inbound && n_inbound >= MAX_INBOUND) {
+		int victim = inbound_victim(inbound_ip);
+		if (victim < 0) return -1;
+		drop(victim);
+	}
 	for (int i = 0; i < MAX_PEERS; i++) {
         if (P[i].state != P_FREE) continue;
         memset(&P[i], 0, sizeof P[i]);
 		P[i].fd = fd; P[i].state = state; P[i].seed = seed;
 		P[i].inbound = inbound;
+		P[i].born = ++conn_ctr;
+		if (inbound && inbound_ip) {
+			addr_netgroup(inbound_ip, P[i].netgroup);
+			P[i].has_netgroup = 1;
+		}
 		/* Stamped for P_CONNECTING too, so net_tick can time out a connect
 		 * that never completes. Without it one black-holed address holds an
 		 * outbound slot for the life of the process and the netgroup
@@ -598,7 +639,7 @@ static void dial_addr(const addr_t *a) {
     nonblock(fd);
     int r = connect(fd, (struct sockaddr *)&ss, sl);
     if (r < 0 && errno != EINPROGRESS) { close(fd); return; }
-    int i = alloc_peer(fd, P_CONNECTING, -1, 0);
+    int i = alloc_peer(fd, P_CONNECTING, -1, 0, NULL);
     if (i < 0) { close(fd); return; }
     peer_dial_begin(&P[i], a);
 }
@@ -618,7 +659,7 @@ static void dial(int s) {
     int known = sa_unpack(res->ai_addr, ip, &port) == 0;
     freeaddrinfo(res);
     if (r < 0 && errno != EINPROGRESS) { close(fd); return; }
-    int i = alloc_peer(fd, P_CONNECTING, s, 0);
+    int i = alloc_peer(fd, P_CONNECTING, s, 0, NULL);
     if (i < 0) { close(fd); return; }
     /* B1: a resolved seed enters `new` like any other learned address.
      * Without this, `addr_add` has only two call sites - gossip ingest and
@@ -704,8 +745,14 @@ void net_tick(void) {
 			 (!P[i].hello && P[i].up_at && t - P[i].up_at > 10)))
 			drop(i);
 	}
-    for (int s = 0; s < nseeds; s++)
-        if (S[s].peer < 0 && t >= S[s].next) dial(s);
+	int outbound_ready = 0;
+	for (int i = 0; i < MAX_PEERS; i++)
+		outbound_ready += P[i].state == P_UP && !P[i].inbound && P[i].hello;
+	if (outbound_ready) fallback_at = t + SEED_FALLBACK_DELAY;
+	for (int s = 0; s < nseeds; s++)
+		if (S[s].peer < 0 && t >= S[s].next &&
+		    (!S[s].fallback || t >= fallback_at))
+			dial(s);
     if (t >= out_next) { out_next = t + OUTBOUND_RETRY; fill_outbound(); }
 }
 
@@ -714,21 +761,22 @@ void net_tick(void) {
  * lists below - all three are the same seed_t mechanism, since dial()
  * already resolves a hostname through getaddrinfo and there is nothing
  * DNS-specific for a seed to do differently (Task 10 brief). */
-static void add_seed(const char *tok) {
+static void add_seed(const char *tok, int fallback) {
     if (nseeds >= MAX_SEEDS) return;
     const char *c = strrchr(tok, ':');
     seed_t *s = &S[nseeds];
     snprintf(s->host, sizeof s->host, "%.*s", c ? (int)(c - tok) : (int)strlen(tok), tok);
     snprintf(s->port, sizeof s->port, "%s", c ? c + 1 : "7043");
-    s->peer = -1; s->next = 0;
+    s->peer = -1; s->fallback = fallback; s->next = 0;
     nseeds++;
 }
 
 /* Bootstrap order (design doc, "Bootstrap"): peers.dat, then DNS seeds, then
- * hardcoded fallbacks. peers.dat is loaded by addr_load before net_init runs
- * (node.c), so "does the address table already have something" is exactly
- * addr_count(0) + addr_count(1) > 0 here - most restarts never reach this
- * list at all. No real seed infrastructure is deployed for this project yet:
+ * hardcoded fallbacks.  Default seeds are retained even when peers.dat is
+ * nonempty, but net_tick delays them while an authenticated outbound peer is
+ * available and for SEED_FALLBACK_DELAY after one disappears.  A stale or
+ * poisoned nonempty table therefore cannot suppress seed recovery forever.
+ * No real seed infrastructure is deployed for this project yet:
  * DNS_SEEDS names the hostname the design doc settled on, and the hardcoded
  * array is deliberately empty rather than filled with invented addresses
  * that would read as live infrastructure but are not. Both are ordinary
@@ -768,12 +816,13 @@ int net_init(uint16_t port, const char *csv, const wallet_t *id,
         snprintf(buf, sizeof buf, "%s", csv);
         for (char *sv, *tok = strtok_r(buf, ",", &sv); tok && nseeds < MAX_SEEDS;
              tok = strtok_r(NULL, ",", &sv))
-            add_seed(tok);
-    } else if (addr_count(0) + addr_count(1) == 0) {
+            add_seed(tok, 0);
+    } else {
         for (size_t k = 0; k < N_DNS_SEEDS && nseeds < MAX_SEEDS; k++)
-            add_seed(DNS_SEEDS[k]);
+            add_seed(DNS_SEEDS[k], 1);
         /* N_HARDCODED_SEEDS is 0 today; see the comment above it. */
     }
+    fallback_at = now_sec() + (addr_count(0) + addr_count(1) ? SEED_FALLBACK_DELAY : 0);
     net_tick();
     return 0;
 }
@@ -839,12 +888,8 @@ int net_advertise(const char *hostport) {
     freeaddrinfo(res);
     if (!ok) return -1;
     net_set_self(ip, port);
-    /* B2: deliberately NOT addr_add(). A self entry in the tables is
-     * persisted by addr_save, and on the next start addr_load restores it so
-     * net_init's `addr_count(0) + addr_count(1) == 0` bootstrap gate is false
-     * and the DNS/hardcoded tiers never run - while select_outbound skips that
-     * same entry as our own. The node then has exactly one known address, no
-     * candidates, and no way back to the seeds, because nothing removes it.
+    /* B2: deliberately NOT addr_add(). A self entry wastes a persisted table
+     * slot and burns outbound selection effort after an advertise change.
      * handle_getaddr gossips our address directly from self_ip instead. */
     return 0;
 }
@@ -1006,6 +1051,30 @@ int net_select_outbound_vector(addr_t *out, int max, const uint8_t (*have)[8], i
  * table, and --gc-sections drops it with the two functions below. */
 static peer_t vpeer;
 
+int net_seed_count_vector(int fallback_only) {
+    int n = 0;
+    for (int i = 0; i < nseeds; i++) n += !fallback_only || S[i].fallback;
+    return n;
+}
+
+int net_inbound_add_vector(const uint8_t ip[16]) {
+    int i = alloc_peer(-1, P_UP, -1, 1, ip);
+    if (i < 0) return 0;
+    P[i].auth_ready = 1;
+    P[i].hello = 1;
+    return 1;
+}
+
+int net_inbound_group_count_vector(const uint8_t ip[16]) {
+    uint8_t group[8];
+    addr_netgroup(ip, group);
+    int n = 0;
+    for (int i = 0; i < MAX_PEERS; i++)
+        n += P[i].state != P_FREE && P[i].inbound && P[i].has_netgroup &&
+             !memcmp(P[i].netgroup, group, 8);
+    return n;
+}
+
 void net_dial_vector(const uint8_t ip[16], uint16_t port) {
     addr_t a = {{0}, 0, 0, 0, 0};
     memcpy(a.ip, ip, 16);
@@ -1031,6 +1100,8 @@ void net_stop(void) {
     if (lfd >= 0) close(lfd);
     lfd = -1; nseeds = 0; n_inbound = 0;
     out_next = 0;
+    fallback_at = 0;
+    conn_ctr = 0;
     memset(self_ip, 0, sizeof self_ip);
     self_port = 0;
 }
@@ -1117,9 +1188,15 @@ void net_process(const struct pollfd *pf, int n) {
         int i = pmap[k];
         if (i < 0) {
             int fd;
-            while ((fd = accept(lfd, NULL, NULL)) >= 0) {
+            struct sockaddr_storage remote;
+            socklen_t remote_len;
+            while (remote_len = sizeof remote,
+                   (fd = accept(lfd, (struct sockaddr *)&remote, &remote_len)) >= 0) {
+				uint8_t ip[16];
+				uint16_t port;
+				const uint8_t *ipp = sa_unpack((struct sockaddr *)&remote, ip, &port) ? NULL : ip;
                 nonblock(fd);
-                int pi = alloc_peer(fd, P_UP, -1, 1);
+                int pi = alloc_peer(fd, P_UP, -1, 1, ipp);
                 if (pi < 0 || peer_up(pi)) { if (pi >= 0) drop(pi); else close(fd); }
             }
             continue;

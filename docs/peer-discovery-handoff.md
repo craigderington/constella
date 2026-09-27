@@ -10,7 +10,7 @@
 
 | gate | result |
 |---|---|
-| `make test` | 571/571 |
+| `make test` | 602/602 |
 | `make size` | 157,464 / 196,608 (39,144 free) |
 | `make explorer-test` | green |
 | `go test -race` (explorer) | green |
@@ -25,6 +25,20 @@ All 559 checks passed with both bugs present. **No test started a node twice**,
 and B2 only manifests on routable addresses, so every Docker run — RFC1918,
 correctly refused as unroutable — sidestepped it. The gates measured what the
 tests built, not what the node does.
+
+### Follow-up production review fixes
+
+A later full-project review found and fixed three additional release blockers:
+
+- GETCHAIN continuation no longer stalls at the 500-share batch boundary;
+  duplicate suppression now includes local chain progress.
+- DNS/hardcoded seeds remain as a delayed recovery tier even when `peers.dat`
+  is nonempty, so a dead cached table cannot suppress bootstrap forever.
+- A full inbound table evicts the newest overrepresented netgroup (otherwise
+  the newest peer), so 16 established sockets cannot reject every newcomer.
+
+The regression cases are `t_chain_request_batch_continuation`,
+`t_net_dead_table_keeps_seed_fallback`, and `t_net_inbound_eviction`.
 
 ---
 
@@ -115,7 +129,6 @@ logs `known new=0 tried=0`, so the gate stays open. Regression test
 | 3 | MED | `is_stale()` is inert in production. Threshold is `g_max_seen/4` (`src/addr.c:211`); `seen` is unix time, so the threshold is ~14.2 years. Task 3's 70% stale-skip never executes. Tests only pass small synthetic `now`. |
 | 4 | MED | The explorer's entire `AddrBook` is unreachable. The node sends `ADDR` only in answer to `GETADDR` (`src/net.c:402`) and sends `GETADDR` only outbound (`src/net.c:501`); the explorer is always the dialer and never sends `GETADDR`. 221 production + 195 test lines, green, never executed. |
 | 5 | MED | Seeds bypass netgroup diversity (`src/net.c:598` never consults the avoid list), and with ≥8 seeds `fill_outbound` returns early forever, suppressing table-driven dialling. |
-| 6 | MED | Spec lines 217-219 (inbound-eviction asymmetry) unimplemented (`src/net.c:262`). |
 | 7 | LOW | The spec's one declared open question — measure `getaddrinfo` vs a minimal resolver — was never measured; `getaddrinfo` adopted by default. |
 | 8 | LOW | `GETADDR` costs ~66M 8-byte memcmps (~0.1 s) per connection, arrangeable for free by an attacker via fabricated netgroups. |
 | 9 | LOW | Reader traps: the misleading seed comment (`src/net.c:616-618`); `src/addr.c:207-210` says `seen` has "no fixed unit" (it is unix seconds); `CLAUDE.md:110-111` calls the per-peer-identity mainnet gate "closed", contradicting `CLAUDE.md:178` and bug-log DECISION-006; `CLAUDE.md:26-27` omits `addr` from Layout; `docs/protocol.md:238-240` implies seeds populate the tables. |

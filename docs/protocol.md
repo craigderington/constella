@@ -171,7 +171,10 @@ AEAD's associated data.
 - `3 GETSHARE`: id (32 bytes).
 - `4 GETCHAIN`: locator of up to 32 ids (dense near the tip, exponentially sparse
   after, ending at genesis). The reply is up to 500 best-chain shares after the fork
-  point, followed by HELLO, which drives the next batch.
+  point, followed by HELLO, which drives the next batch. Duplicate-request
+  suppression includes the receiver's chain-entry count, so an accepted batch
+  immediately permits the next request even though the advertised remote tip
+  and five-second rate window have not changed.
 - `5 TX`: tx (152 bytes). The node validates it against tip state plus pending txs,
   and relays it if added.
 - `6 GETACCT`: address → `7 ACCT`: `amt | nonce | next_nonce | height`.
@@ -236,8 +239,11 @@ cannot sit in an inbound slot, and nothing is exempt from it: the first
 decrypted frame must be a 32-byte HELLO or the peer is dropped.
 
 ### Peer discovery
-A node bootstraps from `peers.dat`, then DNS seeds, then hardcoded fallbacks;
-`CONSTELLA_PEERS` overrides all of it.
+A node tries addresses from `peers.dat` first. DNS and hardcoded seeds remain
+loaded as recovery paths: a warm node delays them for 30 seconds while it tries
+its cached table, and resets that delay while it has an authenticated outbound
+peer. Thus one stale persisted address cannot permanently disable bootstrap.
+`CONSTELLA_PEERS` remains a manual override for private networks and tests.
 
 Addresses live in two tables, `new` (unverified, heard about) and `tried`
 (handshake-confirmed). Both are bucketed by **network group** — the /16 for
@@ -254,6 +260,12 @@ rather than calcifying. Gossiped `last_seen` is clamped to now on receipt:
 left unclamped, a future-dated entry is never the stalest, so it is never
 evicted, and it drags the staleness high-water mark up until every honest entry
 looks stale.
+
+Inbound connections are capped at 16. At capacity, a newcomer evicts the
+newest connection from an overrepresented netgroup; if every connection is
+already from a distinct netgroup, it evicts the newest overall. This preserves
+old, diverse peers and makes a one-network socket flood displace itself rather
+than pinning every inbound slot indefinitely.
 
 Consensus does not rest on any of this: shares carry their own proof of work
 and transactions their own signatures, both verified independently of the

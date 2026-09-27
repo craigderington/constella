@@ -6,6 +6,7 @@
 #include "ledger.h"
 #include "mempool.h"
 #include "net.h"
+#include "node.h"
 #include "tx.h"
 #include "wallet.h"
 #include "share.h"
@@ -29,6 +30,23 @@
 
 static int fails, runs;
 #define CHECK(c) do { runs++; if (!(c)) { fails++; fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #c); } } while (0)
+
+/* A full GETCHAIN reply is capped at 500 shares.  Its terminal HELLO repeats
+ * the still-unknown remote tip less than five seconds after the first request,
+ * but our local chain has accepted the received batch.  That progress must
+ * bypass duplicate suppression or synchronization stops at the batch edge,
+ * even when it extended a side branch without changing the best tip. */
+static void t_chain_request_batch_continuation(void) {
+    uint8_t want[32];
+    memset(want, 0xA1, sizeof want);
+    int peer = 63;
+    node_chain_request_reset_vector(peer);
+    CHECK(node_chain_request_due_vector(peer, want, 1000, 100) == 1);
+    CHECK(node_chain_request_due_vector(peer, want, 1000, 101) == 0);
+    CHECK(node_chain_request_due_vector(peer, want, 1500, 101) == 1);
+    CHECK(node_chain_request_due_vector(peer, want, 1500, 102) == 0);
+    CHECK(node_chain_request_due_vector(peer, want, 1500, 106) == 1);
+}
 
 /* Tests that drive the real ./constella binary. Skipping when it is absent is
  * right for a bare `./test_constella` during development, but a SILENT skip is
@@ -1303,26 +1321,21 @@ static void t_addr_seeds_enter_tables(void) {
     CHECK(addr_count(0) == 1);
 }
 
-/* B2. net_advertise used to addr_add our OWN address. addr_save persisted it,
- * so on the next start addr_load restored it, net_init's
- * `addr_count(0) + addr_count(1) == 0` bootstrap gate was false and the seed
- * tiers never ran - while select_outbound skipped that same entry as ours.
- * The node sat with one known address, no candidates and no recovery, since
- * nothing removes an entry. It hit exactly the public routable nodes that
- * would serve as seeds, and missed Docker (RFC1918, refused as unroutable),
- * which is why no run caught it. */
+/* B2. net_advertise used to addr_add our OWN address. addr_save persisted it
+ * and outbound selection then wasted effort rediscovering that it was us.
+ * Use an unroutable manual seed here so the table assertion isolates the
+ * advertised address rather than also observing the now-retained DNS fallback. */
 static void t_addr_advertise_keeps_bootstrap_open(void) {
     if (!need_constella("advertise keeps bootstrap open")) return;
     char dir[] = "/tmp/constella-adv-XXXXXX";
     if (!mkdtemp(dir)) { CHECK(0); return; }
 
-    CHECK(node_start_stop_env(dir, 18231, NULL, "198.51.100.7:7043") == 0);
+    CHECK(node_start_stop_env(dir, 18231, "127.0.0.1:1", "198.51.100.7:7043") == 0);
     CHECK(addr_load(dir) == 0);
     CHECK(addr_count(0) + addr_count(1) == 0);   /* our own address is not stored */
 
-    /* The second start is the one that mattered: the gate has to still be open
-     * so the seed tiers run at all. */
-    CHECK(node_start_stop_env(dir, 18232, NULL, "198.51.100.7:7043") == 0);
+    /* Restarting must not resurrect or persist the advertised address. */
+    CHECK(node_start_stop_env(dir, 18232, "127.0.0.1:1", "198.51.100.7:7043") == 0);
     CHECK(addr_load(dir) == 0);
     CHECK(addr_count(0) + addr_count(1) == 0);
 }
@@ -1723,6 +1736,53 @@ static void t_net_outbound_skips_self(void) {
     net_set_self(none, 0);                     /* leave no self behind for later tests */
 }
 
+/* A warm node used to omit the default seeds entirely when peers.dat held so
+ * much as one entry.  If that entry was dead, no failure path removed it and
+ * the node could never bootstrap again.  The seed must remain in the plan;
+ * net_tick delays fallback for 30 seconds so the cached table still gets first
+ * choice without owning recovery forever. */
+static void t_net_dead_table_keeps_seed_fallback(void) {
+    uint8_t secret[16]; memset(secret, 0x4d, 16);
+    addr_init(secret);
+    uint8_t dead[16]; mk4(dead, 198, 51, 100, 77);
+    CHECK(addr_add(dead, 7043, 1) == 1);
+
+    wallet_t nid;
+    uint8_t seed[32]; memset(seed, 0x35, sizeof seed);
+    wallet_from_seed(&nid, seed);
+    uint16_t port = 0;
+    for (uint16_t t = 18193; t < 18210 && !port; t++)
+        if (!net_init(t, NULL, &nid, cli_on_msg, cli_on_conn)) port = t;
+    CHECK(port != 0);
+    if (port) CHECK(net_seed_count_vector(1) == 1);
+    net_stop();
+}
+
+/* At the inbound cap, admit the newcomer by evicting the newest connection
+ * from an overrepresented netgroup.  Sixteen sockets from one /16 can no
+ * longer pin every slot: a new network gets in, and a subsequent socket from
+ * the attacker's /16 displaces another attacker rather than that diverse peer. */
+static void t_net_inbound_eviction(void) {
+    net_stop();
+    uint8_t attacker[16], honest[16];
+    for (int i = 0; i < 16; i++) {
+        mk4(attacker, 198, 51, 100, (uint8_t)(i + 1));
+        CHECK(net_inbound_add_vector(attacker) == 1);
+    }
+    mk4(attacker, 198, 51, 100, 200);
+    CHECK(net_inbound_group_count_vector(attacker) == 16);
+
+    mk4(honest, 203, 0, 113, 9);
+    CHECK(net_inbound_add_vector(honest) == 1);
+    CHECK(net_inbound_group_count_vector(attacker) == 15);
+    CHECK(net_inbound_group_count_vector(honest) == 1);
+
+    CHECK(net_inbound_add_vector(attacker) == 1);
+    CHECK(net_inbound_group_count_vector(attacker) == 15);
+    CHECK(net_inbound_group_count_vector(honest) == 1);
+    net_stop();
+}
+
 /* Ruling AI: addr_good had no caller in src/ at all, so `tried` stayed empty
  * forever - spec line 133's "two successful handshakes on separate attempts"
  * was unreachable and addr_select's occasional-draw-from-new degenerated to
@@ -1842,7 +1902,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_advertise_parse();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

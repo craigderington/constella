@@ -274,6 +274,41 @@ unverified defects.
 - Status: fixed; peers must send a valid hello within ten seconds, inbound
   peers are capped at 16, and listener setup failures close the socket.
 
+### BUG-028: Multi-batch synchronization stopped after 500 shares
+
+- Severity: high
+- Area: node chain synchronization
+- Reproduction: synchronize from a peer whose unknown tip is more than one
+  500-share response beyond the receiver, with both batches arriving within
+  the five-second duplicate-request window.
+- Cause: duplicate suppression remembered only the remote tip. The terminal
+  `HELLO` repeated that tip and no timer retried the suppressed request.
+- Status: fixed; suppression also records the local chain-entry count, so any
+  accepted main- or side-chain batch immediately enables the next locator.
+
+### BUG-029: A stale persisted peer table disabled seed recovery
+
+- Severity: high
+- Area: peer discovery bootstrap
+- Reproduction: restart with one dead address in `peers.dat` and no explicit
+  `CONSTELLA_PEERS`.
+- Cause: default seeds were omitted whenever either address table was nonempty,
+  while the address store had no failure-removal path.
+- Status: fixed; default seeds are always retained and activate after 30
+  seconds without an authenticated outbound peer. Cached peers still get the
+  first attempt.
+
+### BUG-030: Established sockets could pin all inbound slots
+
+- Severity: high
+- Area: P2P availability
+- Reproduction: complete 16 handshakes, send `HELLO`, and keep the sockets
+  open; every later inbound connection was rejected before authentication.
+- Cause: the inbound cap had no eviction policy.
+- Status: fixed; at capacity the node evicts the newest connection from an
+  overrepresented source netgroup, otherwise the newest connection overall.
+  Old and netgroup-diverse peers are retained.
+
 ## Protocol Decisions / Limitations
 
 ### DESIGN-001: State-invalid transactions remain in blocks
