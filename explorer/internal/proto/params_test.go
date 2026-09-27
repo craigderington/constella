@@ -83,4 +83,37 @@ func TestParamsMatchC(t *testing.T) {
 	} else if got, _ := strconv.ParseInt(string(m[1]), 10, 64); got != SciSize {
 		t.Errorf("SCI_SIZE: C=%d Go=%d", got, SciSize)
 	}
+
+	// Ruling AH: MSG_GETADDR, MSG_ADDR, MSG_AUTH2 and ADDR_MAX_ENTRIES live
+	// in src/net.h, not src/params.h, and were mirrored by hand into
+	// proto.go with nothing checking the mirror still matches - exactly
+	// the state NET_MAGIC was in before Task 1. Extend the same drift
+	// guard here so a one-sided edit to any of the four is caught instead
+	// of silently forking the network.
+	netSrc, err := os.ReadFile("../../../src/net.h")
+	if err != nil {
+		missingHeader(t, err, "net.h")
+		return
+	}
+	// MSG_GETADDR/MSG_ADDR/MSG_AUTH2 are enum members ("NAME = N,"), not
+	// #define like everything params.h guards above.
+	enumWant := map[string]int64{
+		"MSG_GETADDR": MsgGetAddr, "MSG_ADDR": MsgAddr, "MSG_AUTH2": MsgAuth2,
+	}
+	for name, v := range enumWant {
+		m := regexp.MustCompile(name + `\s*=\s*(\d+)`).FindSubmatch(netSrc)
+		if m == nil {
+			t.Errorf("%s not found in net.h", name)
+			continue
+		}
+		if got, _ := strconv.ParseInt(string(m[1]), 10, 64); got != v {
+			t.Errorf("%s: C=%d Go=%d", name, got, v)
+		}
+	}
+	// ADDR_MAX_ENTRIES is a #define, like params.h's constants.
+	if m := regexp.MustCompile(`#define\s+ADDR_MAX_ENTRIES\s+(\d+)`).FindSubmatch(netSrc); m == nil {
+		t.Error("ADDR_MAX_ENTRIES not found in net.h")
+	} else if got, _ := strconv.ParseInt(string(m[1]), 10, 64); got != AddrMaxEntries {
+		t.Errorf("ADDR_MAX_ENTRIES: C=%d Go=%d", got, AddrMaxEntries)
+	}
 }

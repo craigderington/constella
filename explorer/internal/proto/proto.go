@@ -70,10 +70,108 @@ const (
 	// immediately on connect by both sides. MsgAuth2 is phase 2: a 64-byte
 	// EdDSA-BLAKE2b signature (R || S) over the 72-byte transcript, sent on
 	// receipt of the peer's phase 1. The phases are separated by type, not by
-	// arrival order. 10 and 11 are reserved for GETADDR/ADDR.
+	// arrival order.
 	MsgAuth  = 9
 	MsgAuth2 = 12
+	// MsgGetAddr (empty payload) and MsgAddr (below) are the gossip pair
+	// mirrored from src/net.h for Task 8. params_test.go asserts these two
+	// numbers, plus AddrMaxEntries, against src/net.h so a one-sided edit
+	// forks the network silently no longer.
+	MsgGetAddr = 10
+	MsgAddr    = 11
 )
+
+// AddrEntrySize is MSG_ADDR's fixed per-entry wire size (src/net.h's
+// ADDR_MSG_ENTRY_SIZE): ip[16] v4-mapped | port u16 LE | seen u32 LE.
+// AddrMaxEntries is ADDR_MAX_ENTRIES: a count above this is rejected, never
+// truncated.
+const (
+	AddrEntrySize  = 22
+	AddrMaxEntries = 180
+)
+
+// AddrEntry is one gossiped peer address, MSG_ADDR's 22-byte wire entry
+// (src/net.h). IP is always 16 bytes, v4-mapped for IPv4 addresses, matching
+// addr_t in src/addr.h.
+type AddrEntry struct {
+	IP   [16]byte
+	Port uint16
+	Seen uint32
+}
+
+// PutAddrEntry serialises one entry, byte-identical to src/net.c's
+// addr_msg_put: 16 bytes of IP, then port and seen little-endian. Always
+// exactly AddrEntrySize bytes, matching addr_msg_put's "no failure mode"
+// (the caller controls the destination size, here the return value's own
+// fixed-size array).
+func PutAddrEntry(ip [16]byte, port uint16, seen uint32) [AddrEntrySize]byte {
+	var out [AddrEntrySize]byte
+	copy(out[:16], ip[:])
+	binary.LittleEndian.PutUint16(out[16:18], port)
+	binary.LittleEndian.PutUint32(out[18:22], seen)
+	return out
+}
+
+// ErrAddrMalformed is returned by DecodeAddrMsg on any count/length
+// mismatch. Per the wire-format spec (task-7-report.md), malformed MSG_ADDR
+// input is always rejected wholesale, never truncated or best-effort
+// parsed - this is the untrusted-input boundary, so the check order below
+// (count vs AddrMaxEntries, then count*22 against the actual buffer length)
+// must run, in that order, before anything is indexed.
+var ErrAddrMalformed = errors.New("malformed addr message")
+
+// DecodeAddrMsg decodes MSG_ADDR's payload (u16 count LE, then count *
+// 22-byte entries back to back, no padding, no per-entry length prefix),
+// mirroring src/net.c's handle_addr_msg + addr_msg_ingest split exactly:
+// count is validated against AddrMaxEntries and against the payload length
+// BEFORE it is used to size or index anything. A payload shorter than 2
+// bytes, a count above AddrMaxEntries, or a length that isn't exactly
+// count*22 (short OR long) all return ErrAddrMalformed rather than
+// truncating - Go slicing would otherwise panic on hostile input, which is
+// itself a denial of service, so every bound is checked with plain integer
+// comparisons before any slice expression touches the count. count == 0
+// with a bare 2-byte payload is legal and decodes to an empty, non-nil
+// slice - not an error - matching what handle_getaddr emits when the
+// node's own tables are empty.
+func DecodeAddrMsg(payload []byte) ([]AddrEntry, error) {
+	if len(payload) < 2 {
+		return nil, ErrAddrMalformed
+	}
+	count := binary.LittleEndian.Uint16(payload[:2])
+	if count > AddrMaxEntries {
+		return nil, ErrAddrMalformed
+	}
+	body := payload[2:]
+	if uint32(count)*AddrEntrySize != uint32(len(body)) {
+		return nil, ErrAddrMalformed
+	}
+	entries := make([]AddrEntry, count)
+	for i := uint16(0); i < count; i++ {
+		e := body[uint32(i)*AddrEntrySize:]
+		var ip [16]byte
+		copy(ip[:], e[:16])
+		entries[i] = AddrEntry{
+			IP:   ip,
+			Port: binary.LittleEndian.Uint16(e[16:18]),
+			Seen: binary.LittleEndian.Uint32(e[18:22]),
+		}
+	}
+	return entries, nil
+}
+
+// EncodeAddrMsg builds MSG_ADDR's payload from entries: exact concatenation
+// of a u16 count LE and each 22-byte entry back to back (mirrors
+// handle_getaddr's own construction in src/net.c). A nil or empty slice
+// still produces the legal 2-byte "count=0" payload.
+func EncodeAddrMsg(entries []AddrEntry) []byte {
+	out := make([]byte, 2+len(entries)*AddrEntrySize)
+	binary.LittleEndian.PutUint16(out[:2], uint16(len(entries)))
+	for i, e := range entries {
+		b := PutAddrEntry(e.IP, e.Port, e.Seen)
+		copy(out[2+i*AddrEntrySize:], b[:])
+	}
+	return out
+}
 
 type Hash = [32]byte
 
