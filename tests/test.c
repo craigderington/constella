@@ -30,6 +30,25 @@
 static int fails, runs;
 #define CHECK(c) do { runs++; if (!(c)) { fails++; fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #c); } } while (0)
 
+/* Tests that drive the real ./constella binary. Skipping when it is absent is
+ * right for a bare `./test_constella` during development, but a SILENT skip is
+ * how a guard stops existing without anyone noticing: with ./constella missing
+ * the suite prints 533/533 and exits 0, twenty-one checks lighter, and the
+ * Ruling AF end-to-end secret guard simply evaporates. That is the same
+ * failure the explorer's params.h drift guard had inside docker build, which
+ * CLAUDE.md records. CONSTELLA_CI=1 (set by the Makefile) turns the skip into
+ * a failure, so the canonical `make test` path can never lose them quietly. */
+static int need_constella(const char *what) {
+    if (!access("./constella", X_OK)) return 1;
+    if (getenv("CONSTELLA_CI")) {
+        fprintf(stderr, "FAIL %s: ./constella missing under CONSTELLA_CI=1\n", what);
+        runs++; fails++;
+        return 0;
+    }
+    fprintf(stderr, "SKIP %s: no ./constella\n", what);
+    return 0;
+}
+
 static void t_blake2b(void) {
     uint8_t h[32]; char x[65];
     blake2b(h, 32, "", 0); hex_enc(x, h, 32);
@@ -783,7 +802,7 @@ static int cli_probe(const wallet_t *node_id, const char *sub, char *out, size_t
 }
 
 static void t_cli_socket(void) {
-    if (access("./constella", X_OK)) { fprintf(stderr, "SKIP cli socket: no ./constella\n"); return; }
+    if (!need_constella("cli socket")) return;
     static const char *want = "1.25000000  (nonce 3, next 4, height 7)";
     wallet_t n1, n2;
     uint8_t seed[32];
@@ -1255,7 +1274,7 @@ static int node_start_stop(const char *dir, uint16_t port) {
  * would be identical network-wide and an attacker reading the source could
  * work out offline which addresses land in which of a victim's buckets. */
 static void t_addr_node_lifecycle(void) {
-    if (access("./constella", X_OK)) { fprintf(stderr, "SKIP node lifecycle: no ./constella\n"); return; }
+    if (!need_constella("node lifecycle")) return;
     char dir[] = "/tmp/constella-life-XXXXXX";
     if (!mkdtemp(dir)) { CHECK(0); return; }
     char path[320];

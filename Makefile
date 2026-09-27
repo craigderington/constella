@@ -28,7 +28,7 @@ thermal_sim: src/throttle.c src/util.c tests/thermal_sim.c src/throttle.h
 	$(CC) $(CFLAGS) -Isrc -o $@ src/throttle.c src/util.c tests/thermal_sim.c $(LDFLAGS)
 
 unit: constella test_constella thermal_sim
-	./test_constella
+	CONSTELLA_CI=1 ./test_constella
 	./thermal_sim
 
 test: unit
