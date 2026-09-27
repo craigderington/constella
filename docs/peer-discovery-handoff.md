@@ -122,13 +122,13 @@ logs `known new=0 tried=0`, so the gate stays open. Regression test
 
 ---
 
-## Other findings (not blocking, not fixed)
+## Other findings
 
 | # | sev | finding |
 |---|---|---|
 | 3 | MED | `is_stale()` is inert in production. Threshold is `g_max_seen/4` (`src/addr.c:211`); `seen` is unix time, so the threshold is ~14.2 years. Task 3's 70% stale-skip never executes. Tests only pass small synthetic `now`. |
 | 4 | MED | The explorer's entire `AddrBook` is unreachable. The node sends `ADDR` only in answer to `GETADDR` (`src/net.c:402`) and sends `GETADDR` only outbound (`src/net.c:501`); the explorer is always the dialer and never sends `GETADDR`. 221 production + 195 test lines, green, never executed. |
-| 5 | MED | Seeds bypass netgroup diversity (`src/net.c:598` never consults the avoid list), and with ≥8 seeds `fill_outbound` returns early forever, suppressing table-driven dialling. |
+| 5 | MED | **Fixed 2026-09-27:** seeds now share the eight-peer outbound budget and netgroup exclusion with table-selected peers; a seed list can no longer crowd out diverse learned peers. |
 | 7 | LOW | The spec's one declared open question — measure `getaddrinfo` vs a minimal resolver — was never measured; `getaddrinfo` adopted by default. |
 | 8 | LOW | `GETADDR` costs ~66M 8-byte memcmps (~0.1 s) per connection, arrangeable for free by an attacker via fabricated netgroups. |
 | 9 | LOW | Reader traps: the misleading seed comment (`src/net.c:616-618`); `src/addr.c:207-210` says `seen` has "no fixed unit" (it is unix seconds); `CLAUDE.md:110-111` calls the per-peer-identity mainnet gate "closed", contradicting `CLAUDE.md:178` and bug-log DECISION-006; `CLAUDE.md:26-27` omits `addr` from Layout; `docs/protocol.md:238-240` implies seeds populate the tables. |
@@ -231,7 +231,7 @@ single choke point.
    `addr_good` never refreshes `seen` and `g_max_seen` is monotonic and restored
    unclamped (`src/addr.c:469`), so a naive fix would permanently down-weight
    honest `tried` entries after any clock skew.
-4. **Findings 5, 6, 9, 10** — correctness and honesty of the record.
+4. **Findings 6, 9, 10** — correctness and honesty of the record.
 5. **A live full-stack run** — node + explorer + postgres, with discovery doing
    the peering. This has never been done; it is also the only thing that would
    exercise the explorer's gossip wiring end to end.

@@ -309,6 +309,87 @@ unverified defects.
   overrepresented source netgroup, otherwise the newest connection overall.
   Old and netgroup-diverse peers are retained.
 
+### BUG-031: A legal future-dated tip stalled the built-in miner
+
+- Severity: high
+- Area: share construction / liveness
+- Reproduction: accept a valid tip timestamped `MAX_FUTURE` seconds ahead of
+  local wall time, then construct the next job.
+- Cause: jobs used bare wall time even though a child may be at most 600
+  seconds behind its parent.
+- Status: fixed; child jobs use `max(parent_time, wall_time)`.
+
+### BUG-032: One orphan proof amplified into many payloads
+
+- Severity: high
+- Area: C and Go orphan pools
+- Reproduction: mine one valid unknown-parent header, then resend it with many
+  different transaction/claim payloads.
+- Cause: the share ID commits only the header, while orphan dedup compared the
+  entire raw message and did not verify the header's payload root.
+- Status: fixed; both implementations validate the root before caching and
+  deduplicate by header ID. The C node keeps signature checks behind PoW.
+
+### BUG-033: Consensus-invalid disk records survived recovery
+
+- Severity: high
+- Area: sharechain persistence
+- Reproduction: place a fully framed but invalid record in `shares.v3`, then
+  restart repeatedly.
+- Cause: replay advanced the last-good offset before checking whether the
+  record was accepted and silently skipped invalid/orphan/duplicate records.
+- Status: fixed; only accepted parent-before-child records advance the durable
+  prefix. Corrupt suffixes are truncated and synced, healing failures abort
+  startup, and read I/O errors fail closed without truncating data.
+
+### BUG-034: Historical side claims could poison current mining jobs
+
+- Severity: high
+- Area: science-lane reorg recovery
+- Reproduction: retain a local claim on a side branch from an older epoch,
+  then rebuild state while mining in a later epoch.
+- Cause: recovery validated the claim in its historical region and inserted it
+  into the current template; the node then mined shares its own validator
+  rejected. Anchor-changing recovery also cleared newly recovered claims after
+  adding them.
+- Status: fixed; recovery first installs the next share's exact region, clears
+  stale claims, and admits only side claims from the active epoch that verify
+  against the active anchor.
+
+### BUG-035: Newly generated payout keys were not durable
+
+- Severity: high
+- Area: wallet / node key storage
+- Reproduction: lose power after first-run key creation but before filesystem
+  writeback, after the node has begun mining to the generated address.
+- Cause: key creation used one unchecked `write` and no file or directory
+  synchronization.
+- Status: fixed; creation writes a mode-0600 temporary inode completely,
+  syncs it, publishes it without replacement via `link`, and syncs the parent
+  directory before returning the key to the caller.
+
+### BUG-036: Seeds bypassed outbound eclipse defenses
+
+- Severity: high
+- Area: peer discovery
+- Reproduction: configure eight or more seeds, including several from one
+  netgroup.
+- Cause: seed dials bypassed both the eight-outbound cap and the netgroup
+  exclusion used for learned peers, permanently crowding out table selection.
+- Status: fixed; configured, DNS, and learned peers now share one outbound
+  budget and one netgroup-diversity rule.
+
+### BUG-037: Explorer ledger checks ignored every account after the first 64
+
+- Severity: medium
+- Area: consensus monitoring
+- Reproduction: build a ledger with more than 64 accounts and wait through
+  repeated node cross-checks.
+- Cause: every pass sorted the addresses and truncated the same prefix, while
+  the UI still reported an unqualified ledger match.
+- Status: fixed; bounded checks rotate through the complete address set, and
+  ledgers above the bound are explicitly labelled as sampled coverage.
+
 ## Protocol Decisions / Limitations
 
 ### DESIGN-001: State-invalid transactions remain in blocks

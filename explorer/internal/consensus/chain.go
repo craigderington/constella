@@ -161,14 +161,14 @@ func (c *Chain) AddAt(m *proto.Msg, now int64) (added []*Node, missing *proto.Ha
 	}
 	par := c.nodes[m.Share.Prev]
 	if par == nil {
-		if m.Share.Time > 1<<63-1 || (now > 0 && m.Share.Time > uint64(now) &&
-			m.Share.Time-uint64(now) > proto.MaxFuture) || m.Share.Bits < proto.BitsMin ||
-			m.Share.Bits > proto.BitsMax || m.Share.K >= proto.KMax ||
-			TupleLen(Candidate(&m.Share)) < proto.ShareK {
+		if m.Share.Version != proto.ShareVersion || m.Share.Time > 1<<63-1 ||
+			(now > 0 && m.Share.Time > uint64(now) &&
+				m.Share.Time-uint64(now) > proto.MaxFuture) || m.Share.Bits < proto.BitsMin ||
+			m.Share.Bits > proto.BitsMax || m.Share.K >= proto.KMax {
 			return nil, nil, ErrInvalid
 		}
 		for _, o := range c.orphans[m.Share.Prev] {
-			if bytes.Equal(o.Raw, m.Raw) {
+			if o.Share.ID() == id {
 				prev := m.Share.Prev
 				return nil, &prev, nil
 			}
@@ -176,6 +176,14 @@ func (c *Chain) AddAt(m *proto.Msg, now int64) (added []*Node, missing *proto.Ha
 		if len(m.Raw) > 16<<20-c.orphanBytes || c.orphanCount() >= 16384 {
 			prev := m.Share.Prev
 			return nil, &prev, nil
+		}
+		// Validate every parent-independent commitment before retaining the
+		// message. The share ID commits only the header, so comparing whole raw
+		// messages allowed one valid proof to fill the orphan budget with many
+		// different, uncommitted payloads.
+		if proto.ShareRoot(m.Txs, m.Claims) != m.Share.TxRoot ||
+			TupleLen(Candidate(&m.Share)) < proto.ShareK {
+			return nil, nil, ErrInvalid
 		}
 		c.orphans[m.Share.Prev] = append(c.orphans[m.Share.Prev], m)
 		c.orphanBytes += len(m.Raw)

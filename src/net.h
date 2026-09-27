@@ -101,6 +101,8 @@ void net_handshake_ok_vector(void);
 int  net_seed_count_vector(int fallback_only);
 int  net_inbound_add_vector(const uint8_t ip[16]);
 int  net_inbound_group_count_vector(const uint8_t ip[16]);
+int  net_outbound_add_vector(const uint8_t ip[16]);
+int  net_outbound_slot_vector(const uint8_t ip[16]);
 
 typedef void (*net_msg_fn)(int peer, uint8_t type, const uint8_t *p, uint16_t len);
 typedef void (*net_conn_fn)(int peer);

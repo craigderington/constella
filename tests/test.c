@@ -48,6 +48,32 @@ static void t_chain_request_batch_continuation(void) {
     CHECK(node_chain_request_due_vector(peer, want, 1500, 106) == 1);
 }
 
+/* A valid peer share may sit MAX_FUTURE seconds ahead of our wall clock. The
+ * child template must inherit that timestamp when necessary; using bare `now`
+ * makes the child more than 600 seconds older than its parent and stalls the
+ * built-in miner for almost two hours. */
+static void t_future_tip_does_not_stall_miner(void) {
+    int64_t now = 2000000000;
+    uint64_t future = (uint64_t)now + MAX_FUTURE;
+    uint64_t child = node_next_share_time_vector(future, now);
+    CHECK(child == future);
+    CHECK(child >= future - 600);
+    CHECK(child - (uint64_t)now <= MAX_FUTURE);
+    CHECK(node_next_share_time_vector((uint64_t)now - 1, now) == (uint64_t)now);
+}
+
+/* Reorg recovery feeds claims directly into the next mining template. A
+ * claim from an old side-branch epoch can be perfectly valid in its original
+ * region and still make every newly mined share invalid in the active one. */
+static void t_sci_recovery_uses_active_region(void) {
+    uint8_t anchor[32] = {0}, miner[32], other_anchor[32];
+    memset(miner, 1, sizeof miner);
+    memset(other_anchor, 2, sizeof other_anchor);
+    CHECK(node_sci_recoverable_vector(1, 2, anchor, miner, 950, 776));
+    CHECK(!node_sci_recoverable_vector(1, SCI_EPOCH + 1, anchor, miner, 950, 776));
+    CHECK(!node_sci_recoverable_vector(1, 2, other_anchor, miner, 950, 776));
+}
+
 /* Tests that drive the real ./constella binary. Skipping when it is absent is
  * right for a bare `./test_constella` during development, but a SILENT skip is
  * how a guard stops existing without anyone noticing: with ./constella missing
@@ -325,22 +351,36 @@ static void t_sci_basics(void) {
 
 static int keep_all(void *c) { (void)c; return 1; }
 
+static int mine_valid_share(share_t *s, int *found_tlen) {
+    job_t *j = job_new(s, 1);
+    uint64_t *bm = malloc(SIEVE_W / 8);
+    if (!j || !bm) { free(bm); job_put(j); return 0; }
+    search_out o = {0};
+    int r = 0;
+    for (uint64_t w = 0; w < 4096 && r != 1; w++)
+        r = job_search(j, w, bm, &o, keep_all, NULL);
+    if (r == 1) {
+        s->k = o.k;
+        if (found_tlen) *found_tlen = o.tlen;
+    }
+    free(bm);
+    job_put(j);
+    return r == 1;
+}
+
 /* Mine a real share and check the independent verifier agrees. */
 static void t_mine(unsigned bits, int print) {
     share_t s = {0}; s.version = SHARE_VERSION; s.bits = (uint16_t)bits; s.time = 1790121600ULL + bits;
-    job_t *j = job_new(&s, 1);
-    uint64_t *bm = malloc(SIEVE_W / 8);
-    search_out o; int r = 0;
-    for (uint64_t w = 0; w < 4096 && r != 1; w++) r = job_search(j, w, bm, &o, keep_all, NULL);
-    CHECK(r == 1);
-    if (r == 1) {
-        s.k = o.k; bn p;
+    int found_tlen = -1;
+    int found = mine_valid_share(&s, &found_tlen);
+    CHECK(found);
+    if (found) {
+        bn p;
         int tl = share_verify(&s, &p);
-        CHECK(tl == o.tlen && tl >= SHARE_K);
+        CHECK(tl == found_tlen && tl >= SHARE_K);
         CHECK(bn_bitlen(&p, bn_limbs(bits)) == (int)bits);
         if (print) { char d[400]; bn_to_dec(d, sizeof d, &p, bn_limbs(bits)); printf("%s %d\n", d, tl); }
     }
-    free(bm); job_put(j);
 }
 
 /* Region base computed independently in Python (hashlib + int.from_bytes);
@@ -633,12 +673,47 @@ static void t_chain_recovery(void) {
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     CHECK(fd >= 0);
     if (fd >= 0) {
-        CHECK(write(fd, "\x01", 1) == 1); /* truncated record length */
+        /* A complete, correctly framed record can still be corrupt. This one
+         * points to genesis and has a valid empty payload but no proof of work.
+         * The old loader silently skipped it, advanced `good` past it, then
+         * retained it forever when the truncated suffix finally triggered
+         * recovery. */
+        share_t g = {0}, bad = {0};
+        g.version = SHARE_VERSION; g.time = GENESIS_TIME; g.bits = GENESIS_BITS;
+        bad.version = SHARE_VERSION; bad.height = 1; bad.time = GENESIS_TIME + 1;
+        bad.bits = GENESIS_BITS;
+        share_id(bad.prev, &g);
+        uint8_t msg[SHARE_MSG_MAX];
+        size_t len = share_msg(msg, &bad, NULL, 0, NULL, 0);
+        uint8_t lh[2] = {(uint8_t)len, (uint8_t)(len >> 8)};
+        CHECK(write(fd, lh, sizeof lh) == (ssize_t)sizeof lh);
+        CHECK(write(fd, msg, len) == (ssize_t)len);
+        CHECK(write(fd, "\x01", 1) == 1); /* truncated record length after it */
         close(fd);
     }
     CHECK(chain_init(dir, NULL) == 0);
     struct stat st;
-    CHECK(!stat(path, &st) && st.st_size == 0); /* bad suffix is not replayed forever */
+    CHECK(!stat(path, &st) && st.st_size == 0); /* invalid record and suffix are healed */
+
+    /* An unknown-parent header with one real proof must not be reusable across
+     * arbitrarily many different payloads. tx_root commits to the empty lists;
+     * the first message adds an uncommitted transaction and must be rejected,
+     * leaving room for the genuinely committed form of the same header. */
+    share_t o = {0};
+    o.version = SHARE_VERSION; o.height = 1; o.time = GENESIS_TIME + 2;
+    o.bits = BITS_MIN;
+    memset(o.prev, 0xa5, sizeof o.prev);
+    CHECK(mine_valid_share(&o, NULL));
+    uint8_t miss[32], invalid[SHARE_MSG_MAX], valid[SHARE_MSG_MAX];
+    tx_t junk = {0};
+    size_t ilen = share_msg(invalid, &o, &junk, 1, NULL, 0);
+    CHECK(chain_submit(invalid, ilen, miss, 0) == CH_INVALID);
+    CHECK(chain_orphans() == 0);
+    size_t vlen = share_msg(valid, &o, NULL, 0, NULL, 0);
+    CHECK(chain_submit(valid, vlen, miss, 0) == CH_ORPHAN);
+    CHECK(chain_orphans() == 1);
+    CHECK(chain_submit(invalid, ilen, miss, 0) == CH_ORPHAN); /* same header id: deduped */
+    CHECK(chain_orphans() == 1);
     unlink(path);
     rmdir(dir);
 }
@@ -852,6 +927,25 @@ static void t_cli_socket(void) {
     unsetenv("CONSTELLA_KEY");
     memset(&w, 0, sizeof w);
     unlink(kf);
+    rmdir(dir);
+}
+
+static void t_wallet_durable_create(void) {
+    char dir[] = "/tmp/constella-wallet-XXXXXX", path[256], tmp[260];
+    if (!mkdtemp(dir)) { CHECK(0); return; }
+    snprintf(path, sizeof path, "%s/wallet.key", dir);
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    wallet_t a, b;
+    CHECK(wallet_load(&a, path, 1) == 1);
+    struct stat st;
+    CHECK(!stat(path, &st) && st.st_size == 65 && (st.st_mode & 0777) == 0600);
+    CHECK(access(tmp, F_OK) != 0);
+    CHECK(wallet_load(&b, path, 0) == 0);
+    CHECK(!memcmp(a.pk, b.pk, 32));
+    CHECK(wallet_load(&b, path, 1) == 0); /* create never replaces an existing key */
+    crypto_wipe(&a, sizeof a);
+    crypto_wipe(&b, sizeof b);
+    unlink(path);
     rmdir(dir);
 }
 
@@ -1717,6 +1811,25 @@ static void t_net_outbound_fills(void) {
     CHECK(net_select_outbound_vector(out, NET_OUTBOUND, NULL, 0) == NET_OUTBOUND);
 }
 
+/* Seeds used to skip the rule above entirely: sixteen configured seeds could
+ * occupy sixteen outbound slots, even if every address came from one /16,
+ * and fill_outbound would then never consult the diverse address tables. */
+static void t_net_seed_outbound_diversity(void) {
+    net_stop();
+    uint8_t first[16], same[16], ip[16];
+    mk4(first, 198, 51, 100, 1);
+    mk4(same, 198, 51, 100, 2);
+    CHECK(net_outbound_add_vector(first) == 1);
+    CHECK(net_outbound_slot_vector(same) == 0);
+    for (int i = 1; i < NET_OUTBOUND; i++) {
+        mk4(ip, (uint8_t)(20 + i), 1, 1, 1);
+        CHECK(net_outbound_add_vector(ip) == 1);
+    }
+    mk4(ip, 99, 1, 1, 1);
+    CHECK(net_outbound_slot_vector(ip) == 0);
+    net_stop();
+}
+
 /* Review Focus 3: a node must never select its own advertised address. The
  * handshake's self-identity check catches a self-dial too, but only after
  * spending an outbound slot and a round trip on it, every cycle. */
@@ -1902,7 +2015,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

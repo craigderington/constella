@@ -3,12 +3,13 @@
 package indexer
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"log"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/craig/constella/explorer/internal/consensus"
@@ -27,10 +28,13 @@ type Indexer struct {
 	lastReq       time.Time
 
 	// consensus cross-check: GETACCT replies arrive in request order
-	pending  []proto.Hash
-	checkH   uint32
-	checkOK  int
-	checkBad []string
+	pending     []proto.Hash
+	checkH      uint32
+	checkOK     int
+	checkBad    []string
+	checkAll    int
+	checkPos    int
+	checkSample bool
 }
 
 func New(s *store.Store, peer *p2p.Client) *Indexer {
@@ -137,7 +141,21 @@ func (x *Indexer) flush(ctx context.Context) {
 	x.dirty = false
 }
 
-// startCheck asks the node for every account's state and compares on reply.
+func accountCheckBatch(addrs []proto.Hash, pos, limit int) ([]proto.Hash, int) {
+	if len(addrs) <= limit {
+		return addrs, 0
+	}
+	start := pos % len(addrs)
+	batch := make([]proto.Hash, limit)
+	for i := range limit {
+		batch[i] = addrs[(start+i)%len(addrs)]
+	}
+	return batch, (start + limit) % len(addrs)
+}
+
+// startCheck asks the node for a bounded, rotating account sample. Below the
+// bound it checks every account; above it, successive checks eventually cover
+// the whole sorted ledger instead of checking the same first 64 forever.
 func (x *Indexer) startCheck() {
 	if x.ledger == nil || len(x.pending) > 0 || !x.peer.Connected() {
 		return
@@ -146,10 +164,10 @@ func (x *Indexer) startCheck() {
 	for a := range x.ledger.Accounts {
 		addrs = append(addrs, a)
 	}
-	sort.Slice(addrs, func(i, j int) bool { return string(addrs[i][:]) < string(addrs[j][:]) })
-	if len(addrs) > 64 {
-		addrs = addrs[:64]
-	}
+	slices.SortFunc(addrs, func(a, b proto.Hash) int { return bytes.Compare(a[:], b[:]) })
+	x.checkAll = len(addrs)
+	x.checkSample = len(addrs) > 64
+	addrs, x.checkPos = accountCheckBatch(addrs, x.checkPos, 64)
 	x.checkH, x.checkOK, x.checkBad = x.chain.Tip.Height, 0, nil
 	for _, a := range addrs {
 		x.pending = append(x.pending, a)
@@ -181,6 +199,8 @@ func (x *Indexer) onAcct(ctx context.Context, p []byte) {
 	case len(x.checkBad) > 0:
 		status = fmt.Sprintf("mismatch: %d accounts differ (%v)", len(x.checkBad), x.checkBad)
 		log.Printf("indexer: CONSENSUS MISMATCH at h=%d: %v", x.checkH, x.checkBad)
+	case x.checkSample:
+		status = "sample"
 	default:
 		status = "ok"
 	}
@@ -191,6 +211,7 @@ func (x *Indexer) onAcct(ctx context.Context, p []byte) {
 		"check":        status,
 		"check_height": fmt.Sprint(x.checkH),
 		"check_count":  fmt.Sprint(x.checkOK + len(x.checkBad)),
+		"check_total":  fmt.Sprint(x.checkAll),
 		"check_at":     time.Now().UTC().Format(time.RFC3339),
 	})
 }
