@@ -1225,7 +1225,8 @@ static int peers_secret(const char *path, uint8_t out[16]) {
  * the persistence code t_addr_persist already covers - and node.c is not
  * linked into this test binary. Returns 0 only if the node started, reached
  * addr_load and exited 0 (so its addr_save at shutdown ran). */
-static int node_start_stop(const char *dir, uint16_t port) {
+static int node_start_stop_env(const char *dir, uint16_t port,
+                              const char *peers, const char *advertise) {
     int pfd[2];
     if (pipe(pfd)) return -1;
     char pbuf[16];
@@ -1238,7 +1239,10 @@ static int node_start_stop(const char *dir, uint16_t port) {
         setenv("CONSTELLA_DATA", dir, 1);
         setenv("CONSTELLA_PORT", pbuf, 1);
         setenv("CONSTELLA_THREADS", "1", 1);
-        unsetenv("CONSTELLA_PEERS");
+        if (peers) setenv("CONSTELLA_PEERS", peers, 1);
+        else unsetenv("CONSTELLA_PEERS");
+        if (advertise) setenv("CONSTELLA_ADVERTISE", advertise, 1);
+        else unsetenv("CONSTELLA_ADVERTISE");
         unsetenv("CONSTELLA_KEY");
         unsetenv("CONSTELLA_ADDR");
         execl("./constella", "constella", (char *)NULL);
@@ -1265,6 +1269,62 @@ static int node_start_stop(const char *dir, uint16_t port) {
     waitpid(pid, &status, 0);
     if (!ready) return -1;
     return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
+
+static int node_start_stop(const char *dir, uint16_t port) {
+    return node_start_stop_env(dir, port, NULL, NULL);
+}
+
+/* B1. `addr_add` had exactly two call sites - gossip ingest and self-advertise
+ * - so a node that had never spoken to anyone had no way to put ANY address
+ * into its tables, and a fresh node with no configuration could never discover
+ * a peer. That is the spec's first Goal and the incident this work exists to
+ * fix, and every one of 559 checks passed with it broken, because no test
+ * drove a real node's seed path and then looked in the tables. */
+static void t_addr_seeds_enter_tables(void) {
+    if (!need_constella("seeds enter tables")) return;
+    char dir[] = "/tmp/constella-seed-XXXXXX";
+    if (!mkdtemp(dir)) { CHECK(0); return; }
+
+    /* 198.51.100.7 is TEST-NET-2: routable as far as addr_is_routable is
+     * concerned (so it is not filtered) but with no route here, so connect
+     * goes to EINPROGRESS and never completes. Exactly the shape of a real
+     * unreachable seed. */
+    CHECK(node_start_stop_env(dir, 18221, "198.51.100.7:7043", NULL) == 0);
+    CHECK(addr_load(dir) == 0);
+    CHECK(addr_count(0) == 1);                 /* the seed reached `new` */
+    CHECK(addr_count(1) == 0);                 /* and was NOT promoted by one dial */
+
+    /* Prove the single entry is that seed and not something else: re-adding an
+     * address already present updates it in place, so the count must not grow. */
+    uint8_t ip[16];
+    mk4(ip, 198, 51, 100, 7);
+    CHECK(addr_add(ip, 7043, 1000) == 1);
+    CHECK(addr_count(0) == 1);
+}
+
+/* B2. net_advertise used to addr_add our OWN address. addr_save persisted it,
+ * so on the next start addr_load restored it, net_init's
+ * `addr_count(0) + addr_count(1) == 0` bootstrap gate was false and the seed
+ * tiers never ran - while select_outbound skipped that same entry as ours.
+ * The node sat with one known address, no candidates and no recovery, since
+ * nothing removes an entry. It hit exactly the public routable nodes that
+ * would serve as seeds, and missed Docker (RFC1918, refused as unroutable),
+ * which is why no run caught it. */
+static void t_addr_advertise_keeps_bootstrap_open(void) {
+    if (!need_constella("advertise keeps bootstrap open")) return;
+    char dir[] = "/tmp/constella-adv-XXXXXX";
+    if (!mkdtemp(dir)) { CHECK(0); return; }
+
+    CHECK(node_start_stop_env(dir, 18231, NULL, "198.51.100.7:7043") == 0);
+    CHECK(addr_load(dir) == 0);
+    CHECK(addr_count(0) + addr_count(1) == 0);   /* our own address is not stored */
+
+    /* The second start is the one that mattered: the gate has to still be open
+     * so the seed tiers run at all. */
+    CHECK(node_start_stop_env(dir, 18232, NULL, "198.51.100.7:7043") == 0);
+    CHECK(addr_load(dir) == 0);
+    CHECK(addr_count(0) + addr_count(1) == 0);
 }
 
 /* Ruling AF: the node's address-store lifecycle. What was missing was never
@@ -1782,7 +1842,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_advertise_parse();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_advertise_parse();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
