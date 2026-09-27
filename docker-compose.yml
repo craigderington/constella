@@ -14,7 +14,6 @@ x-env: &env
   CONSTELLA_THREADS: "2"
   CONSTELLA_DUTY: "50"
   CONSTELLA_BATTERY_PAUSE: "1"
-  CONSTELLA_P2P_KEY: ${CONSTELLA_P2P_KEY:-}
 
 services:
   node1:
@@ -72,7 +71,6 @@ services:
       node1: { condition: service_started }
     environment:
       EXPLORER_NODE: node1:7043
-      EXPLORER_P2P_KEY: ${EXPLORER_P2P_KEY:-}
       EXPLORER_DB: ${EXPLORER_DB:-postgres://constella:constella@postgres:5432/explorer?sslmode=disable}
       EXPLORER_HTTP: ":3071"
     ports: ["127.0.0.1:3071:3071"]

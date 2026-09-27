@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/craig/constella/explorer/internal/proto"
+	"golang.org/x/crypto/blake2b"
 )
 
 // The transport crypto is implemented twice, here and in src/net.c, and the
@@ -19,7 +20,6 @@ import (
 // change to key derivation, the AD, the nonce layout or the direction split
 // fails on whichever side moved first.
 const (
-	vecAuthProof = "c4afcebefb54c3f0c50b62ed7e07952ae5143647bb8ba8f6f3e39367f6ead244"
 	vecKeyLo     = "64e678befc6f30cc634c3fab917765710082860242940aab5efa6e61fe321938"
 	vecKeyHi     = "e267cd603f4c9e72797c67a49a384b2fd18f41ba87974d76859f2a51332167fd"
 	// header || ciphertext || tag, type 2, counter 0, "constella", lo key
@@ -50,9 +50,8 @@ func sealVec(t *testing.T, psk, local, remote []byte, seq uint64, typ byte, text
 func TestTransportVector(t *testing.T) {
 	psk, low, high := vecInputs()
 	for _, c := range []struct{ name, got, want string }{
-		{"auth proof", hex.EncodeToString(authProof(psk, low)), vecAuthProof},
-		{"lo key", hex.EncodeToString(sessionKey(psk, "lo", low, high)), vecKeyLo},
-		{"hi key", hex.EncodeToString(sessionKey(psk, "hi", low, high)), vecKeyHi},
+		{"lo key", hex.EncodeToString(sessionKeyVec(psk, "lo", low, high)), vecKeyLo},
+		{"hi key", hex.EncodeToString(sessionKeyVec(psk, "hi", low, high)), vecKeyHi},
 		{"lo frame", hex.EncodeToString(sealVec(t, psk, low, high, 0, 2, "constella")), vecFrameLo},
 		{"hi frame", hex.EncodeToString(sealVec(t, psk, high, low, 1, 5, "second frame, counter 1")), vecFrameHi},
 	} {
@@ -232,4 +231,34 @@ func TestDropClearsConnected(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// Derivation helpers for the pinned AEAD frame vectors. These were the live
+// PSK key schedule until per-peer static identities replaced it; the
+// production handshake now calls newSessionKeys directly. They live here
+// because their only remaining job is to rebuild the fixed keys the frame
+// vectors are pinned against -- vecFrameLo/vecFrameHi are cross-pinned with
+// the C node's net_seal_vector, so the framing they exercise is live even
+// though this derivation is not.
+func sessionKeyVec(key []byte, direction string, low, high []byte) []byte {
+	h, _ := blake2b.New256(key)
+	h.Write([]byte("CSTL-P2P1"))
+	h.Write([]byte(direction))
+	h.Write(low)
+	h.Write(high)
+	return h.Sum(nil)
+}
+
+func newSession(key, local, remote []byte) (*session, error) {
+	low, high := local, remote
+	localLow := string(local) < string(remote)
+	if !localLow {
+		low, high = remote, local
+	}
+	txKey := sessionKeyVec(key, "lo", low, high)
+	rxKey := sessionKeyVec(key, "hi", low, high)
+	if !localLow {
+		txKey, rxKey = rxKey, txKey
+	}
+	return newSessionKeys(txKey, rxKey)
 }
