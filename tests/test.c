@@ -1584,6 +1584,94 @@ static void t_addr_gossip_guards(void) {
     CHECK(r[2] == 1);   /* an unsolicited ADDR flood got the peer dropped */
 }
 
+/* Task 9, the diversity property. Eight outbound slots, each in a DISTINCT
+ * netgroup - otherwise one /16 that happens to dominate the tables owns a
+ * node's whole outbound view, which is the eclipse this task exists to make
+ * expensive. addr_select gives no uniqueness guarantee across separate calls,
+ * so the avoid list - seeded with the netgroups current outbound peers hold,
+ * and extended with each pick - is the entire mechanism. */
+static void t_net_outbound_diversity(void) {
+    uint8_t secret[16]; memset(secret, 0x5e, 16);
+    addr_init(secret);
+    uint8_t ip[16];
+    for (int i = 0; i < 12; i++) {
+        mk4(ip, 198, 51, 100, (uint8_t)(1 + i));       /* twelve hosts, ONE /16 */
+        CHECK(addr_add(ip, 7043, 3000 + (uint32_t)i) == 1);
+    }
+    CHECK(addr_count(0) == 12);                        /* the fixture really is full */
+
+    addr_t out[NET_OUTBOUND];
+    CHECK(net_select_outbound_vector(out, NET_OUTBOUND, NULL, 0) == 1);
+
+    /* and a netgroup already held by an outbound peer takes the last one */
+    uint8_t have[1][8];
+    addr_netgroup(out[0].ip, have[0]);
+    CHECK(net_select_outbound_vector(out, NET_OUTBOUND, have, 1) == 0);
+}
+
+/* The other half: diversity must not be bought by refusing to fill slots.
+ * Twelve netgroups available, eight slots, and all eight get used. This does
+ * NOT die to dropping the avoid list (it would still return eight, just
+ * repetitive) - that is t_net_outbound_diversity's case, not this one. */
+static void t_net_outbound_fills(void) {
+    uint8_t secret[16]; memset(secret, 0x71, 16);
+    addr_init(secret);
+    uint8_t ip[16];
+    for (int i = 0; i < 12; i++) {
+        mk4(ip, (uint8_t)(11 + i), 22, 0, 1);          /* twelve distinct /16s */
+        CHECK(addr_add(ip, 7043, 4000 + (uint32_t)i) == 1);
+    }
+    addr_t out[NET_OUTBOUND];
+    CHECK(net_select_outbound_vector(out, NET_OUTBOUND, NULL, 0) == NET_OUTBOUND);
+}
+
+/* Review Focus 3: a node must never select its own advertised address. The
+ * handshake's self-identity check catches a self-dial too, but only after
+ * spending an outbound slot and a round trip on it, every cycle. */
+static void t_net_outbound_skips_self(void) {
+    uint8_t secret[16]; memset(secret, 0x93, 16);
+    addr_init(secret);
+    uint8_t me[16];
+    mk4(me, 203, 0, 113, 7);
+    CHECK(addr_add(me, 7043, 6000) == 1);
+    CHECK(addr_count(0) == 1);                 /* the table holds exactly us */
+
+    net_set_self(me, 7043);
+    addr_t out[NET_OUTBOUND];
+    CHECK(net_select_outbound_vector(out, NET_OUTBOUND, NULL, 0) == 0);
+
+    uint8_t none[16] = {0};
+    net_set_self(none, 0);                     /* leave no self behind for later tests */
+}
+
+/* Ruling AI: addr_good had no caller in src/ at all, so `tried` stayed empty
+ * forever - spec line 133's "two successful handshakes on separate attempts"
+ * was unreachable and addr_select's occasional-draw-from-new degenerated to
+ * always-new, with every unit test still green because they called addr_good
+ * directly. This drives net.c's own dial and handshake-completion path. */
+static void t_net_addr_promotion(void) {
+    uint8_t secret[16]; memset(secret, 0x3c, 16);
+    addr_init(secret);
+    uint8_t ip[16];
+    mk4(ip, 198, 51, 100, 30);
+    CHECK(addr_add(ip, 7043, 5000) == 1);
+    CHECK(addr_count(1) == 0);
+
+    net_dial_vector(ip, 7043);
+    net_handshake_ok_vector();
+    CHECK(addr_count(1) == 0);       /* one completed handshake proves nothing durable */
+
+    /* Ruling K: the SAME dial reaching a completed handshake twice must not
+     * promote. The attempt id belongs to the attempt, not to the call - mint
+     * it per call and one connection promotes itself. */
+    net_handshake_ok_vector();
+    CHECK(addr_count(1) == 0);
+
+    net_dial_vector(ip, 7043);       /* a second, separate dial */
+    net_handshake_ok_vector();
+    CHECK(addr_count(1) == 1);       /* two handshakes on two attempts: promoted */
+}
+
 int main(int argc, char **argv) {
     if (sieve_init()) return 1;
     char line[1024];
@@ -1651,7 +1739,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_addr_promotion(); t_net_outbound_skips_self();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

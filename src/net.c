@@ -24,6 +24,12 @@
 #define RX_TIMEOUT 30
 #define HDR       NET_HDR
 #define MAXPAY    (NET_MAXPAY + 16)
+#define CONNECT_TIMEOUT 10
+#define OUTBOUND_RETRY  5
+/* Room for every current peer's netgroup plus a full batch of candidates:
+ * fill_outbound seeds the avoid list from the peers it already has and then
+ * extends it in place as it picks, and neither half may overflow it. */
+#define NET_AVOID_MAX   (MAX_PEERS + NET_OUTBOUND)
 
 /* Unsolicited ADDR is rate-limited per peer per interval (spec line 186): at
  * most ADDR_RATE_MAX inbound ADDR frames per ADDR_RATE_WINDOW seconds of wall
@@ -60,6 +66,20 @@ typedef struct {
 	int addr_answered;
 	int64_t addr_rl_at;
 	int addr_rl_n;
+	/* Outbound dial bookkeeping. `dial_ip`/`dial_port` are the address this
+	 * peer was dialled at - set for both seed dials and address-table dials,
+	 * never for inbound peers, whose source port is not their listen port -
+	 * and `has_ip` says so. fill_outbound counts their netgroups, so a seed
+	 * occupies a netgroup exactly as an address-table peer does.
+	 * `from_addr` narrows that to the ones the address tables produced: the
+	 * only ones addr_good has an entry to promote. `attempt` is the id for
+	 * THIS dial attempt, minted once when the dial begins - see
+	 * peer_dial_begin. `getaddr_sent` latches the one GETADDR per
+	 * connection. */
+	uint8_t dial_ip[16];
+	uint16_t dial_port;
+	int has_ip, from_addr, getaddr_sent;
+	uint64_t attempt;
 } peer_t;
 
 typedef struct { char host[128], port[8]; int peer; int64_t next; } seed_t;
@@ -71,6 +91,18 @@ static net_msg_fn cb_msg;
 static net_conn_fn cb_conn;
 static int n_inbound;
 static wallet_t node_id;
+static uint64_t attempt_ctr;
+static int64_t out_next;
+/* This node's own address, so outbound selection never picks it (Review
+ * Focus 3). All-zero means "not known yet", and costs no separate flag: an
+ * all-zero address is unroutable, so addr_add can never have stored one and
+ * the comparison below can never match by accident. */
+static uint8_t self_ip[16];
+static uint16_t self_port;
+
+/* Defined with the rest of the outbound machinery below; finish_auth needs
+ * them well before that, and the two halves read better kept together. */
+static void peer_handshake_done(const peer_t *p);
 
 static void nonblock(int fd) { fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK); }
 
@@ -222,14 +254,24 @@ static int encrypt_pending(peer_t *p) {
     return 0;
 }
 
-static int alloc_peer(int fd, int state, int seed) {
-	if (seed < 0 && n_inbound >= MAX_INBOUND) return -1;
+/* `inbound` is now passed explicitly rather than derived from `seed < 0`:
+ * an address-table dial has no seed index either, and inferring direction
+ * from the seed would have filed every one of them as inbound - charging
+ * them against MAX_INBOUND and hiding them from the outbound accounting. */
+static int alloc_peer(int fd, int state, int seed, int inbound) {
+	if (inbound && n_inbound >= MAX_INBOUND) return -1;
 	for (int i = 0; i < MAX_PEERS; i++) {
         if (P[i].state != P_FREE) continue;
         memset(&P[i], 0, sizeof P[i]);
 		P[i].fd = fd; P[i].state = state; P[i].seed = seed;
-		P[i].inbound = seed < 0;
-		P[i].up_at = state == P_UP ? now_sec() : 0;
+		P[i].inbound = inbound;
+		/* Stamped for P_CONNECTING too, so net_tick can time out a connect
+		 * that never completes. Without it one black-holed address holds an
+		 * outbound slot for the life of the process and the netgroup
+		 * diversity this task builds quietly erodes, slot by slot.
+		 * net_process re-stamps it on the transition to P_UP, so the
+		 * no-HELLO timeout below still measures from the right moment. */
+		P[i].up_at = now_sec();
 		if (P[i].inbound) n_inbound++;
         int one = 1;
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
@@ -418,7 +460,15 @@ static int finish_auth(int i, uint8_t type, const uint8_t *payload, uint16_t len
         /* A node dialling itself: identical identities make min == max, so
          * both ends would name the same key "lo" and start encrypting with
          * it from nonce 0 - the one thing this construction cannot survive. */
-        if (!memcmp(p->peer_id, node_id.pk, 32)) return -1;
+        if (!memcmp(p->peer_id, node_id.pk, 32)) {
+            /* We just dialled ourselves, so that address IS ours: record it
+             * and stop selecting it. Catching this at the handshake is a last
+             * line, not a reason to spend an outbound slot on ourselves every
+             * cycle - and it is how self_ip gets filled in practice, ahead of
+             * the advertise path Task 10 owns. */
+            if (p->has_ip) net_set_self(p->dial_ip, p->dial_port);
+            return -1;
+        }
         uint8_t tr[HS_TRANSCRIPT], sig[64];
         hs_transcript(tr, p->eph_pk, p->peer_eph);
         crypto_eddsa_sign(sig, node_id.sk, tr, sizeof tr);
@@ -437,6 +487,22 @@ static int finish_auth(int i, uint8_t type, const uint8_t *payload, uint16_t len
     p->hs_phase = 2;
     p->auth_ready = 1;
     if (encrypt_pending(p)) return -1;
+    /* Ruling AI: this is the completed handshake addr_good is defined
+     * against. Without it the `tried` table stays empty forever, and
+     * addr_select's "mostly from tried, occasionally from new" degenerates
+     * to always-new. */
+    peer_handshake_done(p);
+    /* One GETADDR per outbound connection, never a repeat. The reply is an
+     * ADDR frame and ADDR_RATE_MAX (3 per 60 s) counts SOLICITED ADDR too,
+     * so a node that kept asking would trip its own limiter and drop the
+     * peer that answered it; asking once leaves 2 of the 3 for unsolicited
+     * gossip. It costs the peer nothing either, since handle_getaddr
+     * answers only the first GETADDR per connection anyway. */
+    if (!p->inbound && !p->getaddr_sent) {
+        p->getaddr_sent = 1;
+        net_send(i, MSG_GETADDR, NULL, 0);
+        if (P[i].state != P_UP) return -1;
+    }
     flush(i);
     return 0;
 }
@@ -445,6 +511,87 @@ static int peer_up(int i) {
     if (start_auth(i)) return -1;
     cb_conn(i);
     return P[i].state == P_UP ? 0 : -1;
+}
+
+/* sockaddr <-> the uniform 16-byte address the tables use (IPv4 held
+ * v4-mapped). A v4-mapped address goes back out as AF_INET, so dialling one
+ * works on a host with no IPv6 stack at all. */
+static socklen_t sa_pack(struct sockaddr_storage *ss, const uint8_t ip[16], uint16_t port) {
+    static const uint8_t pfx[12] = {0,0,0,0,0,0,0,0,0,0,0xff,0xff};
+    memset(ss, 0, sizeof *ss);
+    if (!memcmp(ip, pfx, 12)) {
+        struct sockaddr_in *a = (struct sockaddr_in *)ss;
+        a->sin_family = AF_INET;
+        a->sin_port = htons(port);
+        memcpy(&a->sin_addr, ip + 12, 4);
+        return (socklen_t)sizeof *a;
+    }
+    struct sockaddr_in6 *a = (struct sockaddr_in6 *)ss;
+    a->sin6_family = AF_INET6;
+    a->sin6_port = htons(port);
+    memcpy(&a->sin6_addr, ip, 16);
+    return (socklen_t)sizeof *a;
+}
+
+static int sa_unpack(const struct sockaddr *sa, uint8_t ip[16], uint16_t *port) {
+    if (sa->sa_family == AF_INET) {
+        static const uint8_t pfx[12] = {0,0,0,0,0,0,0,0,0,0,0xff,0xff};
+        const struct sockaddr_in *a = (const struct sockaddr_in *)sa;
+        memcpy(ip, pfx, 12);
+        memcpy(ip + 12, &a->sin_addr, 4);
+        *port = ntohs(a->sin_port);
+        return 0;
+    }
+    if (sa->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *a = (const struct sockaddr_in6 *)sa;
+        memcpy(ip, &a->sin6_addr, 16);
+        *port = ntohs(a->sin6_port);
+        return 0;
+    }
+    return -1;
+}
+
+void net_set_self(const uint8_t ip[16], uint16_t port) {
+    memcpy(self_ip, ip, 16);
+    self_port = port;
+}
+
+/* Ruling AI / Ruling K. The attempt id belongs to the dial ATTEMPT and is
+ * minted exactly here, once, then carried on the peer for the life of the
+ * connection. addr_good promotes new -> tried only on two calls bearing
+ * DIFFERENT ids, so an id minted per CALL instead would let one connection
+ * that reached addr_good twice promote itself - the precise hole Ruling K
+ * closed, and the reason this is a separate function rather than an inline
+ * `++attempt_ctr` at the addr_good call site. */
+static void peer_dial_begin(peer_t *p, const addr_t *a) {
+    memcpy(p->dial_ip, a->ip, 16);
+    p->dial_port = a->port;
+    p->has_ip = 1;
+    p->from_addr = 1;
+    p->attempt = ++attempt_ctr;
+}
+
+/* The handshake completed on the attempt recorded above. Only peers dialled
+ * out of the address tables are eligible: an inbound peer's source port is
+ * not its listen port, so there is no table entry it corresponds to, and a
+ * seed is an operator's explicit choice rather than something the tables
+ * learned (Task 10 owns putting seeds into them). */
+static void peer_handshake_done(const peer_t *p) {
+    if (!p->from_addr) return;
+    addr_good(p->dial_ip, p->dial_port, p->attempt);
+}
+
+static void dial_addr(const addr_t *a) {
+    struct sockaddr_storage ss;
+    socklen_t sl = sa_pack(&ss, a->ip, a->port);
+    int fd = socket(ss.ss_family, SOCK_STREAM, 0);
+    if (fd < 0) return;
+    nonblock(fd);
+    int r = connect(fd, (struct sockaddr *)&ss, sl);
+    if (r < 0 && errno != EINPROGRESS) { close(fd); return; }
+    int i = alloc_peer(fd, P_CONNECTING, -1, 0);
+    if (i < 0) { close(fd); return; }
+    peer_dial_begin(&P[i], a);
 }
 
 static void dial(int s) {
@@ -457,22 +604,81 @@ static void dial(int s) {
     if (fd < 0) { freeaddrinfo(res); return; }
     nonblock(fd);
     int r = connect(fd, res->ai_addr, res->ai_addrlen);
+    uint8_t ip[16];
+    uint16_t port = 0;
+    int known = sa_unpack(res->ai_addr, ip, &port) == 0;
     freeaddrinfo(res);
     if (r < 0 && errno != EINPROGRESS) { close(fd); return; }
-    int i = alloc_peer(fd, P_CONNECTING, s);
+    int i = alloc_peer(fd, P_CONNECTING, s, 0);
     if (i < 0) { close(fd); return; }
+    /* Recorded but NOT marked from_addr: a seed occupies a netgroup for
+     * diversity accounting, while addr_good has nothing in the tables to
+     * promote it into. */
+    if (known) { memcpy(P[i].dial_ip, ip, 16); P[i].dial_port = port; P[i].has_ip = 1; }
     S[s].peer = i;
+}
+
+/* Fills `out` with up to `max` candidates, each in a netgroup that is not
+ * already in `avoid` and not shared with another candidate in this batch.
+ * `avoid` carries `nav` netgroups on entry - the ones current outbound peers
+ * occupy - and is extended in place as candidates are chosen, which is the
+ * whole mechanism: addr_select gives no uniqueness guarantee ACROSS separate
+ * calls, so without feeding each pick back in, eight calls can return eight
+ * addresses from one /16 and the outbound set collapses onto whichever
+ * netgroup dominates the tables.
+ *
+ * The attempt budget bounds the loop because a skipped self address is not
+ * added to `avoid` by that skip alone - see below - and addr_select would
+ * otherwise be free to keep offering it. */
+static int select_outbound(addr_t *out, int max, uint8_t avoid[][8], int nav) {
+    int n = 0;
+    for (int budget = max * 4; n < max && nav < NET_AVOID_MAX && budget > 0; budget--) {
+        addr_t got;
+        if (!addr_select(&got, (const uint8_t (*)[8])avoid, nav)) break;
+        if (got.port == self_port && !memcmp(got.ip, self_ip, 16)) {
+            /* Review Focus 3: never select our own advertised address. Its
+             * netgroup goes on the avoid list as well - it is our own /16,
+             * so nothing in it adds outbound diversity, and leaving it
+             * selectable would burn the budget re-offering us. */
+            addr_netgroup(got.ip, avoid[nav++]);
+            continue;
+        }
+        addr_netgroup(got.ip, avoid[nav++]);
+        out[n++] = got;
+    }
+    return n;
+}
+
+/* Keeps up to NET_OUTBOUND outbound slots filled from the address tables,
+ * one netgroup each. Seeds hold outbound slots too and are counted here, so
+ * CONSTELLA_PEERS never pushes the total past the cap and a seed's netgroup
+ * is avoided exactly like any other. */
+static void fill_outbound(void) {
+    uint8_t avoid[NET_AVOID_MAX][8];
+    int nav = 0, have = 0;
+    for (int i = 0; i < MAX_PEERS; i++) {
+        if (P[i].state == P_FREE || P[i].inbound) continue;
+        have++;
+        if (P[i].has_ip && nav < NET_AVOID_MAX) addr_netgroup(P[i].dial_ip, avoid[nav++]);
+    }
+    if (have >= NET_OUTBOUND) return;
+    addr_t pick[NET_OUTBOUND];
+    int n = select_outbound(pick, NET_OUTBOUND - have, avoid, nav);
+    for (int k = 0; k < n; k++) dial_addr(&pick[k]);
 }
 
 void net_tick(void) {
     int64_t t = now_sec();
-	for (int i = 0; i < MAX_PEERS; i++)
+	for (int i = 0; i < MAX_PEERS; i++) {
+		if (P[i].state == P_CONNECTING && t - P[i].up_at > CONNECT_TIMEOUT) { drop(i); continue; }
 		if (P[i].state == P_UP &&
 			((P[i].rxn && P[i].rx_at && t - P[i].rx_at > RX_TIMEOUT) ||
 			 (!P[i].hello && P[i].up_at && t - P[i].up_at > 10)))
 			drop(i);
+	}
     for (int s = 0; s < nseeds; s++)
         if (S[s].peer < 0 && t >= S[s].next) dial(s);
+    if (t >= out_next) { out_next = t + OUTBOUND_RETRY; fill_outbound(); }
 }
 
 int net_init(uint16_t port, const char *csv, const wallet_t *id,
@@ -651,6 +857,29 @@ int net_handshake_vector(uint8_t out_lo[32], uint8_t out_hi[32],
     return 0;
 }
 
+int net_select_outbound_vector(addr_t *out, int max, const uint8_t (*have)[8], int nhave) {
+    uint8_t avoid[NET_AVOID_MAX][8];
+    if (max > NET_OUTBOUND) max = NET_OUTBOUND;
+    if (nhave > NET_AVOID_MAX) nhave = NET_AVOID_MAX;
+    if (nhave > 0) memcpy(avoid, have, (size_t)nhave * 8);
+    return select_outbound(out, max, avoid, nhave);
+}
+
+/* A whole peer_t, not a cut-down stand-in, so the vector exercises the same
+ * fields the real path does. It lives in .bss and never enters the peer
+ * table, and --gc-sections drops it with the two functions below. */
+static peer_t vpeer;
+
+void net_dial_vector(const uint8_t ip[16], uint16_t port) {
+    addr_t a = {{0}, 0, 0, 0, 0};
+    memcpy(a.ip, ip, 16);
+    a.port = port;
+    memset(&vpeer, 0, sizeof vpeer);
+    peer_dial_begin(&vpeer, &a);
+}
+
+void net_handshake_ok_vector(void) { peer_handshake_done(&vpeer); }
+
 int net_seal_vector(uint8_t *out, const uint8_t key[32], uint64_t seq,
                     uint8_t type, const void *pay, uint16_t len) {
     uint8_t nonce[24];
@@ -665,6 +894,9 @@ void net_stop(void) {
     for (int i = 0; i < MAX_PEERS; i++) drop(i);
     if (lfd >= 0) close(lfd);
     lfd = -1; nseeds = 0; n_inbound = 0;
+    out_next = 0;
+    memset(self_ip, 0, sizeof self_ip);
+    self_port = 0;
 }
 
 int net_pollfds(struct pollfd *pf, int max) {
@@ -751,7 +983,7 @@ void net_process(const struct pollfd *pf, int n) {
             int fd;
             while ((fd = accept(lfd, NULL, NULL)) >= 0) {
                 nonblock(fd);
-                int pi = alloc_peer(fd, P_UP, -1);
+                int pi = alloc_peer(fd, P_UP, -1, 1);
                 if (pi < 0 || peer_up(pi)) { if (pi >= 0) drop(pi); else close(fd); }
             }
             continue;
