@@ -1,6 +1,7 @@
 /* Minimal TCP gossip. Frame: u32 magic | u8 type | u16 len | payload (LE). */
 #ifndef NET_H
 #define NET_H
+#include "addr.h"
 #include "wallet.h"
 #include <poll.h>
 #include <stdint.h>
@@ -52,6 +53,33 @@ enum {
 int addr_msg_put(uint8_t out[ADDR_MSG_ENTRY_SIZE], const uint8_t ip[16],
                  uint16_t port, uint32_t seen);
 int addr_msg_ingest(const uint8_t *buf, uint16_t len, uint16_t count, uint32_t now);
+
+/* Outbound slots kept filled from the address tables, each in a DISTINCT
+ * netgroup - eight of them is what bounds how much of a node's outbound view
+ * one /16 can own. Seeds occupy these slots too, so CONSTELLA_PEERS cannot
+ * push the total past the cap. */
+#define NET_OUTBOUND 8
+
+/* This node's own address, which outbound selection then never picks (Review
+ * Focus 3). All-zero means "not known": an all-zero address is unroutable, so
+ * it can never match a table entry. net.c fills it in when a dial turns out
+ * to reach our own identity; the advertise path may also set it. */
+void net_set_self(const uint8_t ip[16], uint16_t port);
+
+/* Test-only. `net_select_outbound_vector` runs one round of the selection
+ * net_tick's outbound fill runs, with `nhave` netgroups already occupied
+ * (NULL/0 for none); `max` is clamped to NET_OUTBOUND.
+ *
+ * `net_dial_vector` / `net_handshake_ok_vector` run the dial -> completed
+ * handshake promotion path with no socket, because the tables only ever hold
+ * routable addresses and no loopback pair can reach that code. The first
+ * begins an attempt exactly as dialling an address does (ONE id for the whole
+ * attempt); the second runs what a completed handshake runs. Calling the
+ * second twice against one dial is the case an id minted per call would get
+ * wrong. The node references none of these, so --gc-sections drops them. */
+int  net_select_outbound_vector(addr_t *out, int max, const uint8_t (*have)[8], int nhave);
+void net_dial_vector(const uint8_t ip[16], uint16_t port);
+void net_handshake_ok_vector(void);
 
 typedef void (*net_msg_fn)(int peer, uint8_t type, const uint8_t *p, uint16_t len);
 typedef void (*net_conn_fn)(int peer);
