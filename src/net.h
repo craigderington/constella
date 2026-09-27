@@ -15,12 +15,43 @@ enum {
     MSG_ACCT = 7,      /* amt u64 | nonce u64 | next_nonce u64 | height u32 */
     MSG_TXRES = 8,     /* u8 mempool result code                       */
     MSG_AUTH = 9,      /* handshake phase 1: eph_pub[32] | id_pub[32]     */
-    /* 10 and 11 are reserved for GETADDR/ADDR. */
+    MSG_GETADDR = 10,  /* empty payload                                   */
+    MSG_ADDR = 11,     /* u16 count | count * { ip[16] | port u16 | seen u32 } */
     MSG_AUTH2 = 12,    /* handshake phase 2: sig[64] over
                         * "CSTL-HS1" | eph_self | eph_peer                  */
 };
 #define NET_HDR    7
 #define NET_MAXPAY 4096
+
+/* Gossip. Wire layout of MSG_ADDR's payload: a little-endian u16 entry count,
+ * then that many 22-byte entries { ip[16] v4-mapped | port u16 LE | seen u32
+ * LE }. 180 * 22 = 3,960 bytes, inside NET_MAXPAY (4096) with margin even
+ * with the 2-byte count header. MSG_GETADDR carries no payload.
+ *
+ * addr_msg_put serialises one entry (22 bytes, always) into `out`.
+ *
+ * addr_msg_ingest is the untrusted-input boundary: `buf`/`len` are the entry
+ * bytes ONLY (the u16 count has already been parsed out of the frame by
+ * net.c and is passed separately as `count`) - this split, not "count is
+ * read from the front of buf", is deliberate: it keeps the size check next
+ * to the caller who owns the frame length, so a mismatch between the two is
+ * caught before a single byte is indexed. `count` is validated against
+ * ADDR_MAX_ENTRIES and against `len` (must equal count * 22 exactly) before
+ * anything is indexed; any mismatch is rejected (-1), never truncated or
+ * best-effort-parsed. `now` clamps each entry's gossiped `seen` to no later
+ * than the caller's current time before it reaches addr_add - a peer cannot
+ * hand out a timestamp from its own future, which would otherwise let one
+ * address dodge eviction forever and inflate the global freshness
+ * high-water mark, making every honestly-timestamped entry look stale by
+ * comparison. addr_add's own addr_is_routable check still applies to each
+ * entry, so this never needs to duplicate it. Returns the number of entries
+ * actually added/updated (0..count), or -1 on a malformed count/length. */
+#define ADDR_MAX_ENTRIES     180
+#define ADDR_MSG_ENTRY_SIZE  22u
+
+int addr_msg_put(uint8_t out[ADDR_MSG_ENTRY_SIZE], const uint8_t ip[16],
+                 uint16_t port, uint32_t seen);
+int addr_msg_ingest(const uint8_t *buf, uint16_t len, uint16_t count, uint32_t now);
 
 typedef void (*net_msg_fn)(int peer, uint8_t type, const uint8_t *p, uint16_t len);
 typedef void (*net_conn_fn)(int peer);

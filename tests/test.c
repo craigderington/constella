@@ -1183,6 +1183,238 @@ static void t_addr_persist(void) {
     unlink(path);
 }
 
+/* Review Focus 2: unroutable addresses must be dropped on receipt. A peer
+ * gossiping 127.0.0.1 or 10/8 otherwise fills honest tables with entries
+ * that can never connect - and they all share one netgroup. addr_add
+ * already applies addr_is_routable internally, so addr_msg_ingest inherits
+ * the filter rather than duplicating it; this pins that it actually reaches
+ * the wire path. The `now` argument (Ruling AB) is an ordinary present-day
+ * value here - it does not itself engage the clamp; t_addr_seen_clamp below
+ * is what proves the clamp. */
+static void t_addr_msg(void) {
+    uint8_t secret[16]; memset(secret, 3, 16);
+    addr_init(secret);
+    uint8_t buf[4096]; uint8_t ip[16];
+    int n = 0;
+    mk4(ip, 198, 51, 100, 1);  n += addr_msg_put(buf + n, ip, 7043, 100);
+    mk4(ip, 127, 0, 0, 1);     n += addr_msg_put(buf + n, ip, 7043, 100);
+    mk4(ip, 10, 1, 1, 1);      n += addr_msg_put(buf + n, ip, 7043, 100);
+    CHECK(addr_msg_ingest(buf, (uint16_t)n, 3, 100000) == 1);   /* only the routable one */
+
+    CHECK(addr_msg_ingest(buf, 5, 3, 100000) == -1);                        /* short/malformed */
+    CHECK(addr_msg_ingest(buf, (uint16_t)n, ADDR_MAX_ENTRIES + 1, 100000) == -1);
+}
+
+/* Ruling AB, both required properties of the gossiped `seen` clamp, explicit
+ * and separate:
+ *
+ * 1. An ingested entry claiming seen=0xFFFFFFFF must not become a permanent
+ *    squatter. addr_add's bucket_stalest always evicts whichever entry
+ *    currently holds the LOWEST seen in a full bucket - it never compares
+ *    the newcomer's own seen against anything, so any new address forces
+ *    ONE eviction the moment the bucket is already full, clamp or no clamp.
+ *    The actual attack this clamp defeats is not that single eviction; it
+ *    is that an UNCLAMPED 0xFFFFFFFF entry can never again be the lowest,
+ *    so every future eviction round would pass it by and land on an
+ *    honestly-timestamped entry instead - an unkillable squatter holding
+ *    one of the bucket's 32 slots forever. Proven by: insert the clamped
+ *    entry into a full bucket (one honest entry necessarily goes, same as
+ *    any new address would cause), then keep adding fresher honest entries
+ *    round after round and confirm the clamped entry itself eventually gets
+ *    evicted just like everything else - i.e. it ages normally rather than
+ *    freezing at the top of the freshness order forever.
+ *
+ * 2. That same entry must not drag g_max_seen past `now`. addr.c's
+ *    is_stale() measures every entry against that high-water mark, so an
+ *    inflated mark makes every honestly-timestamped entry look stale, and
+ *    addr_select's 70% stale-skip then down-weights all of them while the
+ *    attacker's own (also-inflated) entry stays "fresh" by comparison.
+ *    g_max_seen is not exported, so this is proven behaviourally: with the
+ *    clamp intact, a recently-added honest entry is exactly as fresh as the
+ *    attacker's clamped one, so addr_select should draw either with
+ *    similar frequency. Measured over many draws from a two-entry table
+ *    (one honest, one attacker, in different netgroups so each is reached
+ *    first about equally often): analytically, a broken clamp biases draws
+ *    to roughly 15% honest / 85% attacker (0.5 chance the honest bucket is
+ *    scanned first, times the 0.3 chance it survives its own 70%
+ *    stale-skip roll); an intact clamp is unbiased, roughly 50/50. The
+ *    threshold below sits far above the broken figure and comfortably
+ *    below the intact one, so it distinguishes the two reliably. */
+static void t_addr_seen_clamp(void) {
+    uint8_t secret[16]; memset(secret, 9, 16);
+    addr_init(secret);
+    uint32_t now = 1000000;
+
+    /* --- property 1: not a permanent squatter --- */
+    uint8_t ip[16];
+    for (int i = 0; i < ADDR_BUCKET_SIZE; i++) {
+        mk4(ip, 203, 0, 0, (uint8_t)i);
+        CHECK(addr_add(ip, 7043, (uint32_t)(i + 1)) == 1);
+    }
+    CHECK(addr_count(0) == ADDR_BUCKET_SIZE);        /* one netgroup, one full bucket */
+
+    mk4(ip, 203, 0, 0, 200);                         /* a new address, same netgroup/bucket */
+    uint8_t entry[ADDR_MSG_ENTRY_SIZE];
+    int elen = addr_msg_put(entry, ip, 7043, 0xFFFFFFFFu);
+    CHECK(addr_msg_ingest(entry, (uint16_t)elen, 1, now) == 1);
+    CHECK(addr_count(0) == ADDR_BUCKET_SIZE);        /* still full: one honest entry went */
+
+    uint64_t probe = 424242;
+    CHECK(addr_good(ip, 7043, probe) == 1);          /* present right after insertion */
+
+    int evicted = 0;
+    uint32_t seen = now + 1;
+    for (int k = 0; k < 64 && !evicted; k++) {
+        uint8_t nip[16];
+        mk4(nip, 203, 0, 1, (uint8_t)k);             /* same netgroup, distinct address */
+        addr_add(nip, 7043, seen);
+        seen += 1000;
+        if (!addr_good(ip, 7043, probe)) evicted = 1;
+    }
+    CHECK(evicted);    /* the clamped entry ages out like any other - no entrenchment */
+
+    /* --- property 2: does not drag g_max_seen past now --- */
+    addr_init(secret);
+    uint8_t honest_ip[16], attacker_ip[16];
+    mk4(honest_ip, 51, 51, 51, 51);
+    mk4(attacker_ip, 88, 88, 88, 88);
+    uint8_t g1[8], g2[8];
+    addr_netgroup(honest_ip, g1); addr_netgroup(attacker_ip, g2);
+    CHECK(memcmp(g1, g2, 8) != 0);     /* fixture sanity: distinct netgroups/buckets */
+
+    CHECK(addr_add(honest_ip, 7043, now - 1) == 1);
+    elen = addr_msg_put(entry, attacker_ip, 7043, 0xFFFFFFFFu);
+    CHECK(addr_msg_ingest(entry, (uint16_t)elen, 1, now) == 1);
+
+    int honest_hits = 0;
+    const int trials = 200;
+    for (int t = 0; t < trials; t++) {
+        addr_t got;
+        if (addr_select(&got, NULL, 0) && !memcmp(got.ip, honest_ip, 16)) honest_hits++;
+    }
+    CHECK(honest_hits > trials / 3);   /* >~33%: well above the ~15% a broken clamp gives */
+}
+
+/* Runs in a forked child, as a genuinely separate OS process: net_client_open
+ * blocks on real socket I/O, and the server side of this same test binary
+ * only makes progress inside net_process()/net_tick() - nothing would
+ * service it while a single thread sits blocked in recv(). This is exactly
+ * the deadlock t_cli_socket's cli_probe already sidesteps by forking the
+ * wallet CLI as a separate process; here the "CLI" is just inline C instead
+ * of a second exec'd binary. Writes one result byte per case to `outfd`:
+ * [0] first GETADDR answered, [1] second GETADDR on the same connection
+ * correctly ignored (no second reply within a short window), [2] an
+ * unsolicited ADDR flood got the connection dropped (rate-limited). */
+static void addr_gossip_child(const char *hostport, const wallet_t *id, int outfd) {
+    uint8_t r[3] = {0, 0, 0};
+    net_client_t c;
+    if (net_client_open(&c, hostport, id)) goto done;
+
+    uint8_t out[NET_MAXPAY]; uint16_t outlen;
+    if (!net_client_send(&c, MSG_GETADDR, NULL, 0) &&
+        !net_client_wait(&c, MSG_ADDR, out, &outlen) && outlen >= 2)
+        r[0] = 1;
+
+    {
+        struct timeval tv = {0, 300000};
+        setsockopt(c.fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    }
+    if (!net_client_send(&c, MSG_GETADDR, NULL, 0) &&
+        net_client_wait(&c, MSG_ADDR, out, &outlen) == -1)
+        r[1] = 1;                       /* repeat correctly drew no second reply */
+    net_client_close(&c);
+
+    {
+        net_client_t c2;
+        if (net_client_open(&c2, hostport, id)) goto done;
+        /* Drain the node's own spontaneous MSG_HELLO (sent unprompted via
+         * cb_conn on every accepted connection) before probing for a close -
+         * otherwise its bytes are misread as "the flood wasn't rate
+         * limited". */
+        { uint8_t junk[NET_MAXPAY]; uint16_t jlen; net_client_wait(&c2, MSG_HELLO, junk, &jlen); }
+        uint8_t ip[16]; mk4(ip, 198, 51, 100, 210);
+        uint8_t pay[2 + ADDR_MSG_ENTRY_SIZE];
+        pay[0] = 1; pay[1] = 0;                          /* count = 1, LE */
+        addr_msg_put(pay + 2, ip, 7043, 12345);
+        for (int i = 0; i < 10; i++)
+            if (net_client_send(&c2, MSG_ADDR, pay, sizeof pay)) break;
+
+        struct timeval tv = {0, 400000};
+        setsockopt(c2.fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        uint8_t probe;
+        ssize_t rr = recv(c2.fd, &probe, 1, 0);
+        if (rr == 0) r[2] = 1;          /* server closed us: the flood was rate-limited */
+        net_client_close(&c2);
+    }
+done:
+    write(outfd, r, 3);
+    close(outfd);
+    _exit(0);
+}
+
+/* Ruling AC: the once-per-connection GETADDR guard and the unsolicited-ADDR
+ * rate limiter each get their own case here, over a real net.c listener and
+ * a real (forked) client, so Step 5's mandatory mutations can redden them
+ * one at a time. */
+static void t_addr_gossip_guards(void) {
+    wallet_t nid, cid;
+    uint8_t seed[32];
+    for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(0x21 + i);
+    wallet_from_seed(&nid, seed);
+    for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(0xd3 - i);
+    wallet_from_seed(&cid, seed);
+
+    uint8_t secret[16]; memset(secret, 5, 16);
+    addr_init(secret);
+    uint8_t seedip[16]; mk4(seedip, 203, 0, 113, 9);
+    addr_add(seedip, 7043, 1000);        /* something for GETADDR to actually return */
+
+    uint16_t port = 0;
+    for (uint16_t t = 18093; t < 18133 && !port; t++)
+        if (!net_init(t, NULL, &nid, cli_on_msg, cli_on_conn)) port = t;
+    CHECK(port != 0);
+    if (!port) return;
+
+    char hostport[32];
+    snprintf(hostport, sizeof hostport, "127.0.0.1:%u", port);
+
+    int pfd[2];
+    CHECK(pipe(pfd) == 0);
+    signal(SIGPIPE, SIG_IGN);            /* a send() into a peer we just dropped must not kill us */
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(pfd[0]);
+        addr_gossip_child(hostport, &cid, pfd[1]);
+    }
+    close(pfd[1]);
+
+    uint8_t r[3] = {0, 0, 0};
+    size_t got = 0;
+    int status = -1, eof = 0;
+    for (int64_t deadline = now_sec() + 10; now_sec() < deadline;) {
+        struct pollfd pf[34];
+        pf[0].fd = pfd[0]; pf[0].events = POLLIN;
+        int np = net_pollfds(pf + 1, 32);
+        poll(pf, (nfds_t)np + 1, 20);
+        net_process(pf + 1, np);
+        net_tick();
+        if (!(pf[0].revents & (POLLIN | POLLHUP))) continue;
+        if (got >= sizeof r) { eof = 1; break; }
+        ssize_t rr = read(pfd[0], r + got, sizeof r - got);
+        if (rr > 0) got += (size_t)rr;
+        else { eof = 1; break; }
+    }
+    close(pfd[0]);
+    if (!eof) kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    net_stop();
+
+    CHECK(got == 3);
+    CHECK(r[0] == 1);   /* the first GETADDR was answered */
+    CHECK(r[1] == 1);   /* a second GETADDR on the same connection drew nothing */
+    CHECK(r[2] == 1);   /* an unsolicited ADDR flood got the peer dropped */
+}
+
 int main(int argc, char **argv) {
     if (sieve_init()) return 1;
     char line[1024];
@@ -1250,7 +1482,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_msg(); t_addr_seen_clamp(); t_addr_gossip_guards();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
