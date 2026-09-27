@@ -1183,6 +1183,113 @@ static void t_addr_persist(void) {
     unlink(path);
 }
 
+/* Reads the 16-byte bucket secret straight out of peers.dat. The secret is
+ * deliberately never exposed through addr.h - nothing but addr.c has any
+ * business reading it - so the only honest way to assert on it is the file
+ * the node actually wrote. Returns 0 on a well-formed header. */
+static int peers_secret(const char *path, uint8_t out[16]) {
+    uint8_t hdr[21];
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    size_t n = fread(hdr, 1, sizeof hdr, f);
+    fclose(f);
+    if (n != sizeof hdr) return -1;
+    if (memcmp(hdr, "ADR1", 4) || hdr[4] != 1) return -1;
+    memcpy(out, hdr + 5, 16);
+    return 0;
+}
+
+/* Starts ./constella as a node on `dir`/`port`, waits until it has logged the
+ * line that follows addr_load, then stops it the way an operator does
+ * (SIGTERM) and waits for it to exit. Runs the real binary rather than
+ * addr.c directly because what is under test here is node.c's wiring, not
+ * the persistence code t_addr_persist already covers - and node.c is not
+ * linked into this test binary. Returns 0 only if the node started, reached
+ * addr_load and exited 0 (so its addr_save at shutdown ran). */
+static int node_start_stop(const char *dir, uint16_t port) {
+    int pfd[2];
+    if (pipe(pfd)) return -1;
+    char pbuf[16];
+    snprintf(pbuf, sizeof pbuf, "%u", port);
+    pid_t pid = fork();
+    if (pid < 0) { close(pfd[0]); close(pfd[1]); return -1; }
+    if (pid == 0) {
+        dup2(pfd[1], 1); dup2(pfd[1], 2);
+        close(pfd[0]); close(pfd[1]);
+        setenv("CONSTELLA_DATA", dir, 1);
+        setenv("CONSTELLA_PORT", pbuf, 1);
+        setenv("CONSTELLA_THREADS", "1", 1);
+        unsetenv("CONSTELLA_PEERS");
+        unsetenv("CONSTELLA_KEY");
+        unsetenv("CONSTELLA_ADDR");
+        execl("./constella", "constella", (char *)NULL);
+        _exit(127);
+    }
+    close(pfd[1]);
+    fcntl(pfd[0], F_SETFL, O_NONBLOCK);
+
+    char out[4096];
+    size_t n = 0;
+    int ready = 0;
+    for (int64_t deadline = now_sec() + 20; now_sec() < deadline && !ready;) {
+        struct pollfd pf = {pfd[0], POLLIN, 0};
+        poll(&pf, 1, 100);
+        ssize_t r = read(pfd[0], out + n, sizeof out - 1 - n);
+        if (r > 0) { n += (size_t)r; out[n] = 0; }
+        else if (r == 0) break;                    /* it exited on its own */
+        if (n + 1 >= sizeof out) break;
+        ready = strstr(out, "peers: known") != NULL;
+    }
+    close(pfd[0]);
+    kill(pid, ready ? SIGTERM : SIGKILL);
+    int status = -1;
+    waitpid(pid, &status, 0);
+    if (!ready) return -1;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
+
+/* Ruling AF: the node's address-store lifecycle. What was missing was never
+ * the persistence code (t_addr_persist covers that) but any CALL to it from
+ * src/ - so this drives the shipped binary, twice, over one data dir.
+ * Unwired, every node ran on an all-zero bucket secret: bucket placement
+ * would be identical network-wide and an attacker reading the source could
+ * work out offline which addresses land in which of a victim's buckets. */
+static void t_addr_node_lifecycle(void) {
+    if (access("./constella", X_OK)) { fprintf(stderr, "SKIP node lifecycle: no ./constella\n"); return; }
+    char dir[] = "/tmp/constella-life-XXXXXX";
+    if (!mkdtemp(dir)) { CHECK(0); return; }
+    char path[320];
+    snprintf(path, sizeof path, "%s/peers.dat", dir);
+
+    /* Ports are only needed so two cycles never collide with a stray
+     * listener; the second cycle deliberately uses a different one, which
+     * also pins that the secret follows the data dir and not the port. */
+    uint8_t sec1[16], sec2[16], zero[16] = {0};
+    uint8_t ip[16];
+    mk4(ip, 198, 51, 100, 77);
+
+    CHECK(node_start_stop(dir, 18211) == 0);            /* first start ever */
+    CHECK(peers_secret(path, sec1) == 0);               /* addr_load wrote one immediately */
+    CHECK(memcmp(sec1, zero, 16) != 0);                 /* and it is NOT the all-zero secret */
+    CHECK(addr_load(dir) == 0);
+    int b_new = addr_bucket_of(ip, 0), b_tried = addr_bucket_of(ip, 1);
+
+    CHECK(node_start_stop(dir, 18212) == 0);            /* second start, same data dir */
+    CHECK(peers_secret(path, sec2) == 0);
+    CHECK(!memcmp(sec1, sec2, 16));                     /* reused, never rerolled */
+    CHECK(addr_load(dir) == 0);
+    CHECK(addr_bucket_of(ip, 0) == b_new);              /* so placement is stable across */
+    CHECK(addr_bucket_of(ip, 1) == b_tried);            /* restarts, in both tables */
+
+    char f[320];
+    static const char *leftovers[] = {"peers.dat", "chain.dat", "wallet.key", "node.key"};
+    for (size_t i = 0; i < sizeof leftovers / sizeof *leftovers; i++) {
+        snprintf(f, sizeof f, "%s/%s", dir, leftovers[i]);
+        unlink(f);
+    }
+    rmdir(dir);
+}
+
 /* Review Focus 2: unroutable addresses must be dropped on receipt. A peer
  * gossiping 127.0.0.1 or 10/8 otherwise fills honest tables with entries
  * that can never connect - and they all share one netgroup. addr_add
@@ -1544,7 +1651,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

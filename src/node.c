@@ -1,5 +1,6 @@
 /* The daemon: wires chain, ledger, mempool, miner, throttle and net together. */
 #include "node.h"
+#include "addr.h"
 #include "chain.h"
 #include "ledger.h"
 #include "mempool.h"
@@ -319,6 +320,21 @@ int node_run(void) {
 
     if (chain_init(data, on_accept)) { log_msg("fatal: cannot open data dir %s", data); return 1; }
 
+    /* Ruling AF: nothing in src/ called addr_load/addr_save before this, so
+     * every node ran its address tables on an all-zero bucket secret. Bucket
+     * placement is BLAKE2b(secret || netgroup) mod nbuckets: with the secret
+     * zeroed it is identical on every node in the network, and an attacker
+     * reading this source can work out offline exactly which addresses land
+     * in which of a victim's buckets - the one thing the bucketing exists to
+     * make impossible. addr_load generates and persists a random secret on
+     * first run and restores it (with both tables) on every run after. It
+     * fails closed when there is no entropy, for the same reason the
+     * handshake does: a predictable secret is worse than no node at all. */
+    if (addr_load(data)) {
+        log_msg("fatal: no entropy for the peer-table secret");
+        return 1;
+    }
+
     wallet_t w;
     int wr = wallet_load(&w, env("CONSTELLA_KEY", keypath), 1);
     if (wr < 0) { log_msg("fatal: cannot load or create key %s", env("CONSTELLA_KEY", keypath)); return 1; }
@@ -345,6 +361,9 @@ int node_run(void) {
     nh[16] = 0;
     log_msg("constella: payout=%s%s threads=%d duty<=%d%% port=%d chain=%s node=%s", a,
             wr == 1 ? " (new key)" : "", threads, atoi(env("CONSTELLA_DUTY", "50")), port, cid, nh);
+    /* Printed after addr_load, so an operator seeing it at all is evidence
+     * the peer table was loaded rather than silently left at zero. */
+    log_msg("peers: known new=%d tried=%d", addr_count(0), addr_count(1));
 
     if (rebuild_state()) { log_msg("fatal: cannot rebuild ledger state"); return 1; }
     live = 1;
@@ -402,6 +421,10 @@ int node_run(void) {
     }
     log_msg("shutting down");
     miner_stop();
+    /* The bucket secret and both tables outlive this process. Rerolling the
+     * secret on every restart would relearn `tried` from nothing each time,
+     * which is the same eclipse exposure a fresh node has, every boot. */
+    addr_save(data);
     return 0;
 }
 
