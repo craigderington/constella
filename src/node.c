@@ -50,6 +50,22 @@ static int sci_pool_has(uint64_t k) {
     return 0;
 }
 
+/* Install the exact region used by the next share before reorg recovery
+ * considers any side-branch claims. If the anchor moved, the old pool is
+ * invalid in the new region and must be cleared before (not after) valid
+ * recoveries are added. */
+static void refresh_sci_region(int tip) {
+    const entry_t *t = chain_entry(tip);
+    uint32_t ep = sci_epoch(t->height + 1);
+    uint8_t anchor[32];
+    chain_epoch_anchor(tip, t->height + 1, anchor);
+    if (ep == sci_epoch_cur && !memcmp(anchor, sci_anchor_cur, 32)) return;
+    sci_epoch_cur = ep;
+    memcpy(sci_anchor_cur, anchor, 32);
+    nscipool = 0;
+    miner_set_sci(anchor, payout);
+}
+
 static int sci_main_has(const int *path, int n, uint32_t epoch, uint64_t k) {
     for (int i = 1; i < n; i++) {
         const entry_t *e = chain_entry(path[i]);
@@ -64,21 +80,35 @@ static int chain_path_has(const int *path, int n, int idx) {
     return 0;
 }
 
+static int sci_claim_recoverable(uint32_t entry_height, uint32_t active_epoch,
+                                 const bn *active_base, const sci_t *claim) {
+    return sci_epoch(entry_height) == active_epoch && !sci_check(active_base, claim);
+}
+
+int node_sci_recoverable_vector(uint32_t entry_height, uint32_t next_height,
+                                const uint8_t anchor[32], const uint8_t miner[32],
+                                uint64_t k, uint32_t g) {
+    bn base;
+    sci_t claim = {k, g};
+    sci_region(&base, anchor, miner);
+    return sci_claim_recoverable(entry_height, sci_epoch(next_height), &base, &claim);
+}
+
 static void recover_side_claims(const int *path, int n, int total) {
     if (!path || n < 1) return;
     int tip = chain_tip();
-    uint32_t tip_height = chain_entry(tip)->height;
+    refresh_sci_region(tip);
+    uint32_t active_epoch = sci_epoch_cur;
+    bn active_base;
+    sci_region(&active_base, sci_anchor_cur, payout);
     for (int i = 1; i < total && nscipool < SCI_POOL; i++) if (!chain_path_has(path, n, i)) {
         const entry_t *e = chain_entry(i);
-        if (e->height == 0 || e->height > tip_height || memcmp(e->s.miner, payout, 32)) continue;
-        uint8_t anchor[32];
-        chain_epoch_anchor(tip, e->height, anchor);
-        bn base;
-        sci_region(&base, anchor, payout);
-        uint32_t epoch = sci_epoch(e->height);
+        if (e->height == 0 || memcmp(e->s.miner, payout, 32)) continue;
         for (int c = 0; c < e->nsci && nscipool < SCI_POOL; c++) {
-            if (sci_main_has(path, n, epoch, e->sci[c].k) || sci_pool_has(e->sci[c].k) ||
-                sci_check(&base, &e->sci[c])) continue;
+            if (sci_main_has(path, n, active_epoch, e->sci[c].k) ||
+                sci_pool_has(e->sci[c].k) ||
+                !sci_claim_recoverable(e->height, active_epoch, &active_base, &e->sci[c]))
+                continue;
             scipool[nscipool++] = e->sci[c];
         }
     }
@@ -111,20 +141,24 @@ static int rebuild_state(void) {
     return 0;
 }
 
+/* A peer may legally be MAX_FUTURE seconds ahead of our wall clock, while a
+ * child may be only 600 seconds behind its parent. Mining at bare `now` after
+ * accepting such a tip would make every locally found share invalid until the
+ * clock almost caught up. Carry the parent's time forward instead; that time
+ * was already checked when the parent was accepted. */
+static uint64_t next_share_time(uint64_t parent_time, int64_t now) {
+    uint64_t wall = now > 0 ? (uint64_t)now : 0;
+    return wall < parent_time ? parent_time : wall;
+}
+
+uint64_t node_next_share_time_vector(uint64_t parent_time, int64_t now) {
+    return next_share_time(parent_time, now);
+}
+
 static void update_job(void) {
     int tip = chain_tip();
     const entry_t *t = chain_entry(tip);
-    uint32_t ep = sci_epoch(t->height + 1);
-    uint8_t anchor[32];
-    chain_epoch_anchor(tip, t->height + 1, anchor);
-    if (ep != sci_epoch_cur || memcmp(anchor, sci_anchor_cur, 32)) {
-        /* a claim found under the old anchor derives from a different region
-         * and every peer's accept() -- including our own -- would reject it. */
-        sci_epoch_cur = ep;
-        memcpy(sci_anchor_cur, anchor, 32);
-        nscipool = 0;
-        miner_set_sci(anchor, payout);
-    }
+    refresh_sci_region(tip);
     tmpl_t *tm = &T[tnext];
     tnext = (tnext + 1) % TMPL_RING;
     tm->ntx = mempool_select(tm->txs, SHARE_MAX_TX);
@@ -138,7 +172,7 @@ static void update_job(void) {
     s.version = SHARE_VERSION;
     s.height = t->height + 1;
     memcpy(s.prev, t->id, 32);
-    s.time = (uint64_t)now_sec();
+    s.time = next_share_time(t->s.time, now_sec());
     memcpy(s.miner, payout, 32);
     s.bits = (uint16_t)chain_next_bits(tip);
     memcpy(s.tx_root, tm->root, 32);

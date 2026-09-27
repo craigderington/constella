@@ -108,6 +108,45 @@ func TestInvalidBitsDoNotReachCandidate(t *testing.T) {
 	}
 }
 
+func TestOrphanPayloadMustMatchHeaderCommitment(t *testing.T) {
+	c := NewChain()
+	s := proto.Share{
+		Version: proto.ShareVersion,
+		Height:  1,
+		Time:    proto.GenesisTime + 2,
+		Bits:    proto.BitsMin,
+		K:       5674,
+	}
+	for i := range s.Prev {
+		s.Prev[i] = 0xa5
+	}
+
+	invalid := &proto.Msg{Share: s, Txs: []proto.Tx{{}}, Raw: make([]byte, proto.ShareSize+4+proto.TxSize)}
+	if _, _, err := c.AddAt(invalid, 0); err != ErrInvalid {
+		t.Fatalf("uncommitted orphan payload returned %v, want ErrInvalid", err)
+	}
+	if got := c.OrphanCount(); got != 0 {
+		t.Fatalf("invalid orphan payload was retained: count=%d", got)
+	}
+
+	valid := &proto.Msg{Share: s, Raw: make([]byte, proto.ShareSize+4)}
+	if _, missing, err := c.AddAt(valid, 0); err != nil || missing == nil {
+		t.Fatalf("valid orphan returned missing=%v err=%v", missing, err)
+	}
+	if got := c.OrphanCount(); got != 1 {
+		t.Fatalf("valid orphan count=%d, want 1", got)
+	}
+
+	// The header ID is already retained. A different payload under that same
+	// header must be a duplicate, not another orphan-budget entry.
+	if _, missing, err := c.AddAt(invalid, 0); err != nil || missing == nil {
+		t.Fatalf("duplicate orphan header returned missing=%v err=%v", missing, err)
+	}
+	if got := c.OrphanCount(); got != 1 {
+		t.Fatalf("duplicate orphan header changed count to %d", got)
+	}
+}
+
 func TestMulDivMatchesPPLNS(t *testing.T) {
 	// same vector as tests/test.c: weights 3,1,0 over pool 1000
 	if mulDiv(1000, 3, 4) != 750 || mulDiv(1000, 1, 4) != 250 {

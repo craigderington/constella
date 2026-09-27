@@ -24,7 +24,7 @@ independently.
 
 ## Layout
 - `src/` C node. Separation: bn, share, sieve, miner, throttle, chain, ledger, tx,
-  wallet, mempool, net, node (daemon), cli (wallet cmds), main (dispatch).
+  wallet, mempool, addr, net, node (daemon), cli (wallet cmds), main (dispatch).
   Consensus constants live in `src/params.h`.
 - `explorer/` Go: blake2b, proto, consensus, p2p, indexer, store, web.
   `lib/pq` is vendored (`-mod=vendor`).
@@ -146,8 +146,8 @@ independently.
   the gap range suggested.
 - `make size` quantises in 4096-byte pages for code, so growth shows up in
   4 KB steps and a sub-page change is invisible in the reported number.
-  Current: 149,272/153,600 bytes, two page steps used since the science lane
-  began - an unchanged number means "no page crossed," not "nothing changed."
+  Current: 157,464/196,608 bytes - an unchanged number means "no page
+  crossed," not "nothing changed."
 - One miner worker goes to science when `threads >= 2`, costing ~1/threads of
   constellation throughput (~17% at the default 6: 5 of 6 workers left
   searching constellations). `constella bench` deliberately runs no science

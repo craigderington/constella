@@ -24,8 +24,14 @@ func writeText(w io.Writer, st *store.Stats, d *overviewData) {
 	fmt.Fprintf(w, "  shares/min  %.1f   miners %d   blocks %s   txs %s\n", st.SharesPerMin, st.Miners, num(m["blocks"]), num(m["txs"]))
 	fmt.Fprintf(w, "  escrow      %s (science lane, %s paid over %s claims)\n",
 		coins(esc), coins(paid), num(m["sci_claims"]))
+	check := orDash(m["check"])
+	coverage := orDash(m["check_count"])
+	if m["check"] == "sample" {
+		check = "sample ok"
+		coverage += " of " + orDash(m["check_total"])
+	}
 	fmt.Fprintf(w, "  ledger      %s at height %s (%s accounts checked against the node)\n\n",
-		orDash(m["check"]), orDash(m["check_height"]), orDash(m["check_count"]))
+		check, orDash(m["check_height"]), coverage)
 	if d.Latest != nil {
 		b := d.Latest
 		fmt.Fprintf(w, "  latest block %s, %s at %d bits, %s\n  p = %s\n\n", num(b.Height), tupleName(b.TLen), b.Bits, ago(b.Time), b.P)

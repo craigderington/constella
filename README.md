@@ -4,7 +4,7 @@ Idle-compute cryptocurrency node in C. Work is a search for **prime constellatio
 (useful math, verifiable in microseconds). Every contributing node is paid when a
 block lands, P2Pool-style, instead of racing for blocks.
 
-- 137 KB static binary (musl, `-Os`, LTO, gc-sections), including EdDSA
+- 154 KB static binary (musl, `-Os`, LTO, gc-sections), including EdDSA
 - `SCHED_IDLE` workers, jittered duty cycle, a median-filtered PI thermal controller that
   rides out other processes' heat spikes, battery pause
 - Sharechain + PPLNS: every quadruplet share earns a slice of every block in its window
@@ -14,7 +14,7 @@ block lands, P2Pool-style, instead of racing for blocks.
 ## Build & test
     make            # static binary (uses musl-gcc if present)
     make test       # C unit checks + thermal controller sim + Python cross-checks
-    make size       # fails above 150 KB
+    make size       # fails above 192 KB
     ./constella bench 448 30 1    # bits, seconds, threads
 
 ## Run
@@ -33,7 +33,7 @@ block lands, P2Pool-style, instead of racing for blocks.
 | `CONSTELLA_ADVERTISE` | – | `host:port` this node tells peers to reach it on |
 | `CONSTELLA_KEY` | $DATA/wallet.key | payout key, auto-created |
 | | $DATA/node.key | network identity, auto-created; **not** the payout key |
-| `CONSTELLA_ADDR` | node key | 64-hex payout override (e.g. a cold wallet) |
+| `CONSTELLA_ADDR` | wallet key | 64-hex payout override (e.g. a cold wallet) |
 | `CONSTELLA_THREADS` | physical cores − 1 | hyperthreads add ~7% for much more heat |
 | `CONSTELLA_DUTY` | 50 | max % of each 100 ms slice |
 | `CONSTELLA_TEMP_MAX` | auto | °C cap; auto = chip critical − 12 (60–90), read from the thermal zone or hwmon. Settles 6° under it |

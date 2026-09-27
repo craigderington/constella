@@ -12,7 +12,7 @@
 #define MAX_ORPHANS 16384
 #define MAX_ORPHAN_BYTES (16u << 20)
 
-typedef struct { uint8_t *msg; uint16_t len; uint8_t parent[32]; } orphan_t;
+typedef struct { uint8_t *msg; uint16_t len; uint8_t parent[32], id[32]; } orphan_t;
 
 static entry_t *E;
 static int nE, capE, tip;
@@ -113,18 +113,28 @@ void chain_epoch_anchor(int par, uint32_t height, uint8_t out[32]) {
     memcpy(out, E[a < 0 ? 0 : a].id, 32);
 }
 
+/* The root is the cheap, parent-independent payload commitment. Checking it
+ * before caching an orphan prevents one valid header proof from being
+ * replayed with thousands of different, uncommitted payloads. Signature
+ * checks stay behind proof-of-work so garbage cannot force up to 16 public
+ * key operations without first paying for a valid share. */
+static int payload_root_check(const share_t *s, const tx_t *txs, int ntx,
+                              const sci_t *sci, int nsci) {
+    uint8_t root[32];
+    share_root(root, txs, ntx, sci, nsci);
+    return memcmp(root, s->tx_root, 32) ? -1 : 0;
+}
+
 /* Stateless checks + work. Balance/nonce validity is decided later by ledger replay. */
 static int accept(const share_t *s, const tx_t *txs, int ntx, const sci_t *sci, int nsci,
                   const uint8_t *msg, size_t len, const uint8_t id[32], int par, int64_t now) {
     const entry_t *p = &E[par];
-    uint8_t root[32];
     if (s->version != SHARE_VERSION || s->height != p->height + 1) return CH_INVALID;
     if (s->time > (uint64_t)INT64_MAX) return CH_INVALID;
     if (s->bits != chain_next_bits(par)) return CH_INVALID;
     if (now > 0 && s->time > (uint64_t)now && s->time - (uint64_t)now > MAX_FUTURE) return CH_INVALID;
     if (s->time < p->s.time && p->s.time - s->time > 600) return CH_INVALID;
-    share_root(root, txs, ntx, sci, nsci);
-    if (memcmp(root, s->tx_root, 32)) return CH_INVALID;
+    if (payload_root_check(s, txs, ntx, sci, nsci)) return CH_INVALID;
     /* Cheapest rejection first: a garbage candidate dies in one Fermat test,
      * so never pay for signatures or claims to reject it. Validity is a
      * conjunction of independent checks, so reordering them changes only the
@@ -206,14 +216,18 @@ static int submit_one(const uint8_t *msg, size_t len, uint8_t missing[32], int64
     int par = chain_find(s.prev);
     if (par >= 0) return accept(&s, txs, ntx, sci, nsci, msg, len, id, par, now);
 
-    /* Do not let arbitrary-parent garbage consume the orphan budget. The
-     * parent-dependent checks wait until the parent arrives. */
-    if (share_verify(&s, NULL) < SHARE_K) return CH_INVALID;
-
     memcpy(missing, s.prev, 32);
     for (int i = 0; i < nO; i++)
-        if (O[i].len == len && !memcmp(O[i].msg, msg, len)) return CH_ORPHAN;
+        if (!memcmp(O[i].id, id, 32)) return CH_ORPHAN;
     if (nO >= MAX_ORPHANS || len > MAX_ORPHAN_BYTES - orphan_bytes) return CH_ORPHAN;
+
+    /* Do not let arbitrary-parent garbage consume the orphan budget. The
+     * science-region check is parent-dependent and waits; version, committed
+     * payload, transaction signatures and proof of work do not. */
+    if (s.version != SHARE_VERSION || payload_root_check(&s, txs, ntx, sci, nsci) ||
+        share_verify(&s, NULL) < SHARE_K)
+        return CH_INVALID;
+    for (int i = 0; i < ntx; i++) if (tx_check_sig(&txs[i])) return CH_INVALID;
     if (nO == capO) {
         int nc = capO ? capO * 2 : 256;
         orphan_t *no = realloc(O, (size_t)nc * sizeof *O);
@@ -225,6 +239,7 @@ static int submit_one(const uint8_t *msg, size_t len, uint8_t missing[32], int64
     memcpy(copy, msg, len);
     O[nO].msg = copy; O[nO].len = (uint16_t)len;
     memcpy(O[nO].parent, s.prev, 32);
+    memcpy(O[nO].id, id, 32);
     nO++;
     orphan_bytes += len;
     return CH_ORPHAN;
@@ -255,6 +270,12 @@ static void resolve_orphans(const uint8_t first[32], int64_t now) {
         }
     }
     free(q);
+}
+
+static void clear_orphans(void) {
+    for (int i = 0; i < nO; i++) free(O[i].msg);
+    nO = 0;
+    orphan_bytes = 0;
 }
 
 int chain_submit(const uint8_t *msg, size_t len, uint8_t missing[32], int64_t now) {
@@ -302,23 +323,47 @@ int chain_init(const char *dir, accept_fn cb) {
     FILE *f = fopen(path, "rb");
     int loaded = 0;
     off_t good = 0;
-    int damaged = 0;
+    int damaged = 0, ioerr = 0;
     if (f) {
         for (;;) {
             size_t n = fread(l, 1, 2, f);
-            if (!n) break;
-            if (n != 2) { damaged = 1; break; }
-            size_t len = (size_t)(l[0] | l[1] << 8);
-            if (len < SHARE_SIZE + 4 || len > sizeof msg || fread(msg, 1, len, f) != len) {
-                damaged = 1; break;
+            if (!n) { if (ferror(f)) ioerr = 1; break; }
+            if (n != 2) {
+                if (ferror(f)) ioerr = 1;
+                else damaged = 1;
+                break;
             }
+            size_t len = (size_t)(l[0] | l[1] << 8);
+            if (len < SHARE_SIZE + 4 || len > sizeof msg) { damaged = 1; break; }
+            if (fread(msg, 1, len, f) != len) {
+                if (ferror(f)) ioerr = 1;
+                else damaged = 1;
+                break;
+            }
+            int r = chain_submit(msg, len, miss, 0);
+            if (r != CH_TIP && r != CH_ACCEPT) { damaged = 1; break; }
+            loaded++;
             good = ftello(f);
-            if (chain_submit(msg, len, miss, 0) <= CH_ACCEPT) loaded++;
+            if (good < 0) { damaged = 1; break; }
         }
         fclose(f);
-        if (damaged && good >= 0) {
+        /* An I/O error is not evidence that the suffix is corrupt. Truncating
+         * a potentially healthy database after a transient read failure would
+         * destroy accepted history, so fail closed and leave it untouched. */
+        if (ioerr) return -1;
+        if (damaged) {
+            /* Persisted records are written only after acceptance and in
+             * parent-before-child order. Anything else is corruption, not a
+             * live orphan to retain in memory after healing the file. Do not
+             * append behind a corrupt suffix if healing fails: the next
+             * restart would truncate those newly accepted shares as well. */
+            clear_orphans();
+            if (good < 0) return -1;
             int fd = open(path, O_WRONLY);
-            if (fd >= 0) { ftruncate(fd, good); close(fd); }
+            if (fd < 0) return -1;
+            int bad = ftruncate(fd, good) || fsync(fd);
+            if (close(fd)) bad = 1;
+            if (bad) return -1;
         }
     }
     db = fopen(path, "ab");

@@ -133,6 +133,7 @@ footer { border-top: 1px solid var(--rule); color: var(--faded); font-size: .85r
   </form>
   {{with .Stats.Meta}}
     {{if eq .check "ok"}}<span class="pulse">Ledger matches node at <b>{{num .check_height}}</b></span>
+    {{else if eq .check "sample"}}<span class="pulse">Ledger sample matches node at <b>{{num .check_height}}</b> ({{.check_count}} of {{.check_total}}, rotating)</span>
     {{else if .check}}<span class="pulse bad">Ledger differs from node: {{.check}}</span>
     {{else}}<span class="pulse">Cross-checking ledger with node</span>{{end}}
   {{end}}

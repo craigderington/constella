@@ -631,7 +631,28 @@ static void peer_handshake_done(const peer_t *p) {
     addr_good(p->dial_ip, p->dial_port, p->attempt);
 }
 
+/* Seeds and learned addresses share one outbound budget and one diversity
+ * rule. Letting configured/DNS seeds bypass this check allowed up to sixteen
+ * of them (including one netgroup repeated sixteen times) to crowd out every
+ * table-selected peer. */
+static int outbound_slot_available(const uint8_t ip[16]) {
+    uint8_t group[8];
+    if (ip) addr_netgroup(ip, group);
+    int have = 0;
+    for (int i = 0; i < MAX_PEERS; i++) {
+        if (P[i].state == P_FREE || P[i].inbound) continue;
+        have++;
+        if (ip && P[i].has_ip) {
+            uint8_t existing[8];
+            addr_netgroup(P[i].dial_ip, existing);
+            if (!memcmp(group, existing, 8)) return 0;
+        }
+    }
+    return have < NET_OUTBOUND;
+}
+
 static void dial_addr(const addr_t *a) {
+    if (!outbound_slot_available(a->ip)) return;
     struct sockaddr_storage ss;
     socklen_t sl = sa_pack(&ss, a->ip, a->port);
     int fd = socket(ss.ss_family, SOCK_STREAM, 0);
@@ -650,13 +671,14 @@ static void dial(int s) {
     hints.ai_socktype = SOCK_STREAM;
     S[s].next = now_sec() + 5;
     if (getaddrinfo(S[s].host, S[s].port, &hints, &res)) return;
+    uint8_t ip[16];
+    uint16_t port = 0;
+    int known = sa_unpack(res->ai_addr, ip, &port) == 0;
+    if (!outbound_slot_available(known ? ip : NULL)) { freeaddrinfo(res); return; }
     int fd = socket(res->ai_family, SOCK_STREAM, 0);
     if (fd < 0) { freeaddrinfo(res); return; }
     nonblock(fd);
     int r = connect(fd, res->ai_addr, res->ai_addrlen);
-    uint8_t ip[16];
-    uint16_t port = 0;
-    int known = sa_unpack(res->ai_addr, ip, &port) == 0;
     freeaddrinfo(res);
     if (r < 0 && errno != EINPROGRESS) { close(fd); return; }
     int i = alloc_peer(fd, P_CONNECTING, s, 0, NULL);
@@ -1073,6 +1095,19 @@ int net_inbound_group_count_vector(const uint8_t ip[16]) {
         n += P[i].state != P_FREE && P[i].inbound && P[i].has_netgroup &&
              !memcmp(P[i].netgroup, group, 8);
     return n;
+}
+
+int net_outbound_add_vector(const uint8_t ip[16]) {
+    if (!outbound_slot_available(ip)) return 0;
+    int i = alloc_peer(-1, P_UP, -1, 0, NULL);
+    if (i < 0) return 0;
+    memcpy(P[i].dial_ip, ip, 16);
+    P[i].has_ip = 1;
+    return 1;
+}
+
+int net_outbound_slot_vector(const uint8_t ip[16]) {
+    return outbound_slot_available(ip);
 }
 
 void net_dial_vector(const uint8_t ip[16], uint16_t port) {
