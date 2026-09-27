@@ -1,4 +1,5 @@
 #include "net.h"
+#include "addr.h"
 #include "params.h"
 #include "util.h"
 #include "vendor/monocypher.h"
@@ -24,6 +25,17 @@
 #define HDR       NET_HDR
 #define MAXPAY    (NET_MAXPAY + 16)
 
+/* Unsolicited ADDR is rate-limited per peer per interval (spec line 186): at
+ * most ADDR_RATE_MAX inbound ADDR frames per ADDR_RATE_WINDOW seconds of wall
+ * clock, counted independently per connection. Exceeding it drops the peer,
+ * the same treatment as any other malformed or oversized gossip - a peer that
+ * floods addresses at us is indistinguishable in intent from one sending
+ * garbage. GETADDR is answered once per connection (peer_t.addr_answered);
+ * repeats are silently ignored rather than punished, per spec line 185, so a
+ * legitimate peer that asks twice by mistake is not dropped for it. */
+#define ADDR_RATE_WINDOW 60
+#define ADDR_RATE_MAX    3
+
 enum { P_FREE, P_CONNECTING, P_UP };
 
 typedef struct {
@@ -42,6 +54,12 @@ typedef struct {
 	uint8_t eph_sk[32], eph_pk[32], peer_eph[32], peer_id[32];
 	uint8_t txkey[32], rxkey[32];
 	uint64_t txseq, rxseq;
+	/* Gossip guards, both per-connection: `addr_answered` latches after the
+	 * first GETADDR reply (never reset for the life of the connection);
+	 * `addr_rl_at`/`addr_rl_n` are a fixed-window inbound-ADDR counter. */
+	int addr_answered;
+	int64_t addr_rl_at;
+	int addr_rl_n;
 } peer_t;
 
 typedef struct { char host[128], port[8]; int peer; int64_t next; } seed_t;
@@ -267,6 +285,95 @@ int net_peers(void) {
     int c = 0;
     for (int i = 0; i < MAX_PEERS; i++) c += P[i].state == P_UP;
     return c;
+}
+
+/* ---- gossip: MSG_GETADDR / MSG_ADDR ----------------------------------- */
+
+static void put16le(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static uint16_t get16le(const uint8_t *p) { return (uint16_t)(p[0] | (uint16_t)p[1] << 8); }
+static uint32_t get32le(const uint8_t *p) {
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+int addr_msg_put(uint8_t out[ADDR_MSG_ENTRY_SIZE], const uint8_t ip[16],
+                 uint16_t port, uint32_t seen) {
+    memcpy(out, ip, 16);
+    put16le(out + 16, port);
+    out[18] = (uint8_t)seen; out[19] = (uint8_t)(seen >> 8);
+    out[20] = (uint8_t)(seen >> 16); out[21] = (uint8_t)(seen >> 24);
+    return (int)ADDR_MSG_ENTRY_SIZE;
+}
+
+int addr_msg_ingest(const uint8_t *buf, uint16_t len, uint16_t count, uint32_t now) {
+    /* Count validated against ADDR_MAX_ENTRIES and against the buffer length
+     * BEFORE it is used to index anything - an over-large or mismatched
+     * count is rejected outright, never truncated to what fits. Both
+     * operands of the multiplication are already bounded (count <= 180, the
+     * entry size is a compile-time constant), so it cannot wrap. */
+    if (count > ADDR_MAX_ENTRIES) return -1;
+    if ((uint32_t)count * ADDR_MSG_ENTRY_SIZE != (uint32_t)len) return -1;
+
+    int added = 0;
+    for (uint16_t i = 0; i < count; i++) {
+        const uint8_t *e = buf + (uint32_t)i * ADDR_MSG_ENTRY_SIZE;
+        uint8_t ip[16];
+        memcpy(ip, e, 16);
+        uint16_t port = get16le(e + 16);
+        uint32_t seen = get32le(e + 18);
+        /* Ruling AB: clamp, never reject. A peer whose clock runs ahead (or
+         * an attacker claiming a far-future timestamp) degrades to "as fresh
+         * as right now" instead of being able to plant an entry that never
+         * ages: addr_add's bucket_stalest evicts the lowest `seen`, and
+         * addr_add's own `if (seen > g_max_seen) g_max_seen = seen;` would
+         * otherwise let one gossiped value push the whole table's freshness
+         * high-water mark to the peer's choosing, making every honest entry
+         * look stale by comparison (addr.c's is_stale()). Clamping to `now`
+         * bounds the entry to what a legitimately-fresh entry could claim,
+         * so it competes on the same footing instead of a permanent one. */
+        if (seen > now) seen = now;
+        /* addr_add applies addr_is_routable itself; not duplicated here. */
+        added += addr_add(ip, port, seen);
+    }
+    return added;
+}
+
+/* Answered once per connection (spec line 185): repeats are ignored, not
+ * penalised. Gathers a netgroup-diverse batch via addr_select's own avoid
+ * list, so a reply never repeats a netgroup even though addr_select alone
+ * gives no uniqueness guarantee across separate calls. */
+static void handle_getaddr(int i, uint16_t len) {
+    peer_t *p = &P[i];
+    if (len != 0) { drop(i); return; }        /* GETADDR carries no payload */
+    if (p->addr_answered) return;             /* repeat: ignored, not dropped */
+    p->addr_answered = 1;
+
+    uint8_t avoid[ADDR_MAX_ENTRIES][8];
+    uint8_t out[2 + ADDR_MAX_ENTRIES * ADDR_MSG_ENTRY_SIZE];
+    int n = 0;
+    addr_t got;
+    while (n < ADDR_MAX_ENTRIES && addr_select(&got, avoid, n)) {
+        addr_netgroup(got.ip, avoid[n]);
+        addr_msg_put(out + 2 + (size_t)n * ADDR_MSG_ENTRY_SIZE, got.ip, got.port, got.seen);
+        n++;
+    }
+    put16le(out, (uint16_t)n);
+    net_send(i, MSG_ADDR, out, (uint16_t)(2 + (size_t)n * ADDR_MSG_ENTRY_SIZE));
+}
+
+static void handle_addr_msg(int i, const uint8_t *msg, uint16_t len) {
+    peer_t *p = &P[i];
+    int64_t t = now_sec();
+    if (!p->addr_rl_at || t - p->addr_rl_at >= ADDR_RATE_WINDOW) {
+        p->addr_rl_at = t;
+        p->addr_rl_n = 0;
+    }
+    if (++p->addr_rl_n > ADDR_RATE_MAX) { drop(i); return; }   /* flood */
+
+    if (len < 2) { drop(i); return; }         /* malformed: no room for count */
+    uint16_t count = get16le(msg);
+    if (addr_msg_ingest(msg + 2, (uint16_t)(len - 2), count, (uint32_t)t) < 0) {
+        drop(i);                              /* malformed: count/length mismatch */
+    }
 }
 
 static int append_hs(peer_t *p, uint8_t type, const uint8_t payload[64]) {
@@ -619,7 +726,15 @@ static void readable(int i) {
 			msg = plain; msglen = (uint16_t)(len - 16);
 			if (!p->hello && (p->rx[4] != MSG_HELLO || msglen != 32)) { gate_hint(0); drop(i); return; }
 			if (p->rx[4] == MSG_HELLO) p->hello = 1;
-			cb_msg(i, p->rx[4], msg, msglen);
+			/* Gossip is handled here, not handed to cb_msg: it is wire-level
+			 * bookkeeping (the once-per-connection latch, the rate limiter)
+			 * that belongs with the rest of the per-peer connection state,
+			 * not with the application (node.c). Both guards apply only to
+			 * handshaked, HELLO'd peers - the same gate every other message
+			 * type above already passed through. */
+			if (p->rx[4] == MSG_GETADDR) handle_getaddr(i, msglen);
+			else if (p->rx[4] == MSG_ADDR) handle_addr_msg(i, msg, msglen);
+			else cb_msg(i, p->rx[4], msg, msglen);
 		}
         if (P[i].state != P_UP) return;              /* dropped during callback */
         memmove(p->rx, p->rx + HDR + len, (size_t)(p->rxn - HDR - len));
