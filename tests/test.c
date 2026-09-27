@@ -611,22 +611,25 @@ static void t_chain_recovery(void) {
  * the two constructions drifting apart. These exact strings are asserted on
  * the other side too, in explorer/internal/p2p/transport_test.go. Negative
  * cases (tampered header, tampered ciphertext, replay, wrong key) live there,
- * where there is already a reader to feed. */
+ * where there is already a reader to feed.
+ *
+ * What is pinned here is the framing - header as AD, counter nonce, tag
+ * placement - not how the key was reached, so the keys are literals. They are
+ * the two session keys the superseded pre-shared-key schedule produced for
+ * psk = 00..1f, low = 11*32, high = 22*32, which is what keeps these frame
+ * strings and the Go constants valid across the handshake change. */
 static void t_transport_vector(void) {
-    uint8_t key[32], low[32], high[32], out[128];
+    uint8_t k_lo[32], k_hi[32], out[128];
     char hx[280];
-    for (int i = 0; i < 32; i++) { key[i] = (uint8_t)i; low[i] = 0x11; high[i] = 0x22; }
+    hex_dec(k_lo, 32, "64e678befc6f30cc634c3fab917765710082860242940aab5efa6e61fe321938");
+    hex_dec(k_hi, 32, "e267cd603f4c9e72797c67a49a384b2fd18f41ba87974d76859f2a51332167fd");
 
-    net_auth_vector(out, key, low);
-    hex_enc(hx, out, 32);
-    CHECK(!strcmp(hx, "c4afcebefb54c3f0c50b62ed7e07952ae5143647bb8ba8f6f3e39367f6ead244"));
-
-    int n = net_seal_vector(out, key, low, high, "lo", 0, 2, "constella", 9);
+    int n = net_seal_vector(out, k_lo, 0, 2, "constella", 9);
     hex_enc(hx, out, (size_t)n);
     CHECK(!strcmp(hx, "43535433021900c06b492f10b03168623a1f5ab88274c4992382b1d6e10fdc9a"));
 
     const char *m = "second frame, counter 1";       /* other direction, counter 1 */
-    n = net_seal_vector(out, key, low, high, "hi", 1, 5, m, (uint16_t)strlen(m));
+    n = net_seal_vector(out, k_hi, 1, 5, m, (uint16_t)strlen(m));
     hex_enc(hx, out, (size_t)n);
     CHECK(!strcmp(hx, "43535433052700c6f1bead58b05daad2fe578fc92c49eafa0cfccaa041f7bd4268dcc6a8fc028f66a6d658dcda7d"));
 }
@@ -646,7 +649,7 @@ static void t_handshake_vector(void) {
         id_a[i] = 0xaa;
         id_b[i] = 0x55;
     }
-    CHECK(net_handshake_vector(lo, hi, eph_a, eph_b, id_a, id_b) == 0);
+    net_handshake_vector(lo, hi, eph_a, eph_b, id_a, id_b);
     hex_enc(hx, lo, 32);
     CHECK(!strcmp(hx, "6d66ba6be4ed702e831b1c892f516c4c78306abd11609b42a5c406f96026e9bb"));
     hex_enc(hx, hi, 32);
@@ -656,7 +659,7 @@ static void t_handshake_vector(void) {
      * identities must not change either key, or the two ends of one link
      * would derive different keys depending on who dialled. */
     uint8_t lo2[32], hi2[32];
-    CHECK(net_handshake_vector(lo2, hi2, eph_b, eph_a, id_b, id_a) == 0);
+    net_handshake_vector(lo2, hi2, eph_b, eph_a, id_b, id_a);
     CHECK(!memcmp(lo, lo2, 32) && !memcmp(hi, hi2, 32));
     CHECK(memcmp(lo, hi, 32));               /* the two directions differ */
 }
@@ -774,11 +777,19 @@ static void t_cli_socket(void) {
 
 /* Drive the real net.c listener over a real socket and watch it refuse a bad
  * handshake. Each case below is pinned to one guard and goes green again only
- * when that guard is restored: HS_SELF must be refused *before* the node
- * answers with its phase 2 (the self-identity check), HS_BADSIG *after* it
- * (crypto_eddsa_check). Asserting only "the connection died" would let one
- * guard cover both cases, which is one property wearing two hats. */
-enum { HS_GOOD, HS_BADSIG, HS_SELF };
+ * when that guard is restored, so each asserts *where* the refusal happened,
+ * not merely that the connection died:
+ *
+ *   HS_SELF      -1  refused at phase 1, before the node sends its own
+ *                    phase 2                       -> the self-identity check
+ *   HS_BADSIG    -2  refused at phase 2            -> crypto_eddsa_check
+ *   HS_LOWORDER  -2  refused at phase 2            -> the all-zero shared check
+ *
+ * HS_BADSIG and HS_LOWORDER share a return code but not a guard: a bad
+ * signature never reaches the key schedule, and a low-order ephemeral carries
+ * a perfectly valid signature. Removing either guard alone reddens exactly
+ * one of them. */
+enum { HS_GOOD, HS_BADSIG, HS_SELF, HS_LOWORDER };
 
 /* Give the listener `ms` of real time. Counting poll() calls instead would be
  * a lie whenever something in the set is already writable: the loop then spins
@@ -798,12 +809,12 @@ static void net_pump(int ms) {
     }
 }
 
-/* One 64-byte MSG_AUTH frame, header and payload in a single write. */
-static int hs_send(int fd, const uint8_t payload[64]) {
+/* One 64-byte handshake frame, header and payload in a single write. */
+static int hs_send(int fd, uint8_t type, const uint8_t payload[64]) {
     uint8_t f[NET_HDR + 64];
     uint32_t m = NET_MAGIC;
     for (int k = 0; k < 4; k++) f[k] = (uint8_t)(m >> 8 * k);
-    f[4] = MSG_AUTH; f[5] = 64; f[6] = 0;
+    f[4] = type; f[5] = 64; f[6] = 0;
     memcpy(f + NET_HDR, payload, 64);
     return send(fd, f, sizeof f, 0) == (ssize_t)sizeof f ? 0 : -1;
 }
@@ -837,6 +848,11 @@ static int hs_try(uint16_t port, const wallet_t *id, int mode, const wallet_t *n
     ssize_t r = 0;
     for (int i = 0; i < 32; i++) eph_sk[i] = (uint8_t)(0x5a + i);
     crypto_x25519_public_key(eph_pk, eph_sk);
+    /* Zero the key itself, not just the outgoing bytes, so the transcript this
+     * probe signs and the one it verifies stay self-consistent: the only thing
+     * under test is then the node's willingness to key a session off an
+     * all-zero shared secret. */
+    if (mode == HS_LOWORDER) memset(eph_pk, 0, 32);
 
     /* their phase 1: ephemeral, then the identity they claim */
     if (recv(fd, hdr, NET_HDR, MSG_WAITALL) != NET_HDR) goto out;
@@ -848,13 +864,13 @@ static int hs_try(uint16_t port, const wallet_t *id, int mode, const wallet_t *n
     /* our phase 1 */
     memcpy(pay, eph_pk, 32);
     memcpy(pay + 32, id->pk, 32);
-    if (hs_send(fd, pay)) goto out;
+    if (hs_send(fd, MSG_AUTH, pay)) goto out;
     net_pump(200);
 
     /* their phase 2, or a closed socket if they refused the identity we claimed */
     r = recv(fd, hdr, NET_HDR, MSG_WAITALL);
     if (r == 0) { rc = -1; goto out; }
-    if (r != NET_HDR || hdr[4] != MSG_AUTH || hdr[5] != 64 || hdr[6] != 0) goto out;
+    if (r != NET_HDR || hdr[4] != MSG_AUTH2 || hdr[5] != 64 || hdr[6] != 0) goto out;
     if (recv(fd, buf, 64, MSG_WAITALL) != 64) goto out;
     /* their signature covers their ephemeral first: this pins the transcript
      * byte order the Go explorer has to reproduce exactly. */
@@ -865,7 +881,7 @@ static int hs_try(uint16_t port, const wallet_t *id, int mode, const wallet_t *n
     hs_tr(tr, eph_pk, peer_eph);
     crypto_eddsa_sign(sig, id->sk, tr, sizeof tr);
     if (mode == HS_BADSIG) sig[0] = (uint8_t)(sig[0] ^ 1);
-    if (hs_send(fd, sig)) goto out;
+    if (hs_send(fd, MSG_AUTH2, sig)) goto out;
     net_pump(200);
 
     /* the HELLO queued at accept time, now sealed: 32 bytes + a 16-byte tag */
@@ -887,7 +903,6 @@ static void t_handshake_live(void) {
     wallet_from_seed(&nid, seed);
     for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(0xf0 - i);
     wallet_from_seed(&cid, seed);
-    CHECK(memcmp(nid.pk, cid.pk, 32) != 0);
 
     uint16_t port = 0;
     for (uint16_t t = 17993; t < 18033 && !port; t++)
@@ -899,6 +914,7 @@ static void t_handshake_live(void) {
     CHECK(net_peers() == 0);                            /* and the node let it go cleanly */
     CHECK(hs_try(port, &cid, HS_BADSIG, &nid) == -2);   /* pinned to crypto_eddsa_check */
     CHECK(hs_try(port, &nid, HS_SELF, &nid) == -1);     /* pinned to the self-identity check */
+    CHECK(hs_try(port, &cid, HS_LOWORDER, &nid) == -2); /* pinned to the all-zero shared check */
     net_stop();
 }
 

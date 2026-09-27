@@ -28,7 +28,7 @@ enum { P_FREE, P_CONNECTING, P_UP };
 
 typedef struct {
 	int fd, state, seed, inbound, hello;
-	int secure, auth_sent, hs_phase, auth_ready;
+	int auth_sent, hs_phase, auth_ready;
 	uint8_t rx[RXCAP];
 	int rxn;
 	int64_t rx_at, up_at;
@@ -52,7 +52,6 @@ static int nseeds, lfd = -1, pmap[MAX_PEERS + 1];
 static net_msg_fn cb_msg;
 static net_conn_fn cb_conn;
 static int n_inbound;
-static int secure_mode;
 static wallet_t node_id;
 
 static void nonblock(int fd) { fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK); }
@@ -124,13 +123,25 @@ static void hs_session_keys(uint8_t k_lo[32], uint8_t k_hi[32], const uint8_t sh
 }
 
 /* Derive both keys and assign directions. The side whose identity sorts lower
- * transmits under k_lo; both ends compute the same pair. */
-static void hs_derive(uint8_t txkey[32], uint8_t rxkey[32], const uint8_t eph_sk[32],
-                      const uint8_t eph_peer[32], const uint8_t id_self[32],
-                      const uint8_t id_peer[32]) {
+ * transmits under k_lo; both ends compute the same pair. Returns -1 if the
+ * peer sent a low-order ephemeral point.
+ *
+ * That check is not optional. X25519 against a low-order point yields an
+ * all-zero shared secret, and both identities travel in the clear in phase 1,
+ * so the whole key schedule becomes computable by any passive observer. A
+ * signature over the transcript stops a man in the middle from substituting an
+ * ephemeral key; it does not stop the peer from choosing a bad one. Without
+ * this, an authenticated peer can unilaterally strip forward secrecy from an
+ * honest node's link - the exact property the pre-shared key lacked and this
+ * handshake exists to provide. RFC 7748 section 6.1 says to reject it. */
+static int hs_derive(uint8_t txkey[32], uint8_t rxkey[32], const uint8_t eph_sk[32],
+                     const uint8_t eph_peer[32], const uint8_t id_self[32],
+                     const uint8_t id_peer[32]) {
+    static const uint8_t zero[32] = {0};
     uint8_t shared[32], k_lo[32], k_hi[32];
     int self_low = memcmp(id_self, id_peer, 32) < 0;
     crypto_x25519(shared, eph_sk, eph_peer);
+    if (!crypto_verify32(shared, zero)) { crypto_wipe(shared, sizeof shared); return -1; }
     hs_session_keys(k_lo, k_hi, shared, self_low ? id_self : id_peer,
                     self_low ? id_peer : id_self);
     memcpy(txkey, self_low ? k_lo : k_hi, 32);
@@ -138,6 +149,7 @@ static void hs_derive(uint8_t txkey[32], uint8_t rxkey[32], const uint8_t eph_sk
     crypto_wipe(shared, sizeof shared);
     crypto_wipe(k_lo, sizeof k_lo);
     crypto_wipe(k_hi, sizeof k_hi);
+    return 0;
 }
 
 static void make_nonce(uint8_t nonce[24], uint64_t seq) {
@@ -178,10 +190,12 @@ static int encrypt_pending(peer_t *p) {
     while (off < oldn) {
         if (oldn - off < HDR) { free(old); return -1; }
         uint16_t len = (uint16_t)(old[off + 5] | old[off + 6] << 8);
-        if (len > NET_MAXPAY || oldn - off < (size_t)HDR + len) {
-            free(old); return -1;               /* handshake frames never land here */
+        uint8_t ty = old[off + 4];
+        if (ty == MSG_AUTH || ty == MSG_AUTH2 || len > NET_MAXPAY ||
+            oldn - off < (size_t)HDR + len) {
+            free(old); return -1;               /* handshake frames never queue here */
         }
-        if (append_encrypted(p, old[off + 4], old + off + HDR, len)) {
+        if (append_encrypted(p, ty, old + off + HDR, len)) {
             free(old); return -1;
         }
         off += HDR + len;
@@ -197,7 +211,6 @@ static int alloc_peer(int fd, int state, int seed) {
         memset(&P[i], 0, sizeof P[i]);
 		P[i].fd = fd; P[i].state = state; P[i].seed = seed;
 		P[i].inbound = seed < 0;
-		P[i].secure = secure_mode;
 		P[i].up_at = state == P_UP ? now_sec() : 0;
 		if (P[i].inbound) n_inbound++;
         int one = 1;
@@ -213,7 +226,10 @@ static void drop(int i) {
 	free(P[i].tx);
 	if (P[i].seed >= 0) { S[P[i].seed].peer = -1; S[P[i].seed].next = now_sec() + 5; }
 	if (P[i].inbound) n_inbound--;
-    P[i].state = P_FREE;
+	/* The ephemeral secret and both session keys live in this static slot and
+	 * would otherwise sit there until some later peer happens to reuse it. */
+	crypto_wipe(&P[i], sizeof P[i]);
+	P[i].state = P_FREE;
 }
 
 static void flush(int i) {
@@ -224,7 +240,7 @@ static void flush(int i) {
         memmove(p->hs_tx, p->hs_tx + w, (size_t)p->hs_txn - (size_t)w);
         p->hs_txn -= (int)w;
     }
-    if (p->secure && !p->auth_ready) return;    /* application traffic waits */
+    if (!p->auth_ready) return;                 /* application traffic waits */
     while (p->txn) {
         ssize_t w = send(p->fd, p->tx, p->txn, MSG_NOSIGNAL);
 		if (w <= 0) { if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return; drop(i); return; }
@@ -236,7 +252,7 @@ static void flush(int i) {
 void net_send(int i, uint8_t type, const void *pay, uint16_t len) {
     if (i < 0 || i >= MAX_PEERS || P[i].state != P_UP) return;
     peer_t *p = &P[i];
-    int r = p->secure && p->auth_ready ? append_encrypted(p, type, pay, len) :
+    int r = p->auth_ready ? append_encrypted(p, type, pay, len) :
             append_plain(p, type, pay, len);
     if (r) { drop(i); return; }
     flush(i);
@@ -253,10 +269,10 @@ int net_peers(void) {
     return c;
 }
 
-static int append_hs(peer_t *p, const uint8_t payload[64]) {
+static int append_hs(peer_t *p, uint8_t type, const uint8_t payload[64]) {
     if ((size_t)p->hs_txn + HDR + 64 > sizeof p->hs_tx) return -1;
     uint8_t *h = p->hs_tx + p->hs_txn;
-    put_hdr(h, MSG_AUTH, 64);
+    put_hdr(h, type, 64);
     memcpy(h + HDR, payload, 64);
     p->hs_txn += HDR + 64;
     return 0;
@@ -266,7 +282,7 @@ static int append_hs(peer_t *p, const uint8_t payload[64]) {
  * X25519 public key and our static identity. No initiator, no responder. */
 static int start_auth(int i) {
     peer_t *p = &P[i];
-    if (!p->secure || p->auth_sent) return 0;
+    if (p->auth_sent) return 0;
     /* Fails closed: without entropy the ephemeral key is guessable and the
      * forward secrecy this whole handshake exists for is gone. */
     if (random_bytes(p->eph_sk, 32)) return -1;
@@ -274,20 +290,22 @@ static int start_auth(int i) {
     uint8_t payload[64];
     memcpy(payload, p->eph_pk, 32);
     memcpy(payload + 32, node_id.pk, 32);
-    if (append_hs(p, payload)) return -1;
+    if (append_hs(p, MSG_AUTH, payload)) return -1;
     p->auth_sent = 1;
     flush(i);
     return P[i].state == P_UP ? 0 : -1;
 }
 
-/* Both handshake frames are MSG_AUTH and both are 64 bytes; they are told
- * apart by arrival order, which is unambiguous on a stream socket. The first
- * is the peer's phase 1, the second its phase 2, and a third is a protocol
- * error. */
-static int finish_auth(int i, const uint8_t *payload, uint16_t len) {
+/* The two phases carry the same 64 bytes of payload, so they are separated by
+ * message type rather than by arrival order: the type byte is already in the
+ * header and costs nothing, while a discriminator inside the payload would
+ * change the length the transcript layout assumes. A frame whose type does not
+ * match the phase we are in is a protocol error, and so is a third one. */
+static int finish_auth(int i, uint8_t type, const uint8_t *payload, uint16_t len) {
     peer_t *p = &P[i];
-    if (!p->secure || !p->auth_sent || len != 64) return -1;
+    if (!p->auth_sent || len != 64) return -1;
     if (p->hs_phase == 0) {
+        if (type != MSG_AUTH) return -1;
         memcpy(p->peer_eph, payload, 32);
         memcpy(p->peer_id, payload + 32, 32);
         /* A node dialling itself: identical identities make min == max, so
@@ -298,16 +316,16 @@ static int finish_auth(int i, const uint8_t *payload, uint16_t len) {
         hs_transcript(tr, p->eph_pk, p->peer_eph);
         crypto_eddsa_sign(sig, node_id.sk, tr, sizeof tr);
         p->hs_phase = 1;
-        if (append_hs(p, sig)) return -1;
+        if (append_hs(p, MSG_AUTH2, sig)) return -1;
         flush(i);
         return P[i].state == P_UP ? 0 : -1;
     }
-    if (p->hs_phase != 1) return -1;
+    if (p->hs_phase != 1 || type != MSG_AUTH2) return -1;
     /* Phase 2: the transcript as the peer saw it - its ephemeral first. */
     uint8_t tr[HS_TRANSCRIPT];
     hs_transcript(tr, p->peer_eph, p->eph_pk);
     if (crypto_eddsa_check(payload, p->peer_id, tr, sizeof tr)) return -1;
-    hs_derive(p->txkey, p->rxkey, p->eph_sk, p->peer_eph, node_id.pk, p->peer_id);
+    if (hs_derive(p->txkey, p->rxkey, p->eph_sk, p->peer_eph, node_id.pk, p->peer_id)) return -1;
     crypto_wipe(p->eph_sk, sizeof p->eph_sk);   /* forward secrecy starts here */
     p->hs_phase = 2;
     p->auth_ready = 1;
@@ -317,7 +335,7 @@ static int finish_auth(int i, const uint8_t *payload, uint16_t len) {
 }
 
 static int peer_up(int i) {
-    if (P[i].secure && start_auth(i)) return -1;
+    if (start_auth(i)) return -1;
     cb_conn(i);
     return P[i].state == P_UP ? 0 : -1;
 }
@@ -352,10 +370,9 @@ void net_tick(void) {
 
 int net_init(uint16_t port, const char *csv, const wallet_t *id,
              net_msg_fn on_msg, net_conn_fn on_conn) {
+    if (!id) return -1;                    /* there is no unauthenticated mode */
     cb_msg = on_msg; cb_conn = on_conn;
-    secure_mode = 0;
-    memset(&node_id, 0, sizeof node_id);
-    if (id) { node_id = *id; secure_mode = 1; }
+    node_id = *id;
     lfd = socket(AF_INET, SOCK_STREAM, 0);
     if (lfd < 0) return -1;
     int one = 1;
@@ -422,7 +439,6 @@ static int cframe_recv(int fd, uint8_t *hdr, uint8_t *buf) {
 
 int net_client_send(net_client_t *c, uint8_t type, const void *pay, uint16_t len) {
     if (len > NET_MAXPAY) return -1;
-    if (!c->secure) return cframe_send(c->fd, type, pay, len);
     uint8_t h[HDR], nonce[24];
     static uint8_t ct[MAXPAY];
     put_hdr(h, type, (uint16_t)(len + 16));
@@ -438,14 +454,12 @@ int net_client_wait(net_client_t *c, uint8_t want, uint8_t *out, uint16_t *len) 
     for (int i = 0; i < 4096; i++) {
         int n = cframe_recv(c->fd, hdr, buf);
         if (n < 0) return -1;
-        if (c->secure) {
-            if (hdr[4] == MSG_AUTH || n < 16) return -1;
-            uint8_t nonce[24];
-            make_nonce(nonce, c->rxseq++);
-            if (crypto_aead_unlock(buf, buf + n - 16, c->rxkey, nonce, hdr, HDR,
-                                   buf, (size_t)n - 16)) return -1;
-            n -= 16;
-        }
+        if (hdr[4] == MSG_AUTH || hdr[4] == MSG_AUTH2 || n < 16) return -1;
+        uint8_t nonce[24];
+        make_nonce(nonce, c->rxseq++);
+        if (crypto_aead_unlock(buf, buf + n - 16, c->rxkey, nonce, hdr, HDR,
+                               buf, (size_t)n - 16)) return -1;
+        n -= 16;
         if (n > NET_MAXPAY) return -1;
         if (hdr[4] == want) { memcpy(out, buf, (size_t)n); *len = (uint16_t)n; return 0; }
     }
@@ -461,6 +475,7 @@ void net_client_close(net_client_t *c) {
 int net_client_open(net_client_t *c, const char *hostport, const wallet_t *id) {
     memset(c, 0, sizeof *c);
     c->fd = -1;
+    if (!id) return -1;                    /* there is no unauthenticated mode */
     char host[256];
     snprintf(host, sizeof host, "%s", hostport);
     char *sep = strrchr(host, ':');
@@ -477,15 +492,15 @@ int net_client_open(net_client_t *c, const char *hostport, const wallet_t *id) {
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
     c->fd = fd;
-    if (id) {
-        /* The same two phases as a gossip peer, in the same order, so there is
-         * one handshake in this codebase and not two. */
+    {
+        /* The same two phases as a gossip peer, in the same order and with the
+         * same rejections, so there is one handshake in this codebase and not
+         * two. */
         uint8_t eph_sk[32], eph_pk[32], peer_eph[32], peer_id[32];
         uint8_t pay[64], hdr[HDR], tr[HS_TRANSCRIPT];
         static uint8_t buf[MAXPAY];
         if (random_bytes(eph_sk, 32)) goto fail;
         crypto_x25519_public_key(eph_pk, eph_sk);
-        c->secure = 1;
         memcpy(pay, eph_pk, 32);
         memcpy(pay + 32, id->pk, 32);
         if (cframe_send(fd, MSG_AUTH, pay, sizeof pay)) goto fail;
@@ -495,11 +510,11 @@ int net_client_open(net_client_t *c, const char *hostport, const wallet_t *id) {
         if (!memcmp(peer_id, id->pk, 32)) goto fail;      /* see finish_auth */
         hs_transcript(tr, eph_pk, peer_eph);
         crypto_eddsa_sign(pay, id->sk, tr, sizeof tr);
-        if (cframe_send(fd, MSG_AUTH, pay, sizeof pay)) goto fail;
-        if (cframe_recv(fd, hdr, buf) != 64 || hdr[4] != MSG_AUTH) goto fail;
+        if (cframe_send(fd, MSG_AUTH2, pay, sizeof pay)) goto fail;
+        if (cframe_recv(fd, hdr, buf) != 64 || hdr[4] != MSG_AUTH2) goto fail;
         hs_transcript(tr, peer_eph, eph_pk);
         if (crypto_eddsa_check(buf, peer_id, tr, sizeof tr)) goto fail;
-        hs_derive(c->txkey, c->rxkey, eph_sk, peer_eph, id->pk, peer_id);
+        if (hs_derive(c->txkey, c->rxkey, eph_sk, peer_eph, id->pk, peer_id)) goto fail;
         crypto_wipe(eph_sk, sizeof eph_sk);
     }
     uint8_t tip[32] = {0};   /* an unknown tip: it only opens the gate */
@@ -515,33 +530,6 @@ fail:
  * constants - nothing would catch the two drifting apart. These let a fixed
  * input be asserted in both languages. The node references neither, so
  * --gc-sections drops them from the shipped binary. */
-/* The superseded pre-shared-key schedule, kept only so the two vector hooks
- * below still pin the AEAD framing - which is unchanged - against the Go
- * explorer. Nothing on the live path calls either of these. */
-static void psk_auth_proof(uint8_t out[32], const uint8_t key[32], const uint8_t challenge[32]) {
-    static const uint8_t tag[] = "CSTL-AUTH1";
-    uint8_t msg[sizeof tag - 1 + 32];
-    memcpy(msg, tag, sizeof tag - 1);
-    memcpy(msg + sizeof tag - 1, challenge, 32);
-    crypto_blake2b_keyed(out, 32, key, 32, msg, sizeof msg);
-}
-
-static void psk_session_key(uint8_t out[32], const uint8_t key[32], const char *direction,
-                            const uint8_t low[32], const uint8_t high[32]) {
-    static const uint8_t tag[] = "CSTL-P2P1";
-    uint8_t msg[sizeof tag - 1 + 2 + 64];
-    memcpy(msg, tag, sizeof tag - 1);
-    memcpy(msg + sizeof tag - 1, direction, 2);
-    memcpy(msg + sizeof tag + 1, low, 32);
-    memcpy(msg + sizeof tag + 1 + 32, high, 32);
-    crypto_blake2b_keyed(out, 32, key, 32, msg, sizeof msg);
-}
-
-int net_auth_vector(uint8_t out[32], const uint8_t key[32], const uint8_t challenge[32]) {
-    psk_auth_proof(out, key, challenge);
-    return 32;
-}
-
 int net_handshake_vector(uint8_t out_lo[32], uint8_t out_hi[32],
                          const uint8_t eph_a_sk[32], const uint8_t eph_b_sk[32],
                          const uint8_t id_a[32], const uint8_t id_b[32]) {
@@ -556,14 +544,12 @@ int net_handshake_vector(uint8_t out_lo[32], uint8_t out_hi[32],
     return 0;
 }
 
-int net_seal_vector(uint8_t *out, const uint8_t key[32], const uint8_t low[32],
-                    const uint8_t high[32], const char *dir, uint64_t seq,
+int net_seal_vector(uint8_t *out, const uint8_t key[32], uint64_t seq,
                     uint8_t type, const void *pay, uint16_t len) {
-    uint8_t sk[32], nonce[24];
-    psk_session_key(sk, key, dir, low, high);
+    uint8_t nonce[24];
     put_hdr(out, type, (uint16_t)(len + 16));
     make_nonce(nonce, seq);
-    crypto_aead_lock(out + HDR, out + HDR + len, sk, nonce, out, HDR, pay, len);
+    crypto_aead_lock(out + HDR, out + HDR + len, key, nonce, out, HDR, pay, len);
     return HDR + len + 16;
 }
 
@@ -585,7 +571,7 @@ int net_pollfds(struct pollfd *pf, int max) {
          * loop at 100%% for the length of a handshake. Ask only for what
          * flush() would actually write. */
         int want_out = P[i].state == P_CONNECTING || P[i].hs_txn ||
-                       (P[i].txn && (!P[i].secure || P[i].auth_ready));
+                       (P[i].txn && P[i].auth_ready);
         pf[n].events = (short)(POLLIN | (want_out ? POLLOUT : 0));
         pmap[n++] = i;
     }
@@ -615,24 +601,22 @@ static void readable(int i) {
         uint32_t m = (uint32_t)p->rx[0] | (uint32_t)p->rx[1] << 8 |
                      (uint32_t)p->rx[2] << 16 | (uint32_t)p->rx[3] << 24;
         uint16_t len = (uint16_t)(p->rx[5] | p->rx[6] << 8);
-		if (m != NET_MAGIC || len > MAXPAY || (!p->secure && len > NET_MAXPAY)) { drop(i); return; }
+		if (m != NET_MAGIC || len > MAXPAY) { drop(i); return; }
 		if (p->rxn < HDR + len) break;
 		uint8_t plain[NET_MAXPAY];
 		const uint8_t *msg = p->rx + HDR;
 		uint16_t msglen = len;
-		if (p->secure && !p->auth_ready) {
-			if (p->rx[4] != MSG_AUTH || finish_auth(i, msg, len)) { gate_hint(1); drop(i); return; }
+		if (!p->auth_ready) {
+			if (finish_auth(i, p->rx[4], msg, len)) { gate_hint(1); drop(i); return; }
 		} else {
-			if (p->secure) {
-				if (p->rx[4] == MSG_AUTH || len < 16) { drop(i); return; }
-				uint8_t nonce[24];
-				make_nonce(nonce, p->rxseq++);
-				if (crypto_aead_unlock(plain, p->rx + HDR + len - 16, p->rxkey,
-				                       nonce, p->rx, HDR, p->rx + HDR, len - 16)) {
-					drop(i); return;
-				}
-				msg = plain; msglen = (uint16_t)(len - 16);
+			if (p->rx[4] == MSG_AUTH || p->rx[4] == MSG_AUTH2 || len < 16) { drop(i); return; }
+			uint8_t nonce[24];
+			make_nonce(nonce, p->rxseq++);
+			if (crypto_aead_unlock(plain, p->rx + HDR + len - 16, p->rxkey,
+			                       nonce, p->rx, HDR, p->rx + HDR, len - 16)) {
+				drop(i); return;
 			}
+			msg = plain; msglen = (uint16_t)(len - 16);
 			if (!p->hello && (p->rx[4] != MSG_HELLO || msglen != 32)) { gate_hint(0); drop(i); return; }
 			if (p->rx[4] == MSG_HELLO) p->hello = 1;
 			cb_msg(i, p->rx[4], msg, msglen);
