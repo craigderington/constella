@@ -25,7 +25,8 @@ enum {
 typedef void (*net_msg_fn)(int peer, uint8_t type, const uint8_t *p, uint16_t len);
 typedef void (*net_conn_fn)(int peer);
 
-/* `id` is this node's static Ed25519 identity (`<datadir>/node.key`), never
+/* `id` is this node's static EdDSA-BLAKE2b identity (`<datadir>/node.key`) -
+ * the project's scheme throughout, not RFC 8032 Ed25519 - never
  * the payout key, and is required: there is no unauthenticated transport. The
  * handshake needs no configuration, so a plaintext mode would only be a
  * downgrade waiting to be reached by accident. */
