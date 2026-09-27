@@ -1202,7 +1202,44 @@ static void t_addr_msg(void) {
     CHECK(addr_msg_ingest(buf, (uint16_t)n, 3, 100000) == 1);   /* only the routable one */
 
     CHECK(addr_msg_ingest(buf, 5, 3, 100000) == -1);                        /* short/malformed */
+    /* Fix round 1, MEDIUM 1: the brief requires "reject rather than truncate
+     * on any inconsistency" - not just when the buffer is too SHORT for the
+     * declared count, but also when it is too LONG. `src/net.c`'s length
+     * check is `!=`, which already rejects this; relaxing it to `>` (accept
+     * an over-long payload and parse only the first count*22 bytes) left the
+     * suite green with no test noticing. Pin the over-long case explicitly. */
+    CHECK(addr_msg_ingest(buf, (uint16_t)(n + 1), 3, 100000) == -1);        /* long/malformed */
     CHECK(addr_msg_ingest(buf, (uint16_t)n, ADDR_MAX_ENTRIES + 1, 100000) == -1);
+}
+
+/* Fix round 1: a golden MSG_ADDR wire vector, pinned byte-for-byte so Task 8's
+ * Go mirror can assert the identical hex and a wire-format disagreement fails
+ * loudly instead of silently - every other wire format on this branch
+ * (the handshake transcript, the AEAD vectors, the chain ids) already has
+ * one; this was the gap. Fixed inputs: ip 198.51.100.7 (v4-mapped), port
+ * 7043 (the project's P2P port), seen 1234567890 (0x499602D2). */
+static void t_addr_msg_vector(void) {
+    uint8_t ip[16], entry[ADDR_MSG_ENTRY_SIZE];
+    char hex[2 * ADDR_MSG_ENTRY_SIZE + 1];
+    mk4(ip, 198, 51, 100, 7);
+    CHECK(addr_msg_put(entry, ip, 7043, 1234567890u) == (int)ADDR_MSG_ENTRY_SIZE);
+    hex_enc(hex, entry, ADDR_MSG_ENTRY_SIZE);
+    /* ip[16] v4-mapped (10 zero bytes, ff ff, then 198.51.100.7) || port
+     * 7043 LE (83 1b) || seen 1234567890 LE (d2 02 96 49) */
+    CHECK(!strcmp(hex, "00000000000000000000ffffc6336407831bd2029649"));
+
+    /* The full MSG_ADDR payload for a single-entry frame: u16 count (LE, 1)
+     * prefixed to the entry above - exact concatenation, no padding. */
+    uint8_t frame[2 + ADDR_MSG_ENTRY_SIZE];
+    char fhex[2 * sizeof frame + 1];
+    frame[0] = 1; frame[1] = 0;
+    memcpy(frame + 2, entry, ADDR_MSG_ENTRY_SIZE);
+    hex_enc(fhex, frame, sizeof frame);
+    CHECK(!strcmp(fhex, "010000000000000000000000ffffc6336407831bd2029649"));
+
+    /* count=0 (a bare 2-byte payload) is legal, not a length error: an empty
+     * table's GETADDR reply is exactly this. */
+    CHECK(addr_msg_ingest(entry, 0, 0, 1234567890u) == 0);
 }
 
 /* Ruling AB, both required properties of the gossiped `seen` clamp, explicit
@@ -1303,8 +1340,9 @@ static void t_addr_seen_clamp(void) {
  * wallet CLI as a separate process; here the "CLI" is just inline C instead
  * of a second exec'd binary. Writes one result byte per case to `outfd`:
  * [0] first GETADDR answered, [1] second GETADDR on the same connection
- * correctly ignored (no second reply within a short window), [2] an
- * unsolicited ADDR flood got the connection dropped (rate-limited). */
+ * correctly ignored (no second reply within a short window) AND the
+ * connection is still alive afterwards, [2] an unsolicited ADDR flood got
+ * the connection dropped (rate-limited). */
 static void addr_gossip_child(const char *hostport, const wallet_t *id, int outfd) {
     uint8_t r[3] = {0, 0, 0};
     net_client_t c;
@@ -1315,13 +1353,37 @@ static void addr_gossip_child(const char *hostport, const wallet_t *id, int outf
         !net_client_wait(&c, MSG_ADDR, out, &outlen) && outlen >= 2)
         r[0] = 1;
 
+    /* Fix round 1, MEDIUM 2: spec line 185 says a repeat GETADDR is
+     * IGNORED, not punished - but a dropped connection also produces a
+     * timeout on the next recv, so the original check here (a bare
+     * net_client_wait timeout) could not tell "ignored" apart from
+     * "dropped". Mutating the guard to `{drop(i); return;}` left the suite
+     * green. Fixed by first confirming the timeout with a raw recv (so we
+     * know the difference between EAGAIN-timeout and EOF-close, the same
+     * technique the flood check below already uses), then - only once that
+     * holds - proving the connection is still genuinely alive by sending an
+     * unrelated message (MSG_GETACCT) on the SAME connection and requiring
+     * a real reply. A dropped connection fails both; a merely-quiet one
+     * (the correct behaviour) passes both. */
     {
         struct timeval tv = {0, 300000};
         setsockopt(c.fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     }
-    if (!net_client_send(&c, MSG_GETADDR, NULL, 0) &&
-        net_client_wait(&c, MSG_ADDR, out, &outlen) == -1)
-        r[1] = 1;                       /* repeat correctly drew no second reply */
+    int repeat_drew_nothing = 0;
+    if (!net_client_send(&c, MSG_GETADDR, NULL, 0)) {
+        uint8_t probe;
+        ssize_t rr = recv(c.fd, &probe, 1, 0);
+        repeat_drew_nothing = (rr < 0);   /* EAGAIN/EWOULDBLOCK timeout, not EOF */
+    }
+    if (repeat_drew_nothing) {
+        uint8_t acct_addr[32]; memset(acct_addr, 0xAB, 32);
+        uint8_t out2[NET_MAXPAY]; uint16_t outlen2;
+        struct timeval tv2 = {2, 0};
+        setsockopt(c.fd, SOL_SOCKET, SO_RCVTIMEO, &tv2, sizeof tv2);
+        if (!net_client_send(&c, MSG_GETACCT, acct_addr, 32) &&
+            !net_client_wait(&c, MSG_ACCT, out2, &outlen2))
+            r[1] = 1;   /* repeat ignored AND the connection is still alive */
+    }
     net_client_close(&c);
 
     {
@@ -1482,7 +1544,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_msg(); t_addr_seen_clamp(); t_addr_gossip_guards();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
