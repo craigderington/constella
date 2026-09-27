@@ -641,7 +641,7 @@ static void t_transport_vector(void) {
  * the same strings, which is the only thing standing between the two
  * implementations and a network fork. */
 static void t_handshake_vector(void) {
-    uint8_t eph_a[32], eph_b[32], id_a[32], id_b[32], lo[32], hi[32];
+    uint8_t eph_a[32], eph_b[32], id_a[32], id_b[32], lo[32] = {0}, hi[32] = {0};
     char hx[65];
     for (int i = 0; i < 32; i++) {
         eph_a[i] = (uint8_t)(i + 1);
@@ -658,10 +658,53 @@ static void t_handshake_vector(void) {
     /* min(id)||max(id), not the order they arrived in: swapping the two
      * identities must not change either key, or the two ends of one link
      * would derive different keys depending on who dialled. */
-    uint8_t lo2[32], hi2[32];
+    uint8_t lo2[32] = {0}, hi2[32] = {0};
     net_handshake_vector(lo2, hi2, eph_b, eph_a, id_b, id_a);
     CHECK(!memcmp(lo, lo2, 32) && !memcmp(hi, hi2, 32));
     CHECK(memcmp(lo, hi, 32));               /* the two directions differ */
+}
+
+/* The handshake signature scheme. This is EdDSA over Curve25519 with BLAKE2b,
+ * *not* RFC 8032 Ed25519: monocypher hashes with BLAKE2b-512 where RFC 8032
+ * uses SHA-512 (`src/vendor/monocypher.c:2233` hash_reduce, and the same
+ * substitution in crypto_eddsa_key_pair). The two do not interoperate in
+ * either direction, so Go's crypto/ed25519 can never verify a constella
+ * handshake and the Go explorer has to implement this scheme. Nothing in the
+ * tree gave it anything to check itself against - the k_lo/k_hi vector cannot,
+ * because the key schedule never touches a signature - so pin one here.
+ *
+ * All three values were produced by an independent pure-Python EdDSA-BLAKE2b in
+ * tests/crosscheck.py (RFC 8032's reference ladder with H swapped for
+ * BLAKE2b-512) and agree with monocypher bit for bit. Signing is deterministic:
+ * the nonce is HASH(prefix || message), so there is a single right answer.
+ *
+ * The message is deliberately *not* a handshake transcript, so this pins the
+ * signature scheme alone and stays valid if the transcript layout ever moves.
+ * Transcript byte order is pinned separately, by t_handshake_live's HS_GOOD. */
+static void t_signature_vector(void) {
+    static const char *msg = "constella handshake signature vector";
+    uint8_t seed[32], sig[64];
+    wallet_t w;
+    char hx[130];
+    for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(i * 7 + 13);
+    hex_enc(hx, seed, 32);
+    CHECK(!strcmp(hx, "0d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6"));
+
+    wallet_from_seed(&w, seed);
+    hex_enc(hx, w.pk, 32);
+    CHECK(!strcmp(hx, "0bf162db1218e66408e2bedc4e74fee762832abe71faa8303838fa7c1740c2e7"));
+
+    crypto_eddsa_sign(sig, w.sk, (const uint8_t *)msg, strlen(msg));
+    hex_enc(hx, sig, 64);
+    CHECK(!strcmp(hx, "e3aaa7173ef7fef39f104ba4e5c9e7929305ed274d0a800fdd9cca8954ed5bc0"
+                      "e610c0342c5569a031ece5e1ef11ca95fb0549b1ae38e971fddd1f93f87f4401"));
+
+    /* verify accepts it, and rejects it with one bit of S flipped - a pin on
+     * the signature bytes alone would not catch a verifier that always says
+     * yes, which is the failure mode a struggling Go port reaches for. */
+    CHECK(crypto_eddsa_check(sig, w.pk, (const uint8_t *)msg, strlen(msg)) == 0);
+    sig[40] = (uint8_t)(sig[40] ^ 1);
+    CHECK(crypto_eddsa_check(sig, w.pk, (const uint8_t *)msg, strlen(msg)) != 0);
 }
 
 /* The wallet CLI is the only thing outside net.c that speaks the wire, and
@@ -1188,9 +1231,26 @@ int main(int argc, char **argv) {
         }
         return 0;
     }
+    if (argc > 1 && !strcmp(argv[1], "--sig")) {   /* seed_hex msg_hex -> pub sig */
+        while (fgets(line, sizeof line, stdin)) {
+            char sh[80], mh[600], x[130], y[130];
+            uint8_t seed[32], msg[256], sig[64];
+            wallet_t w;
+            int nf = sscanf(line, "%79s %599s", sh, mh);
+            if (nf < 1) break;                  /* a seed alone means an empty message */
+            size_t mn = nf >= 2 ? strlen(mh) / 2 : 0;
+            if (mn > sizeof msg || hex_dec(seed, 32, sh) ||
+                (mn && hex_dec(msg, mn, mh))) return 1;
+            wallet_from_seed(&w, seed);
+            crypto_eddsa_sign(sig, w.sk, msg, mn);
+            hex_enc(x, w.pk, 32); hex_enc(y, sig, 64);
+            printf("%s %s\n", x, y);
+        }
+        return 0;
+    }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

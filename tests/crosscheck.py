@@ -179,4 +179,74 @@ for i, c in enumerate(hs_cases):
     hsbad += (got[i * 2], got[i * 2 + 1]) != (want[0].hex(), want[1].hex())
 print(f"hs:      {len(hs_cases) - hsbad}/{len(hs_cases)} match python x25519 + keyed blake2b")
 
-sys.exit(1 if bad or b2bad or mbad or sbad or rbad or dbad or hsbad or not rfc_ok else 0)
+# 7. The handshake signature scheme, against a pure-Python EdDSA-BLAKE2b.
+#    This is NOT RFC 8032 Ed25519: monocypher hashes with BLAKE2b-512 where
+#    RFC 8032 uses SHA-512, so the two never interoperate. The structure is
+#    otherwise RFC 8032's, which is why the reference ladder below is the RFC's
+#    with one hash swapped - and why it is worth cross-checking at all: the Go
+#    explorer has to hand-write this scheme, and a pinned value transcribed out
+#    of monocypher would only say "the C agrees with itself".
+ED_Q = 2**252 + 27742317777372353535851937790883648493
+ED_D = -121665 * pow(121666, X_P - 2, X_P) % X_P
+ED_SQRT_M1 = pow(2, (X_P - 1) // 4, X_P)
+
+def _ed_recover_x(y, sign):
+    x2 = (y * y - 1) * pow(ED_D * y * y + 1, X_P - 2, X_P) % X_P
+    x = pow(x2, (X_P + 3) // 8, X_P)
+    if x * x % X_P != x2: x = x * ED_SQRT_M1 % X_P
+    if (x & 1) != sign: x = X_P - x
+    return x
+
+_ED_GY = 4 * pow(5, X_P - 2, X_P) % X_P
+ED_G = (_ed_recover_x(_ED_GY, 0), _ED_GY, 1, _ed_recover_x(_ED_GY, 0) * _ED_GY % X_P)
+
+def _ed_add(a, b):
+    A = (a[1] - a[0]) * (b[1] - b[0]) % X_P
+    B = (a[1] + a[0]) * (b[1] + b[0]) % X_P
+    C = 2 * a[3] * b[3] * ED_D % X_P
+    Dd = 2 * a[2] * b[2] % X_P
+    e, f, g, h = B - A, Dd - C, Dd + C, B + A
+    return (e * f % X_P, g * h % X_P, f * g % X_P, e * h % X_P)
+
+def _ed_mul(k, pt):
+    r = (0, 1, 1, 0)
+    while k > 0:
+        if k & 1: r = _ed_add(r, pt)
+        pt = _ed_add(pt, pt)
+        k >>= 1
+    return r
+
+def _ed_compress(pt):
+    zi = pow(pt[2], X_P - 2, X_P)
+    x, y = pt[0] * zi % X_P, pt[1] * zi % X_P
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+def _b2_512(data): return hashlib.blake2b(data, digest_size=64).digest()
+def _b2_modq(data): return int.from_bytes(_b2_512(data), "little") % ED_Q
+
+def eddsa_b2_sign(seed, msg):
+    """monocypher crypto_eddsa_key_pair + crypto_eddsa_sign, from the seed."""
+    h = bytearray(_b2_512(seed))
+    h[0] &= 248; h[31] &= 127; h[31] |= 64          # crypto_eddsa_trim_scalar
+    a = int.from_bytes(h[:32], "little")
+    prefix = _b2_512(seed)[32:]                      # the untrimmed upper half
+    pub = _ed_compress(_ed_mul(a, ED_G))
+    r = _b2_modq(prefix + msg)                       # deterministic nonce
+    R = _ed_compress(_ed_mul(r, ED_G))
+    k = _b2_modq(R + pub + msg)
+    return pub, R + ((r + k * a) % ED_Q).to_bytes(32, "little")
+
+sig_cases = [(bytes((i * 7 + 13) & 0xff for i in range(32)),
+              b"constella handshake signature vector")]     # pinned in tests/test.c
+for n in (0, 1, 32, 72, 127, 128, 129, 200):                 # incl. the 72-byte transcript
+    sig_cases.append((bytes(random.getrandbits(8) for _ in range(32)),
+                      bytes(random.getrandbits(8) for _ in range(n))))
+got = run(["--sig"], "".join(f"{sd.hex()} {m.hex()}\n" for sd, m in sig_cases))
+sigbad = 0
+for i, (sd, m) in enumerate(sig_cases):
+    want_pub, want_sig = eddsa_b2_sign(sd, m)
+    sigbad += (got[i * 2], got[i * 2 + 1]) != (want_pub.hex(), want_sig.hex())
+print(f"eddsa:   {len(sig_cases) - sigbad}/{len(sig_cases)} match python eddsa-blake2b "
+      f"(NOT rfc8032 ed25519)")
+
+sys.exit(1 if bad or b2bad or mbad or sbad or rbad or dbad or hsbad or sigbad or not rfc_ok else 0)
