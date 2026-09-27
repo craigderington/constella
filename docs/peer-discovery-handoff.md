@@ -1,33 +1,36 @@
 # Peer discovery — handoff
 
-**Branch:** `worktree-science-lane-v1` · **Range:** `10c51cf..6b3becf` (21 commits, 28 files, ~4,300 insertions)
-**Status:** feature-complete against the plan, **not shippable** — two confirmed blockers below.
+**Branch:** `worktree-science-lane-v1` · **Range:** `10c51cf..6ef18bf` (23 commits, 29 files)
+**Status:** both blockers **FIXED**. Functional; remaining work is the medium/low list below.
 **Date:** 2026-09-27
 
 ---
 
 ## Read this first
 
-The branch implements everything the plan specified, every task was reviewed and
-mutation-tested, and all gates are green:
-
 | gate | result |
 |---|---|
-| `make test` | 559/559 |
+| `make test` | 571/571 |
 | `make size` | 157,464 / 196,608 (39,144 free) |
 | `make explorer-test` | green |
 | `go test -race` (explorer) | green |
 
-**And the feature still does not do the thing it exists to do.** A node with no
-configuration cannot find peers. The whole-branch review found it; I reproduced
-it with two runs of the real binary. Green gates were never evidence otherwise,
-because no test constructs a node that starts twice.
+The whole-branch review returned SHIP WITH FIXES and found two blockers that
+made the feature fail at its own purpose: a node with no configuration could not
+find peers. **Both are now fixed in `6ef18bf`**, each reproduced against the real
+binary first and each pinned by a test that fails when the fix is reverted.
+
+The part worth carrying forward is *why eleven per-task reviews missed them*.
+All 559 checks passed with both bugs present. **No test started a node twice**,
+and B2 only manifests on routable addresses, so every Docker run — RFC1918,
+correctly refused as unroutable — sidestepped it. The gates measured what the
+tests built, not what the node does.
 
 ---
 
-## Blockers
+## Blockers — both fixed in `6ef18bf`
 
-### B1 — Discovery cannot seed itself (HIGH)
+### B1 — Discovery could not seed itself (HIGH) — FIXED
 
 `addr_add` has exactly two call sites in `src/`:
 
@@ -46,14 +49,17 @@ So the only way an address enters the network's tables is a node that sets
 spec's first Goal and the exact incident that motivated this work (two hosts
 mining separate forks for an hour because neither could discover the other).
 
-The comment at `src/net.c:616-618` claims "Task 10 owns putting seeds into
-them". Task 10 did not, and nothing does. That comment is actively misleading
-and should go with the fix.
+**Fixed:** `dial()` now `addr_add`s a resolved seed and goes through
+`peer_dial_begin`, so a seed that completes two separate handshakes earns
+`tried` standing like any other peer. `addr_add` applies the routability filter,
+so an unroutable seed is refused here exactly as a gossiped one is. The
+misleading "Task 10 owns putting seeds into them" comment is gone.
 
-**Fix shape:** resolved seeds should `addr_add` into `new` as well as being
-dialled directly.
+Verified: a node run with `CONSTELLA_PEERS=198.51.100.7:7043` now leaves
+`n_new=1` in `peers.dat` (was `0/0`). Regression test
+`t_addr_seeds_enter_tables`; reverting the fix fails only `tests/test.c:1295`.
 
-### B2 — An advertising node self-isolates on its second start (HIGH)
+### B2 — An advertising node self-isolated on its second start (HIGH) — FIXED
 
 Confirmed by running the real binary twice.
 
@@ -83,16 +89,26 @@ advertise: 198.51.100.7:7043
 No candidates, no seeds, and no recovery — there is no `addr_bad`, so nothing
 ever removes the entry.
 
-This hits precisely the public, routable nodes that would serve as seeds. It
+This hit precisely the public, routable nodes that would serve as seeds. It
 misses Docker (RFC1918, refused as unroutable) and NAT'd nodes, which is why
 nothing caught it earlier.
 
-**Fix shape:** don't let the self-entry satisfy the bootstrap gate — either
-exclude self from `addr_add`, or count non-self entries in the gate.
+**Fixed:** `net_advertise` no longer calls `addr_add`. `handle_getaddr` gossips
+our address straight from `self_ip`, so it is still advertised to peers but
+never enters the tables, is never persisted, and never satisfies the gate.
+
+This was chosen over patching the gate to ignore self, because `self_ip` holds
+only one address: if `CONSTELLA_ADVERTISE` ever changed, a stale self entry
+would no longer be recognised as ours and the node would dial itself.
+
+Verified: after one clean run `peers.dat` now has `n_new=0` (was 1), and run 2
+logs `known new=0 tried=0`, so the gate stays open. Regression test
+`t_addr_advertise_keeps_bootstrap_open`; reverting the fix fails `:1321` and
+`:1327` — the two runs of one property.
 
 ---
 
-## Other findings (not blocking)
+## Other findings (not blocking, not fixed)
 
 | # | sev | finding |
 |---|---|---|
@@ -195,7 +211,7 @@ single choke point.
 
 ## Suggested order of work
 
-1. **B1 and B2** — without these the feature does not function. Both are small.
+1. ~~**B1 and B2**~~ — done in `6ef18bf`.
 2. **Finding 4** — decide whether the explorer should send `GETADDR`, or delete
    the AddrBook. Do not leave 416 lines of unreachable code in a security path.
 3. **Finding 3** — fix the staleness threshold for unix-scale `seen`. Note
@@ -206,6 +222,11 @@ single choke point.
 5. **A live full-stack run** — node + explorer + postgres, with discovery doing
    the peering. This has never been done; it is also the only thing that would
    exercise the explorer's gossip wiring end to end.
+
+Note that B1's fix makes discovery *able* to work but does not make it work in
+the field: `N_HARDCODED_SEEDS` is still 0 and `seed.catasterism.xyz` is not
+deployed. Until one of those exists, a node with no `CONSTELLA_PEERS` still has
+nothing to resolve. That is deployment work, not code.
 
 ---
 
