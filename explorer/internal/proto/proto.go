@@ -66,7 +66,13 @@ const (
 	MsgGetAcct  = 6
 	MsgAcct     = 7
 	MsgTxRes    = 8
-	MsgAuth     = 9
+	// MsgAuth is handshake phase 1: eph_pub[32] || id_pub[32], sent
+	// immediately on connect by both sides. MsgAuth2 is phase 2: a 64-byte
+	// EdDSA-BLAKE2b signature (R || S) over the 72-byte transcript, sent on
+	// receipt of the peer's phase 1. The phases are separated by type, not by
+	// arrival order. 10 and 11 are reserved for GETADDR/ADDR.
+	MsgAuth  = 9
+	MsgAuth2 = 12
 )
 
 type Hash = [32]byte
