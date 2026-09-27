@@ -28,13 +28,19 @@ enum { P_FREE, P_CONNECTING, P_UP };
 
 typedef struct {
 	int fd, state, seed, inbound, hello;
-	int secure, auth_sent, auth_recv, auth_ready;
+	int secure, auth_sent, hs_phase, auth_ready;
 	uint8_t rx[RXCAP];
 	int rxn;
 	int64_t rx_at, up_at;
     uint8_t *tx;
     size_t txn, txcap;
-	uint8_t challenge[32], remote_challenge[32], txkey[32], rxkey[32];
+	/* Handshake frames get their own queue. They are the only thing allowed
+	 * out before the session keys exist, and the application queue below is
+	 * rewritten in place once they do - so the two cannot share a buffer. */
+	uint8_t hs_tx[2 * (HDR + 64)];
+	int hs_txn;
+	uint8_t eph_sk[32], eph_pk[32], peer_eph[32], peer_id[32];
+	uint8_t txkey[32], rxkey[32];
 	uint64_t txseq, rxseq;
 } peer_t;
 
@@ -47,7 +53,7 @@ static net_msg_fn cb_msg;
 static net_conn_fn cb_conn;
 static int n_inbound;
 static int secure_mode;
-static uint8_t psk[32];
+static wallet_t node_id;
 
 static void nonblock(int fd) { fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK); }
 
@@ -90,23 +96,48 @@ static void put_hdr(uint8_t *h, uint8_t type, uint16_t len) {
     h[4] = type; h[5] = (uint8_t)len; h[6] = (uint8_t)(len >> 8);
 }
 
-static void auth_proof(uint8_t out[32], const uint8_t challenge[32]) {
-    static const uint8_t tag[] = "CSTL-AUTH1";
-    uint8_t msg[sizeof tag - 1 + 32];
-    memcpy(msg, tag, sizeof tag - 1);
-    memcpy(msg + sizeof tag - 1, challenge, 32);
-    crypto_blake2b_keyed(out, 32, psk, 32, msg, sizeof msg);
+/* The handshake signs "CSTL-HS1" || eph_self || eph_peer. Ordering is by
+ * point of view, not by who dialled: each side signs its own key first, so
+ * both ends run identical code. An initiator/responder split here is exactly
+ * where the C node and the Go explorer would drift apart. */
+#define HS_TRANSCRIPT 72
+static void hs_transcript(uint8_t out[HS_TRANSCRIPT], const uint8_t eph_self[32],
+                          const uint8_t eph_peer[32]) {
+    memcpy(out, "CSTL-HS1", 8);
+    memcpy(out + 8, eph_self, 32);
+    memcpy(out + 40, eph_peer, 32);
 }
 
-static void session_key(uint8_t out[32], const char *direction,
-                        const uint8_t low[32], const uint8_t high[32]) {
-    static const uint8_t tag[] = "CSTL-P2P1";
+/* Both direction keys at once, from the ephemeral-ephemeral shared secret.
+ * The identities go in sorted, so the two ends agree without negotiating. */
+static void hs_session_keys(uint8_t k_lo[32], uint8_t k_hi[32], const uint8_t shared[32],
+                            const uint8_t low[32], const uint8_t high[32]) {
+    static const uint8_t tag[] = "CSTL-P2P2";
     uint8_t msg[sizeof tag - 1 + 2 + 64];
     memcpy(msg, tag, sizeof tag - 1);
-    memcpy(msg + sizeof tag - 1, direction, 2);
     memcpy(msg + sizeof tag + 1, low, 32);
     memcpy(msg + sizeof tag + 1 + 32, high, 32);
-    crypto_blake2b_keyed(out, 32, psk, 32, msg, sizeof msg);
+    memcpy(msg + sizeof tag - 1, "lo", 2);
+    crypto_blake2b_keyed(k_lo, 32, shared, 32, msg, sizeof msg);
+    memcpy(msg + sizeof tag - 1, "hi", 2);
+    crypto_blake2b_keyed(k_hi, 32, shared, 32, msg, sizeof msg);
+}
+
+/* Derive both keys and assign directions. The side whose identity sorts lower
+ * transmits under k_lo; both ends compute the same pair. */
+static void hs_derive(uint8_t txkey[32], uint8_t rxkey[32], const uint8_t eph_sk[32],
+                      const uint8_t eph_peer[32], const uint8_t id_self[32],
+                      const uint8_t id_peer[32]) {
+    uint8_t shared[32], k_lo[32], k_hi[32];
+    int self_low = memcmp(id_self, id_peer, 32) < 0;
+    crypto_x25519(shared, eph_sk, eph_peer);
+    hs_session_keys(k_lo, k_hi, shared, self_low ? id_self : id_peer,
+                    self_low ? id_peer : id_self);
+    memcpy(txkey, self_low ? k_lo : k_hi, 32);
+    memcpy(rxkey, self_low ? k_hi : k_lo, 32);
+    crypto_wipe(shared, sizeof shared);
+    crypto_wipe(k_lo, sizeof k_lo);
+    crypto_wipe(k_hi, sizeof k_hi);
 }
 
 static void make_nonce(uint8_t nonce[24], uint64_t seq) {
@@ -147,9 +178,8 @@ static int encrypt_pending(peer_t *p) {
     while (off < oldn) {
         if (oldn - off < HDR) { free(old); return -1; }
         uint16_t len = (uint16_t)(old[off + 5] | old[off + 6] << 8);
-        if (old[off + 4] == MSG_AUTH || len > NET_MAXPAY ||
-            oldn - off < (size_t)HDR + len) {
-            free(old); return -1;
+        if (len > NET_MAXPAY || oldn - off < (size_t)HDR + len) {
+            free(old); return -1;               /* handshake frames never land here */
         }
         if (append_encrypted(p, old[off + 4], old + off + HDR, len)) {
             free(old); return -1;
@@ -188,10 +218,14 @@ static void drop(int i) {
 
 static void flush(int i) {
     peer_t *p = &P[i];
+    while (p->hs_txn) {
+        ssize_t w = send(p->fd, p->hs_tx, (size_t)p->hs_txn, MSG_NOSIGNAL);
+        if (w <= 0) { if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return; drop(i); return; }
+        memmove(p->hs_tx, p->hs_tx + w, (size_t)p->hs_txn - (size_t)w);
+        p->hs_txn -= (int)w;
+    }
+    if (p->secure && !p->auth_ready) return;    /* application traffic waits */
     while (p->txn) {
-        if (p->secure && !p->auth_ready) {
-            if (p->txn < HDR || p->tx[4] != MSG_AUTH) return;
-        }
         ssize_t w = send(p->fd, p->tx, p->txn, MSG_NOSIGNAL);
 		if (w <= 0) { if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return; drop(i); return; }
         memmove(p->tx, p->tx + w, p->txn - (size_t)w);
@@ -219,36 +253,63 @@ int net_peers(void) {
     return c;
 }
 
+static int append_hs(peer_t *p, const uint8_t payload[64]) {
+    if ((size_t)p->hs_txn + HDR + 64 > sizeof p->hs_tx) return -1;
+    uint8_t *h = p->hs_tx + p->hs_txn;
+    put_hdr(h, MSG_AUTH, 64);
+    memcpy(h + HDR, payload, 64);
+    p->hs_txn += HDR + 64;
+    return 0;
+}
+
+/* Phase 1, sent by both ends the moment the socket is up: our ephemeral
+ * X25519 public key and our static identity. No initiator, no responder. */
 static int start_auth(int i) {
     peer_t *p = &P[i];
     if (!p->secure || p->auth_sent) return 0;
-    if (random_bytes(p->challenge, 32)) return -1;   /* no entropy: never send a guessable challenge */
+    /* Fails closed: without entropy the ephemeral key is guessable and the
+     * forward secrecy this whole handshake exists for is gone. */
+    if (random_bytes(p->eph_sk, 32)) return -1;
+    crypto_x25519_public_key(p->eph_pk, p->eph_sk);
     uint8_t payload[64];
-    memcpy(payload, p->challenge, 32);
-    auth_proof(payload + 32, p->challenge);
-    if (append_plain(p, MSG_AUTH, payload, sizeof payload)) return -1;
+    memcpy(payload, p->eph_pk, 32);
+    memcpy(payload + 32, node_id.pk, 32);
+    if (append_hs(p, payload)) return -1;
     p->auth_sent = 1;
     flush(i);
     return P[i].state == P_UP ? 0 : -1;
 }
 
+/* Both handshake frames are MSG_AUTH and both are 64 bytes; they are told
+ * apart by arrival order, which is unambiguous on a stream socket. The first
+ * is the peer's phase 1, the second its phase 2, and a third is a protocol
+ * error. */
 static int finish_auth(int i, const uint8_t *payload, uint16_t len) {
     peer_t *p = &P[i];
-    if (!p->secure || p->auth_recv || len != 64) return -1;
-    uint8_t proof[32];
-    auth_proof(proof, payload);
-    if (crypto_verify32(proof, payload + 32)) return -1;
-    /* equal challenges leave memcmp() < 0 false on both ends, so both peers
-     * would name the same key "lo" and encrypt with it from nonce 0. */
-    if (!memcmp(payload, p->challenge, 32)) return -1;
-    memcpy(p->remote_challenge, payload, 32);
-    p->auth_recv = 1;
-    if (!p->auth_sent) return 0;
-    const uint8_t *low = p->challenge, *high = p->remote_challenge;
-    int local_low = memcmp(low, high, 32) < 0;
-    if (!local_low) { low = p->remote_challenge; high = p->challenge; }
-    session_key(local_low ? p->txkey : p->rxkey, "lo", low, high);
-    session_key(local_low ? p->rxkey : p->txkey, "hi", low, high);
+    if (!p->secure || !p->auth_sent || len != 64) return -1;
+    if (p->hs_phase == 0) {
+        memcpy(p->peer_eph, payload, 32);
+        memcpy(p->peer_id, payload + 32, 32);
+        /* A node dialling itself: identical identities make min == max, so
+         * both ends would name the same key "lo" and start encrypting with
+         * it from nonce 0 - the one thing this construction cannot survive. */
+        if (!memcmp(p->peer_id, node_id.pk, 32)) return -1;
+        uint8_t tr[HS_TRANSCRIPT], sig[64];
+        hs_transcript(tr, p->eph_pk, p->peer_eph);
+        crypto_eddsa_sign(sig, node_id.sk, tr, sizeof tr);
+        p->hs_phase = 1;
+        if (append_hs(p, sig)) return -1;
+        flush(i);
+        return P[i].state == P_UP ? 0 : -1;
+    }
+    if (p->hs_phase != 1) return -1;
+    /* Phase 2: the transcript as the peer saw it - its ephemeral first. */
+    uint8_t tr[HS_TRANSCRIPT];
+    hs_transcript(tr, p->peer_eph, p->eph_pk);
+    if (crypto_eddsa_check(payload, p->peer_id, tr, sizeof tr)) return -1;
+    hs_derive(p->txkey, p->rxkey, p->eph_sk, p->peer_eph, node_id.pk, p->peer_id);
+    crypto_wipe(p->eph_sk, sizeof p->eph_sk);   /* forward secrecy starts here */
+    p->hs_phase = 2;
     p->auth_ready = 1;
     if (encrypt_pending(p)) return -1;
     flush(i);
@@ -289,14 +350,12 @@ void net_tick(void) {
         if (S[s].peer < 0 && t >= S[s].next) dial(s);
 }
 
-int net_init(uint16_t port, const char *csv, const char *psk_hex,
+int net_init(uint16_t port, const char *csv, const wallet_t *id,
              net_msg_fn on_msg, net_conn_fn on_conn) {
     cb_msg = on_msg; cb_conn = on_conn;
     secure_mode = 0;
-    if (psk_hex && *psk_hex) {
-        if (hex_dec(psk, sizeof psk, psk_hex)) return -1;
-        secure_mode = 1;
-    }
+    memset(&node_id, 0, sizeof node_id);
+    if (id) { node_id = *id; secure_mode = 1; }
     lfd = socket(AF_INET, SOCK_STREAM, 0);
     if (lfd < 0) return -1;
     int one = 1;
@@ -327,10 +386,10 @@ int net_init(uint16_t port, const char *csv, const char *psk_hex,
 /* --- short-lived request/response client (the wallet CLI) ------------------
  * The gate that keeps unauthenticated peers out of inbound slots applies to
  * every connection, so the wallet does the same handshake a gossip peer does:
- * AUTH when a key is set, then HELLO, then its request. Exempting clients
+ * both handshake phases, then HELLO, then its request. Exempting clients
  * instead would mean an unauthenticated stranger could hold a slot for as
- * long as it liked, which is the thing the gate exists to stop. It reuses the
- * module's `psk`: a process is either a node or a CLI invocation, never both.
+ * long as it liked, which is the thing the gate exists to stop. The caller
+ * supplies the identity, so this touches none of the module's peer state.
  * Blocking I/O throughout - this runs for one round trip and then exits. */
 
 static int cxfer(int fd, void *b, size_t n, int wr) {
@@ -399,7 +458,7 @@ void net_client_close(net_client_t *c) {
     c->fd = -1;
 }
 
-int net_client_open(net_client_t *c, const char *hostport, const char *psk_hex) {
+int net_client_open(net_client_t *c, const char *hostport, const wallet_t *id) {
     memset(c, 0, sizeof *c);
     c->fd = -1;
     char host[256];
@@ -418,23 +477,30 @@ int net_client_open(net_client_t *c, const char *hostport, const char *psk_hex) 
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
     c->fd = fd;
-    if (psk_hex && *psk_hex) {
-        uint8_t local[32], pay[64], hdr[HDR], proof[32];
+    if (id) {
+        /* The same two phases as a gossip peer, in the same order, so there is
+         * one handshake in this codebase and not two. */
+        uint8_t eph_sk[32], eph_pk[32], peer_eph[32], peer_id[32];
+        uint8_t pay[64], hdr[HDR], tr[HS_TRANSCRIPT];
         static uint8_t buf[MAXPAY];
-        if (hex_dec(psk, sizeof psk, psk_hex) || random_bytes(local, 32)) goto fail;
+        if (random_bytes(eph_sk, 32)) goto fail;
+        crypto_x25519_public_key(eph_pk, eph_sk);
         c->secure = 1;
-        memcpy(pay, local, 32);
-        auth_proof(pay + 32, local);
+        memcpy(pay, eph_pk, 32);
+        memcpy(pay + 32, id->pk, 32);
         if (cframe_send(fd, MSG_AUTH, pay, sizeof pay)) goto fail;
         if (cframe_recv(fd, hdr, buf) != 64 || hdr[4] != MSG_AUTH) goto fail;
-        auth_proof(proof, buf);
-        if (crypto_verify32(proof, buf + 32)) goto fail;
-        if (!memcmp(local, buf, 32)) goto fail;   /* see finish_auth */
-        const uint8_t *low = local, *high = buf;
-        int local_low = memcmp(low, high, 32) < 0;
-        if (!local_low) { low = buf; high = local; }
-        session_key(local_low ? c->txkey : c->rxkey, "lo", low, high);
-        session_key(local_low ? c->rxkey : c->txkey, "hi", low, high);
+        memcpy(peer_eph, buf, 32);
+        memcpy(peer_id, buf + 32, 32);
+        if (!memcmp(peer_id, id->pk, 32)) goto fail;      /* see finish_auth */
+        hs_transcript(tr, eph_pk, peer_eph);
+        crypto_eddsa_sign(pay, id->sk, tr, sizeof tr);
+        if (cframe_send(fd, MSG_AUTH, pay, sizeof pay)) goto fail;
+        if (cframe_recv(fd, hdr, buf) != 64 || hdr[4] != MSG_AUTH) goto fail;
+        hs_transcript(tr, peer_eph, eph_pk);
+        if (crypto_eddsa_check(buf, peer_id, tr, sizeof tr)) goto fail;
+        hs_derive(c->txkey, c->rxkey, eph_sk, peer_eph, id->pk, peer_id);
+        crypto_wipe(eph_sk, sizeof eph_sk);
     }
     uint8_t tip[32] = {0};   /* an unknown tip: it only opens the gate */
     if (net_client_send(c, MSG_HELLO, tip, sizeof tip)) goto fail;
@@ -449,18 +515,52 @@ fail:
  * constants - nothing would catch the two drifting apart. These let a fixed
  * input be asserted in both languages. The node references neither, so
  * --gc-sections drops them from the shipped binary. */
+/* The superseded pre-shared-key schedule, kept only so the two vector hooks
+ * below still pin the AEAD framing - which is unchanged - against the Go
+ * explorer. Nothing on the live path calls either of these. */
+static void psk_auth_proof(uint8_t out[32], const uint8_t key[32], const uint8_t challenge[32]) {
+    static const uint8_t tag[] = "CSTL-AUTH1";
+    uint8_t msg[sizeof tag - 1 + 32];
+    memcpy(msg, tag, sizeof tag - 1);
+    memcpy(msg + sizeof tag - 1, challenge, 32);
+    crypto_blake2b_keyed(out, 32, key, 32, msg, sizeof msg);
+}
+
+static void psk_session_key(uint8_t out[32], const uint8_t key[32], const char *direction,
+                            const uint8_t low[32], const uint8_t high[32]) {
+    static const uint8_t tag[] = "CSTL-P2P1";
+    uint8_t msg[sizeof tag - 1 + 2 + 64];
+    memcpy(msg, tag, sizeof tag - 1);
+    memcpy(msg + sizeof tag - 1, direction, 2);
+    memcpy(msg + sizeof tag + 1, low, 32);
+    memcpy(msg + sizeof tag + 1 + 32, high, 32);
+    crypto_blake2b_keyed(out, 32, key, 32, msg, sizeof msg);
+}
+
 int net_auth_vector(uint8_t out[32], const uint8_t key[32], const uint8_t challenge[32]) {
-    memcpy(psk, key, 32);
-    auth_proof(out, challenge);
+    psk_auth_proof(out, key, challenge);
     return 32;
+}
+
+int net_handshake_vector(uint8_t out_lo[32], uint8_t out_hi[32],
+                         const uint8_t eph_a_sk[32], const uint8_t eph_b_sk[32],
+                         const uint8_t id_a[32], const uint8_t id_b[32]) {
+    uint8_t pa[32], pb[32], sa[32], sb[32];
+    crypto_x25519_public_key(pa, eph_a_sk);
+    crypto_x25519_public_key(pb, eph_b_sk);
+    crypto_x25519(sa, eph_a_sk, pb);
+    crypto_x25519(sb, eph_b_sk, pa);
+    if (memcmp(sa, sb, 32)) return -1;           /* the two ends must agree */
+    int a_low = memcmp(id_a, id_b, 32) < 0;
+    hs_session_keys(out_lo, out_hi, sa, a_low ? id_a : id_b, a_low ? id_b : id_a);
+    return 0;
 }
 
 int net_seal_vector(uint8_t *out, const uint8_t key[32], const uint8_t low[32],
                     const uint8_t high[32], const char *dir, uint64_t seq,
                     uint8_t type, const void *pay, uint16_t len) {
-    memcpy(psk, key, 32);
     uint8_t sk[32], nonce[24];
-    session_key(sk, dir, low, high);
+    psk_session_key(sk, key, dir, low, high);
     put_hdr(out, type, (uint16_t)(len + 16));
     make_nonce(nonce, seq);
     crypto_aead_lock(out + HDR, out + HDR + len, sk, nonce, out, HDR, pay, len);
@@ -480,22 +580,28 @@ int net_pollfds(struct pollfd *pf, int max) {
     for (int i = 0; i < MAX_PEERS && n < max; i++) {
         if (P[i].state == P_FREE) continue;
         pf[n].fd = P[i].fd;
-        pf[n].events = (short)(POLLIN | ((P[i].state == P_CONNECTING || P[i].txn) ? POLLOUT : 0));
+        /* Application bytes queued before the handshake finishes are not
+         * sendable yet, so asking for POLLOUT on them spins the whole poll
+         * loop at 100%% for the length of a handshake. Ask only for what
+         * flush() would actually write. */
+        int want_out = P[i].state == P_CONNECTING || P[i].hs_txn ||
+                       (P[i].txn && (!P[i].secure || P[i].auth_ready));
+        pf[n].events = (short)(POLLIN | (want_out ? POLLOUT : 0));
         pmap[n++] = i;
     }
     return n;
 }
 
-/* A mismatched key looks exactly like a rude peer from here, and the two env
- * vars are separately settable, so say it once per process - once, because a
- * hostile peer could otherwise drive the log. */
+/* A peer that cannot complete the handshake looks exactly like a rude peer
+ * from here, so say it once per process - once, because a hostile peer could
+ * otherwise drive the log. */
 static void gate_hint(int on_auth) {
     static int said;
     if (said) return;
     said = 1;
     log_msg("p2p: dropped a peer at the gate - %s", on_auth
-            ? "no valid AUTH (wrong or missing CONSTELLA_P2P_KEY on its side)"
-            : "first frame was not HELLO (a peer using a key this node lacks looks like this)");
+            ? "handshake failed (bad signature, a rejected identity, or an older protocol)"
+            : "first frame was not HELLO");
 }
 
 static void readable(int i) {

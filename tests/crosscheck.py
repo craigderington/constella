@@ -114,4 +114,69 @@ for i, (a, m, k, g) in enumerate(cases):
     print(f"sci:     k={k:5d} g={g:5d} valid={ok!s:5s} work={w:<10d} {'ok' if not bad_here else 'FAIL'}")
 print(f"sci:     {len(cases) - sbad}/{len(cases)} match python")
 
-sys.exit(1 if bad or b2bad or mbad or sbad or rbad or dbad else 0)
+# 6. The P2P handshake key schedule, against a pure-Python X25519.
+#    Deliberately not a crypto library: the point of a pinned vector is that
+#    two *independent* implementations agree, and the RFC 7748 reference ladder
+#    below shares no lineage with monocypher. Keyed BLAKE2b is stdlib.
+X_P, X_A24 = 2**255 - 19, 121665
+
+def _cswap(swap, a, b):
+    d = (swap * ((a - b) % X_P)) % X_P
+    return (a - d) % X_P, (b + d) % X_P
+
+def x25519(k_bytes, u_bytes):
+    """RFC 7748 section 5, the Montgomery ladder, verbatim."""
+    k = bytearray(k_bytes)
+    k[0] &= 248; k[31] &= 127; k[31] |= 64
+    k = int.from_bytes(k, "little")
+    x1 = int.from_bytes(u_bytes, "little") & ((1 << 255) - 1)
+    x2, z2, x3, z3, swap = 1, 0, x1, 1, 0
+    for t in range(254, -1, -1):
+        kt = (k >> t) & 1
+        swap ^= kt
+        x2, x3 = _cswap(swap, x2, x3)
+        z2, z3 = _cswap(swap, z2, z3)
+        swap = kt
+        a = (x2 + z2) % X_P; aa = a * a % X_P
+        b = (x2 - z2) % X_P; bb = b * b % X_P
+        e = (aa - bb) % X_P
+        c = (x3 + z3) % X_P; d = (x3 - z3) % X_P
+        da = d * a % X_P; cb = c * b % X_P
+        x3 = (da + cb) % X_P; x3 = x3 * x3 % X_P
+        z3 = (da - cb) % X_P; z3 = x1 * (z3 * z3 % X_P) % X_P
+        x2 = aa * bb % X_P
+        z2 = e * ((aa + X_A24 * e) % X_P) % X_P
+    x2, x3 = _cswap(swap, x2, x3)
+    z2, z3 = _cswap(swap, z2, z3)
+    return (x2 * pow(z2, X_P - 2, X_P) % X_P).to_bytes(32, "little")
+
+X_BASE = (9).to_bytes(32, "little")
+
+def hs_keys(eph_a_sk, eph_b_sk, id_a, id_b):
+    shared = x25519(eph_a_sk, x25519(eph_b_sk, X_BASE))
+    lo_id, hi_id = (id_a, id_b) if id_a < id_b else (id_b, id_a)
+    k = lambda d: hashlib.blake2b(b"CSTL-P2P2" + d + lo_id + hi_id,
+                                  key=shared, digest_size=32).digest()
+    return k(b"lo"), k(b"hi")
+
+# RFC 7748 section 6.1 first: if the ladder itself is wrong, everything below
+# agrees with the C for the wrong reason.
+_a = bytes.fromhex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")
+_b = bytes.fromhex("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb")
+rfc_ok = (x25519(_a, X_BASE).hex() == "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"
+          and x25519(_a, x25519(_b, X_BASE)).hex()
+          == "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742")
+print(f"x25519:  RFC 7748 6.1 {'ok' if rfc_ok else 'FAIL'}")
+
+hs_cases = [(bytes(i + 1 for i in range(32)), bytes(255 - i for i in range(32)),
+             b"\xaa" * 32, b"\x55" * 32)]                # the vector pinned in tests/test.c
+for _ in range(24):
+    hs_cases.append(tuple(bytes(random.getrandbits(8) for _ in range(32)) for _ in range(4)))
+got = run(["--hs"], "".join(" ".join(v.hex() for v in c) + "\n" for c in hs_cases))
+hsbad = 0
+for i, c in enumerate(hs_cases):
+    want = hs_keys(*c)
+    hsbad += (got[i * 2], got[i * 2 + 1]) != (want[0].hex(), want[1].hex())
+print(f"hs:      {len(hs_cases) - hsbad}/{len(hs_cases)} match python x25519 + keyed blake2b")
+
+sys.exit(1 if bad or b2bad or mbad or sbad or rbad or dbad or hsbad or not rfc_ok else 0)

@@ -5,10 +5,12 @@
 #include "tx.h"
 #include "util.h"
 #include "wallet.h"
+#include "vendor/monocypher.h"
 #include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -30,24 +32,30 @@ static uint64_t g64(const uint8_t *p) { uint64_t v = 0; for (int i = 7; i >= 0; 
 
 typedef struct { uint64_t amt, nonce, next; uint32_t height; } acct_info;
 
-static const char *p2p_key(void) {
-    const char *k = getenv("CONSTELLA_P2P_KEY");
-    return k && *k ? k : NULL;
+static void unreachable(const char *hostport) {
+    fprintf(stderr, "node unreachable: %s (no answer, or it refused the handshake)\n", hostport);
 }
 
-/* The two ends of the PSK are configured separately, so a one-sided setup
- * otherwise shows up as a bare connection drop. Name the likely cause. */
-static void unreachable(const char *hostport) {
-    fprintf(stderr, "node unreachable: %s%s\n", hostport, p2p_key()
-            ? " (CONSTELLA_P2P_KEY set here; the node must have the same key)"
-            : " (no CONSTELLA_P2P_KEY here; set the node's key if it runs encrypted)");
+/* The wallet is a short-lived client with nothing durable to prove, so it
+ * signs the handshake with a throwaway identity generated per invocation -
+ * no node.key to distribute, and no long-term key exposed by running
+ * `balance` against a stranger. */
+static int connect_node(net_client_t *c, const char *hostport) {
+    wallet_t id;
+    uint8_t seed[32];
+    if (getrandom(seed, sizeof seed, 0) != (ssize_t)sizeof seed) return -1;
+    wallet_from_seed(&id, seed);
+    crypto_wipe(seed, sizeof seed);
+    int r = net_client_open(c, hostport, &id);
+    crypto_wipe(&id, sizeof id);
+    return r;
 }
 
 /* Opens, handshakes and asks for one account; leaves the connection up. */
 static int query(net_client_t *c, const char *hostport, const uint8_t addr[32], acct_info *a) {
     uint8_t out[NET_MAXPAY];
     uint16_t l;
-    if (net_client_open(c, hostport, p2p_key())) return -1;
+    if (connect_node(c, hostport)) return -1;
     if (net_client_send(c, MSG_GETACCT, addr, 32) ||
         net_client_wait(c, MSG_ACCT, out, &l) || l != 28) { net_client_close(c); return -1; }
     a->amt = g64(out); a->nonce = g64(out + 8); a->next = g64(out + 16);
