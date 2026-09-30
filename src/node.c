@@ -24,7 +24,9 @@ typedef struct { uint8_t root[32]; int ntx; tx_t txs[SHARE_MAX_TX]; int nsci; sc
 
 #define SCI_POOL 16
 
-static volatile sig_atomic_t running = 1;
+/* Shared with worker threads and written by the signal handler. */
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "shutdown flag must be signal-safe");
+static atomic_int running = 1;
 static uint8_t payout[32];
 static int cur_src = -1, live, tip_dirty, job_dirty, failed;
 static uint64_t found;

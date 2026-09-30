@@ -3,6 +3,10 @@
 #include "sieve.h"
 #include "throttle.h"
 #include "util.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,7 +19,33 @@ static job_t *cur;
 static atomic_uint_fast64_t gen;
 static pthread_t *th;
 static int nth, outfd, scifd;
-static volatile sig_atomic_t *run;
+static atomic_int *run;
+
+_Static_assert(SHARE_SIZE <= PIPE_BUF && SCI_SIZE <= PIPE_BUF,
+               "worker records must fit an atomic pipe write");
+
+/* The main loop may be replaying a large ledger with both pipes full.
+ * Nonblocking, atomic records and bounded waits let shutdown/job changes
+ * interrupt output backpressure without interleaving workers' records. */
+static void emit_work(int fd, const uint8_t *raw, size_t len,
+                      atomic_uint_fast64_t *generation, uint64_t expected) {
+    while (*run && atomic_load(generation) == expected) {
+        ssize_t n = write(fd, raw, len);
+        if (n == (ssize_t)len) return;
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            struct pollfd p = { .fd = fd, .events = POLLOUT };
+            poll(&p, 1, 50);
+            continue;
+        }
+        return; /* pipe closed or unusable */
+    }
+}
+
+static int nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL);
+    return flags < 0 ? -1 : fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
 
 /* Science job: mu guards the inputs, sci_gen invalidates in-flight search -
  * same discipline as cur/gen above, just for the one science worker. */
@@ -69,7 +99,7 @@ static void *worker(void *arg) {
                 uint8_t raw[SHARE_SIZE];
                 s.k = o.k;
                 share_ser(raw, &s);
-                if (write(outfd, raw, SHARE_SIZE) != SHARE_SIZE) { /* main loop gone */ }
+                emit_work(outfd, raw, SHARE_SIZE, &gen, j->gen);
             }
         }
         job_put(j);
@@ -111,7 +141,7 @@ static void *sci_worker(void *arg) {
             uint8_t raw[SCI_SIZE];
             sci_ser(raw, &found);
             atomic_fetch_add(&miner_sci_found, 1);
-            if (write(scifd, raw, SCI_SIZE) != SCI_SIZE) { /* main loop gone */ }
+            emit_work(scifd, raw, SCI_SIZE, &sci_gen, g);
         }
     }
     return NULL;
@@ -121,8 +151,8 @@ static void *sci_worker(void *arg) {
  * it measures constellation throughput and a silently-idle science thread
  * would understate it by ~1/n). Only then does thread count decide the
  * split: one worker goes to science when n >= 2, else the lane logs idle. */
-int miner_start(int n, int out_fd, int sci_fd, volatile sig_atomic_t *running) {
-    if (n <= 0) return -1;
+int miner_start(int n, int out_fd, int sci_fd, atomic_int *running) {
+    if (n <= 0 || nonblocking(out_fd) || (sci_fd >= 0 && nonblocking(sci_fd))) return -1;
     nth = n; outfd = out_fd; scifd = sci_fd; run = running;
     th = calloc((size_t)n, sizeof *th);
     if (!th) return -1;
@@ -177,6 +207,7 @@ void miner_stop(void) {
     cur = NULL;
     pthread_mutex_unlock(&mu);
     free(th);
+    th = NULL; nth = 0;
 }
 
 /* Read-only worker regression probe; unreferenced in the shipped binary. */

@@ -44,7 +44,7 @@ static void t_miner_zero_duty(void) {
         fails = 0;
         int p[2], s[2];
         if (pipe2(p, O_NONBLOCK) || pipe2(s, O_NONBLOCK)) _exit(1);
-        volatile sig_atomic_t running = 1;
+        atomic_int running = 1;
         share_t tmpl = {0};
         tmpl.version = SHARE_VERSION; tmpl.height = 1; tmpl.bits = BITS_MIN;
         tmpl.time = GENESIS_TIME + 1;
@@ -126,6 +126,43 @@ static void t_miner_zero_duty(void) {
     int status = 0;
     CHECK(waitpid(pid, &status, 0) == pid);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
+/* A blocked main loop must not leave workers stuck forever in write(). */
+static void t_miner_backpressure(void) {
+    pid_t child = fork();
+    if (!child) {
+        alarm(12);
+        int p[2], s[2];
+        if (pipe2(p, O_NONBLOCK) || pipe2(s, O_NONBLOCK)) _exit(1);
+        uint8_t fill[4096] = {0};
+        while (write(p[1], fill, sizeof fill) > 0) {}
+        while (write(s[1], fill, sizeof fill) > 0) {}
+        if (fcntl(p[1], F_SETFL, 0) || fcntl(s[1], F_SETFL, 0)) _exit(1);
+        atomic_int active = 1;
+        share_t tmpl = {0};
+        tmpl.version = SHARE_VERSION; tmpl.height = 1; tmpl.bits = BITS_MIN;
+        tmpl.time = GENESIS_TIME + 1; memset(tmpl.miner, 1, 32);
+        share_root(tmpl.tx_root, NULL, 0, NULL, 0);
+        uint8_t anchor[32] = {0};
+        throttle_fixed(100);
+        miner_set_job(&tmpl); miner_set_sci(anchor, tmpl.miner);
+        if (miner_start(2, p[1], s[1], &active)) _exit(1);
+        uint64_t deadline = now_ns() + 5000000000ULL;
+        while ((!atomic_load(&miner_scanned) || !atomic_load(&miner_sci_found)) && now_ns() < deadline)
+            usleep(10000);
+        int worked = atomic_load(&miner_scanned) > 0 && atomic_load(&miner_sci_found) > 0;
+        active = 0;
+        uint64_t start = now_ns();
+        miner_stop();
+        _exit(!worked || now_ns() - start > 1500000000ULL);
+    }
+    int status = 0;
+    CHECK(child > 0);
+    if (child > 0) {
+        CHECK(waitpid(child, &status, 0) == child);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    }
 }
 
 static void t_host_temperature(void) {
@@ -2308,6 +2345,11 @@ int main(int argc, char **argv) {
         }
         return 0;
     }
+    if (argc > 1 && !strcmp(argv[1], "--miner-backpressure")) {
+        t_miner_backpressure();
+        printf("%d/%d backpressure checks passed\n", runs - fails, runs);
+        return fails != 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "--miner-pause")) {
         t_miner_zero_duty();
         printf("%d/%d worker pause checks passed\n", runs - fails, runs);
@@ -2315,7 +2357,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_miner_zero_duty(); t_host_temperature(); t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_sync_fork_cursor(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_sci_pipe_region_switch(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
+    t_miner_zero_duty(); t_miner_backpressure(); t_host_temperature(); t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_sync_fork_cursor(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_sci_pipe_region_switch(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
