@@ -1,12 +1,14 @@
 #include "chain.h"
 #include "science.h"
 #include "util.h"
+#include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 #define MAX_ORPHANS 16384
@@ -153,16 +155,16 @@ static int accept(const share_t *s, const tx_t *txs, int ntx, const sci_t *sci, 
     tx_t *own = NULL;
     if (ntx) {
         own = malloc((size_t)ntx * sizeof *own);
-        if (!own) return CH_INVALID;
+        if (!own) return CH_ERROR;
         memcpy(own, txs, (size_t)ntx * sizeof *own);
     }
     sci_t *sown = NULL;
     if (nsci) {
         sown = malloc((size_t)nsci * sizeof *sown);
-        if (!sown) { free(own); return CH_INVALID; }
+        if (!sown) { free(own); return CH_ERROR; }
         memcpy(sown, sci, (size_t)nsci * sizeof *sown);
     }
-    if (reserve()) { free(own); free(sown); return CH_INVALID; }
+    if (reserve()) { free(own); free(sown); return CH_ERROR; }
     int idx = nE++;
     entry_t *e = &E[idx];
     e->s = *s; memcpy(e->id, id, 32);
@@ -231,11 +233,11 @@ static int submit_one(const uint8_t *msg, size_t len, uint8_t missing[32], int64
     if (nO == capO) {
         int nc = capO ? capO * 2 : 256;
         orphan_t *no = realloc(O, (size_t)nc * sizeof *O);
-        if (!no) return CH_INVALID;
+        if (!no) return CH_ERROR;
         O = no; capO = nc;
     }
     uint8_t *copy = malloc(len);
-    if (!copy) return CH_INVALID;
+    if (!copy) return CH_ERROR;
     memcpy(copy, msg, len);
     O[nO].msg = copy; O[nO].len = (uint16_t)len;
     memcpy(O[nO].parent, s.prev, 32);
@@ -245,10 +247,11 @@ static int submit_one(const uint8_t *msg, size_t len, uint8_t missing[32], int64
     return CH_ORPHAN;
 }
 
-static void resolve_orphans(const uint8_t first[32], int64_t now) {
+static int resolve_orphans(const uint8_t first[32], int64_t now) {
+    if (!nO) return 0;
     int qn = 1, qc = 16;
     uint8_t (*q)[32] = malloc((size_t)qc * 32), miss[32], cid[32];
-    if (!q) return;
+    if (!q) return -1;
     memcpy(q[0], first, 32);
     while (qn) {
         uint8_t id[32];
@@ -260,16 +263,18 @@ static void resolve_orphans(const uint8_t first[32], int64_t now) {
             orphan_bytes -= o.len;
             int r = submit_one(o.msg, o.len, miss, now, cid);
             free(o.msg);
+            if (r == CH_ERROR) { free(q); return -1; }
             if (r != CH_TIP && r != CH_ACCEPT) continue;
             if (qn == qc) {
                 uint8_t (*nq)[32] = realloc(q, (size_t)(qc *= 2) * 32);
-                if (!nq) { free(q); return; }
+                if (!nq) { free(q); return -1; }
                 q = nq;
             }
             memcpy(q[qn++], cid, 32);
         }
     }
     free(q);
+    return 0;
 }
 
 static void clear_orphans(void) {
@@ -281,7 +286,7 @@ static void clear_orphans(void) {
 int chain_submit(const uint8_t *msg, size_t len, uint8_t missing[32], int64_t now) {
     uint8_t id[32];
     int r = submit_one(msg, len, missing, now, id);
-    if (r == CH_TIP || r == CH_ACCEPT) resolve_orphans(id, now);
+    if ((r == CH_TIP || r == CH_ACCEPT) && resolve_orphans(id, now)) return CH_ERROR;
     return r;
 }
 
@@ -310,64 +315,61 @@ int chain_init(const char *dir, accept_fn cb) {
     share_t g = {0};
     uint8_t gid[32], miss[32], msg[SHARE_MSG_MAX], l[2];
     char path[512];
+    if (db || (mkdir(dir, 0755) && errno != EEXIST)) return -1;
+    if (snprintf(path, sizeof path, "%s/shares.v3", dir) >= (int)sizeof path) return -1;
+    /* Lock before replay or repair, not merely before appending. Two daemons
+     * sharing a volume must not interpret each other's partial writes as
+     * corruption or append interleaved records. Keep this inode locked for
+     * the lifetime of db. A failed startup releases it without modifying data. */
+    int fd = open(path, O_RDWR | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    if (fd < 0) return -1;
+    if (flock(fd, LOCK_EX | LOCK_NB)) { close(fd); return -1; }
+    FILE *f = fdopen(fd, "a+b");
+    if (!f) { close(fd); return -1; }
+    if (fseek(f, 0, SEEK_SET)) { fclose(f); return -1; }
     g.version = SHARE_VERSION; g.time = GENESIS_TIME; g.bits = GENESIS_BITS;
     share_id(gid, &g);
-    if (reserve()) return -1;
+    if (reserve()) { fclose(f); return -1; }
     memset(&E[0], 0, sizeof E[0]);
     E[0].s = g; memcpy(E[0].id, gid, 32); E[0].parent = -1;
     nE = 1; tip = 0;
     hput(0);
 
-    mkdir(dir, 0755);
-    snprintf(path, sizeof path, "%s/shares.v3", dir);
-    FILE *f = fopen(path, "rb");
     int loaded = 0;
     off_t good = 0;
-    int damaged = 0, ioerr = 0;
-    if (f) {
-        for (;;) {
-            size_t n = fread(l, 1, 2, f);
-            if (!n) { if (ferror(f)) ioerr = 1; break; }
-            if (n != 2) {
-                if (ferror(f)) ioerr = 1;
-                else damaged = 1;
-                break;
-            }
-            size_t len = (size_t)(l[0] | l[1] << 8);
-            if (len < SHARE_SIZE + 4 || len > sizeof msg) { damaged = 1; break; }
-            if (fread(msg, 1, len, f) != len) {
-                if (ferror(f)) ioerr = 1;
-                else damaged = 1;
-                break;
-            }
-            int r = chain_submit(msg, len, miss, 0);
-            if (r != CH_TIP && r != CH_ACCEPT) { damaged = 1; break; }
-            loaded++;
-            good = ftello(f);
-            if (good < 0) { damaged = 1; break; }
+    int damaged = 0, local_error = 0;
+    for (;;) {
+        size_t n = fread(l, 1, 2, f);
+        if (!n) { if (ferror(f)) local_error = 1; break; }
+        if (n != 2) {
+            if (ferror(f)) local_error = 1;
+            else damaged = 1;
+            break;
         }
-        fclose(f);
-        /* An I/O error is not evidence that the suffix is corrupt. Truncating
-         * a potentially healthy database after a transient read failure would
-         * destroy accepted history, so fail closed and leave it untouched. */
-        if (ioerr) return -1;
-        if (damaged) {
-            /* Persisted records are written only after acceptance and in
-             * parent-before-child order. Anything else is corruption, not a
-             * live orphan to retain in memory after healing the file. Do not
-             * append behind a corrupt suffix if healing fails: the next
-             * restart would truncate those newly accepted shares as well. */
-            clear_orphans();
-            if (good < 0) return -1;
-            int fd = open(path, O_WRONLY);
-            if (fd < 0) return -1;
-            int bad = ftruncate(fd, good) || fsync(fd);
-            if (close(fd)) bad = 1;
-            if (bad) return -1;
+        size_t len = (size_t)(l[0] | l[1] << 8);
+        if (len < SHARE_SIZE + 4 || len > sizeof msg) { damaged = 1; break; }
+        if (fread(msg, 1, len, f) != len) {
+            if (ferror(f)) local_error = 1;
+            else damaged = 1;
+            break;
         }
+        int r = chain_submit(msg, len, miss, 0);
+        if (r == CH_ERROR) { local_error = 1; break; }
+        if (r != CH_TIP && r != CH_ACCEPT) { damaged = 1; break; }
+        loaded++;
+        good = ftello(f);
+        if (good < 0) { local_error = 1; break; }
     }
-    db = fopen(path, "ab");
-    if (!db) return -1;
+    /* I/O and allocation failures do not prove that any record is corrupt.
+     * Fail closed with every original byte preserved for the next startup. */
+    if (local_error) { fclose(f); return -1; }
+    if (damaged) {
+        clear_orphans();
+        if (ftruncate(fd, good) || fsync(fd)) { fclose(f); return -1; }
+        log_msg("chain: repaired invalid suffix at byte %lld", (long long)good);
+    }
+    if (fseek(f, 0, SEEK_END)) { fclose(f); return -1; }
+    db = f;
     on_accept = cb;
     log_msg("chain: loaded %d shares, height %u", loaded, E[tip].height);
     return 0;

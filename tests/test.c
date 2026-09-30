@@ -290,6 +290,15 @@ static void t_sync_fork_cursor(void) {
         CHECK(!node_chain_request_due_vector(peer, want, count, 102));
         node_sync_receive_vector(peer, side, side_len); /* CH_ACCEPT, not tip */
         CHECK(chain_count() == count + 1 && chain_tip() == tip);
+        int *path_indices = NULL, path_count = chain_path(&path_indices);
+        CHECK(path_count == 29);
+        if (path_count > 0) {
+            CHECK(node_path_has_vector(path_indices, path_count, tip));
+            CHECK(node_path_has_vector(path_indices, path_count, chain_find(first_id)));
+            CHECK(!node_path_has_vector(path_indices, path_count, chain_find(side_id)));
+            CHECK(!node_path_has_vector(path_indices, 1, tip));
+        }
+        free(path_indices);
         CHECK(node_sync_locator_vector(peer, loc) > 0);
         CHECK(!memcmp(loc[0], side_id, 32));
         CHECK(node_chain_request_due_vector(peer, want, count + 1, 102));

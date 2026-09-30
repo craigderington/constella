@@ -26,7 +26,7 @@ typedef struct { uint8_t root[32]; int ntx; tx_t txs[SHARE_MAX_TX]; int nsci; sc
 
 static volatile sig_atomic_t running = 1;
 static uint8_t payout[32];
-static int cur_src = -1, live, tip_dirty, job_dirty;
+static int cur_src = -1, live, tip_dirty, job_dirty, failed;
 static uint64_t found;
 static ledger_t L;
 static tmpl_t T[TMPL_RING];
@@ -79,8 +79,14 @@ static int sci_main_has(const int *path, int n, uint32_t epoch, uint64_t k) {
 }
 
 static int chain_path_has(const int *path, int n, int idx) {
-    for (int i = 1; i < n; i++) if (path[i] == idx) return 1;
-    return 0;
+    /* Every path entry is indexed by height. Scanning the whole path for
+     * each stored share made side-claim recovery quadratic on every tip. */
+    uint32_t height = chain_entry(idx)->height;
+    return height < (uint32_t)n && path[height] == idx;
+}
+
+int node_path_has_vector(const int *path, int n, int idx) {
+    return chain_path_has(path, n, idx);
 }
 
 static int sci_claim_recoverable(uint32_t entry_height, uint32_t active_epoch,
@@ -314,13 +320,23 @@ static void serve_chain(int peer, const uint8_t *p, uint16_t len) {
 
 static void put64(uint8_t *p, uint64_t v) { for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> 8 * i); }
 
+static int submit_share(const uint8_t *p, size_t len, uint8_t miss[32]) {
+    int r = chain_submit(p, len, miss, now_sec());
+    if (r == CH_ERROR) {
+        log_msg("fatal: local resource failure while accepting share");
+        failed = 1;
+        running = 0;
+    }
+    return r;
+}
+
 static void on_msg(int peer, uint8_t type, const uint8_t *p, uint16_t len) {
     uint8_t miss[32];
     if (type == MSG_HELLO && len == 32) {
         if (chain_find(p) < 0) request_chain(peer, p);
     } else if (type == MSG_SHARE) {
         cur_src = peer;
-        int r = chain_submit(p, len, miss, now_sec());
+        int r = submit_share(p, len, miss);
         cur_src = -1;
         if (peer >= 0 && peer < 64 &&
             (r == CH_TIP || r == CH_ACCEPT || r == CH_DUP)) {
@@ -376,7 +392,7 @@ static void drain_found(int fd) {
         for (int i = 0; i < TMPL_RING; i++) {
             if (memcmp(T[i].root, s.tx_root, 32)) continue;
             size_t l = share_msg(msg, &s, T[i].txs, T[i].ntx, T[i].sci, T[i].nsci);
-            int r = chain_submit(msg, l, miss, now_sec());
+            int r = submit_share(msg, l, miss);
             if (r == CH_INVALID)
                 log_msg("mined share rejected: h=%u bits=%u txs=%d sci=%d",
                         s.height, s.bits, T[i].ntx, T[i].nsci);
@@ -539,7 +555,7 @@ int node_run(void) {
         if (pf[1].revents & POLLIN) drain_sci(spfd[0]);
         net_process(pf + 2, n);
         if (tip_dirty) {
-            if (rebuild_state()) { log_msg("fatal: cannot rebuild ledger state"); running = 0; break; }
+            if (rebuild_state()) { log_msg("fatal: cannot rebuild ledger state"); failed = 1; running = 0; break; }
             if (L.blocks != last_blocks) { report_balance(); last_blocks = L.blocks; }
             tip_dirty = 0;
             job_dirty = 1;
@@ -570,7 +586,7 @@ int node_run(void) {
      * secret on every restart would relearn `tried` from nothing each time,
      * which is the same eclipse exposure a fresh node has, every boot. */
     addr_save(data);
-    return 0;
+    return failed ? 1 : 0;
 }
 
 int bench_run(unsigned bits, int secs, int threads) {
