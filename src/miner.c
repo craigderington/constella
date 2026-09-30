@@ -26,11 +26,21 @@ static atomic_uint_fast64_t sci_gen, sci_next;
 
 typedef struct { job_t *j; tstate ts; } wctx;
 
+/* A zero-duty tick sleeps, but is not permission to do another batch. Wait
+ * here so an in-flight search keeps its position while paused. Recheck the
+ * generation and shutdown flag after every bounded sleep, including normal
+ * duty-cycle sleeps, before granting work. */
+static int wait_work(wctx *w, atomic_uint_fast64_t *generation) {
+    while (*run && atomic_load(generation) == w->j->gen) {
+        throttle_tick(&w->ts);
+        if (!*run || atomic_load(generation) != w->j->gen) return 0;
+        if (throttle_duty() > 0) return 1;
+    }
+    return 0;
+}
+
 static int keep(void *c) {
-    wctx *w = c;
-    if (!*run || atomic_load(&gen) != w->j->gen) return 0;
-    throttle_tick(&w->ts);
-    return *run && atomic_load(&gen) == w->j->gen;
+    return wait_work(c, &gen);
 }
 
 static void *worker(void *arg) {
@@ -47,9 +57,9 @@ static void *worker(void *arg) {
         if (!j) { usleep(100000); continue; }
         w.j = j;
         while (*run && atomic_load(&gen) == j->gen) {
+            if (!keep(&w)) break;
             uint64_t win = atomic_fetch_add(&j->next_win, 1);
             if (win >= SIEVE_WINDOWS) { usleep(100000); continue; }
-            if (!keep(&w)) break;
             search_out o;
             int r = job_search(j, win, bm, &o, keep, &w);
             atomic_fetch_add(&miner_scanned, SIEVE_W);
@@ -72,10 +82,7 @@ static void *worker(void *arg) {
  * sci_keep() can reuse the same invalidation check as the constellation
  * worker's keep(). */
 static int sci_keep(void *c) {
-    wctx *w = c;
-    if (!*run || atomic_load(&sci_gen) != w->j->gen) return 0;
-    throttle_tick(&w->ts);
-    return *run && atomic_load(&sci_gen) == w->j->gen;
+    return wait_work(c, &sci_gen);
 }
 
 static void *sci_worker(void *arg) {
@@ -95,6 +102,7 @@ static void *sci_worker(void *arg) {
         bn base;
         sci_region(&base, anchor, payout);
         while (*run && atomic_load(&sci_gen) == g) {
+            if (!sci_keep(&w)) break;
             uint64_t k0 = atomic_fetch_add(&sci_next, SCI_SPAN);
             if (k0 + SCI_SPAN >= SCI_K_MAX) { usleep(100000); continue; }
             sci_t found;
@@ -169,4 +177,12 @@ void miner_stop(void) {
     cur = NULL;
     pthread_mutex_unlock(&mu);
     free(th);
+}
+
+/* Read-only worker regression probe; unreferenced in the shipped binary. */
+void miner_progress_vector(uint64_t *windows, uint64_t *science) {
+    pthread_mutex_lock(&mu);
+    *windows = cur ? atomic_load(&cur->next_win) : 0;
+    pthread_mutex_unlock(&mu);
+    *science = atomic_load(&sci_next);
 }
