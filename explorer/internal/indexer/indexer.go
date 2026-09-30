@@ -26,6 +26,7 @@ type Indexer struct {
 	dirty         bool
 	pendingShares []*consensus.Node
 	lastReq       time.Time
+	syncCursor    proto.Hash // last validated share received on this connection
 
 	// consensus cross-check: GETACCT replies arrive in request order
 	pending     []proto.Hash
@@ -67,12 +68,24 @@ func (x *Indexer) Load(ctx context.Context) error {
 	return nil
 }
 
+func (x *Indexer) locator() [][32]byte {
+	if x.chain.Get(x.syncCursor) != nil {
+		return append([][32]byte{x.syncCursor}, x.chain.Locator(31)...)
+	}
+	return x.chain.Locator(32)
+}
+
+func (x *Indexer) resetPeer() {
+	x.pending = nil
+	x.syncCursor = proto.Hash{}
+}
+
 func (x *Indexer) requestChain(force bool) {
 	if !force && time.Since(x.lastReq) < 3*time.Second {
 		return
 	}
 	x.lastReq = time.Now()
-	loc := x.chain.Locator(32)
+	loc := x.locator()
 	buf := make([]byte, 0, len(loc)*32)
 	for _, id := range loc {
 		buf = append(buf, id[:]...)
@@ -95,6 +108,9 @@ func (x *Indexer) onShare(ctx context.Context, raw []byte) {
 		x.requestChain(false)
 		return
 	}
+	// Duplicates and a still-weaker fork must advance pagination too. The
+	// canonical locator alone can request the same 500-share batch forever.
+	x.syncCursor = m.Share.ID()
 	if len(added) > 0 {
 		x.pendingShares = append(x.pendingShares, added...)
 		if err := x.store.InsertShares(ctx, x.pendingShares); err != nil {
@@ -228,7 +244,7 @@ func (x *Indexer) Run(ctx context.Context) {
 		case f := <-x.peer.Frames:
 			switch f.Type {
 			case 0:
-				x.pending = nil
+				x.resetPeer()
 				x.requestChain(true)
 			case proto.MsgHello:
 				if len(f.Payload) == 32 && x.chain.Get(proto.Hash(f.Payload)) == nil {
