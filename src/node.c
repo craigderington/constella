@@ -374,6 +374,15 @@ int node_run(void) {
         log_msg("fatal: invalid port or thread count");
         return 1;
     }
+    const char *private_net = getenv("CONSTELLA_PRIVATE_NET");
+    if (private_net && strcmp(private_net, "0") && strcmp(private_net, "1")) {
+        log_msg("fatal: CONSTELLA_PRIVATE_NET must be 0 or 1");
+        return 1;
+    }
+    int allow_private = private_net && !strcmp(private_net, "1");
+    addr_set_private(allow_private);
+    if (allow_private)
+        log_msg("p2p: PRIVATE TESTNET MODE - RFC1918 discovery enabled");
     throttle_init(atoi(env("CONSTELLA_DUTY", "50")), atoi(env("CONSTELLA_TEMP_MAX", "0")),
                   atoi(env("CONSTELLA_BATTERY_PAUSE", "1")));
     throttle_start();

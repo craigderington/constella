@@ -14,6 +14,17 @@ static int v4mapped(const uint8_t ip[16]) {
     return !memcmp(ip, pfx, 12);
 }
 
+static int g_allow_private;
+
+static int private_v4(const uint8_t ip[16]) {
+    if (!v4mapped(ip)) return 0;
+    uint8_t a = ip[12], b = ip[13];
+    return a == 10 || (a == 172 && (b & 0xf0) == 16) ||
+           (a == 192 && b == 168);
+}
+
+void addr_set_private(int allow) { g_allow_private = allow != 0; }
+
 int addr_netgroup(const uint8_t ip[16], uint8_t out[8]) {
     /* Zero the whole key first: a v4-mapped address only ever fills out[0..1]
      * (return value 2), and callers are entitled to compare the full 8 bytes
@@ -22,6 +33,23 @@ int addr_netgroup(const uint8_t ip[16], uint8_t out[8]) {
     if (v4mapped(ip)) { out[0] = ip[12]; out[1] = ip[13]; return 2; }
     memcpy(out, ip, 4);
     return 4;
+}
+
+void addr_peer_group(const uint8_t ip[16], uint16_t port, uint8_t out[8]) {
+    if (!g_allow_private || !private_v4(ip)) {
+        addr_netgroup(ip, out);
+        return;
+    }
+
+    /* A private lab commonly runs several nodes behind one host address on
+     * different published ports. Treat those endpoints independently only
+     * in the explicit private-network mode. Public mode retains /16 groups,
+     * so opening more ports never buys an internet peer more diversity. */
+    out[0] = 0xff;
+    out[1] = 4;
+    memcpy(out + 2, ip + 12, 4);
+    out[6] = (uint8_t)(port >> 8);
+    out[7] = (uint8_t)port;
 }
 
 /* ---- address tables ------------------------------------------------- */
@@ -196,9 +224,10 @@ int addr_count(int tried) {
  * bytes now, so this is well-defined for both a 2-byte v4 /16 key and a
  * 4-byte v6 /32 key - no uninitialised read, no truncation of the v6 key
  * down to a v4-sized prefix. */
-static int netgroup_avoided(const uint8_t ip[16], const uint8_t (*avoid)[8], int navoid) {
+static int netgroup_avoided(const uint8_t ip[16], uint16_t port,
+                            const uint8_t (*avoid)[8], int navoid) {
     uint8_t g[8] = {0};
-    addr_netgroup(ip, g);
+    addr_peer_group(ip, port, g);
     for (int j = 0; j < navoid; j++)
         if (!memcmp(g, avoid[j], 8)) return 1;
     return 0;
@@ -228,7 +257,7 @@ static int scan_table(slot_t table[][ADDR_BUCKET_SIZE], int nbuckets,
             for (int i = 0; i < ADDR_BUCKET_SIZE; i++) {
                 slot_t *s = &table[b][i];
                 if (!s->used) continue;
-                if (netgroup_avoided(s->a.ip, avoid, navoid)) continue;
+                if (netgroup_avoided(s->a.ip, s->a.port, avoid, navoid)) continue;
                 if (pass == 0 && is_stale(s->a.seen) && (next_rand() % 100) < 70)
                     continue;              /* weighted down this round, not excluded */
                 *out = s->a;
@@ -261,9 +290,8 @@ int addr_select(addr_t *out, const uint8_t (*avoid)[8], int navoid) {
 int addr_is_routable(const uint8_t ip[16]) {
     if (v4mapped(ip)) {
         uint8_t a = ip[12], b = ip[13];
-        if (a == 0 || a == 127 || a == 10) return 0;
-        if (a == 192 && b == 168) return 0;
-        if (a == 172 && (b & 0xf0) == 16) return 0;
+        if (a == 0 || a == 127) return 0;
+        if (private_v4(ip)) return g_allow_private;
         if (a == 169 && b == 254) return 0;
         if (a >= 224) return 0;                       /* multicast, reserved */
         return 1;
@@ -445,7 +473,7 @@ int addr_load(const char *datadir) {
     if (*p != 1) { free(buf); return addr_reset_fresh(datadir); }
     p += 1;
     uint8_t secret[16]; memcpy(secret, p, 16); p += 16;
-    uint32_t max_seen = ar32(p); p += 4;
+    p += 4;  /* persisted max_seen; recomputed from accepted records below */
     uint32_t n_new    = ar32(p); p += 4;
     uint32_t n_tried  = ar32(p); p += 4;
 
@@ -461,18 +489,22 @@ int addr_load(const char *datadir) {
 
     /* Validated end to end: adopt the persisted secret and rebuild both
      * tables from the persisted records. addr_init resets max_seen and the
-     * rand counter along with the tables, so max_seen is restored right
-     * after it. Bucket placement is recomputed from the restored secret
-     * rather than trusting a stored bucket index, so it stays consistent
-     * with bucket_hash even if ADDR_*_BUCKETS ever changes. */
+     * rand counter along with the tables; max_seen is recomputed only from
+     * records accepted under the current routability policy. Bucket placement
+     * is recomputed from the restored secret rather than trusting a stored
+     * bucket index, so it stays consistent with bucket_hash even if
+     * ADDR_*_BUCKETS ever changes. */
     addr_init(secret);
-    g_max_seen = max_seen;
-
     for (uint32_t i = 0; i < n_new; i++) {
         uint8_t ip[16]; memcpy(ip, p, 16); p += 16;
         uint16_t port = ar16(p); p += 2;
         uint32_t seen = ar32(p); p += 4;
         uint8_t ok = *p; p += 1;
+
+        /* A table learned in private-network mode must not silently retain
+         * RFC1918 endpoints if the operator later restarts in public mode. */
+        if (!addr_is_routable(ip)) continue;
+        if (seen > g_max_seen) g_max_seen = seen;
 
         int b = addr_bucket_of(ip, 0);
         slot_t *s = bucket_free(g_new[b]);
@@ -487,6 +519,9 @@ int addr_load(const char *datadir) {
         uint16_t port = ar16(p); p += 2;
         uint32_t seen = ar32(p); p += 4;
         uint8_t ok = *p; p += 1;
+
+        if (!addr_is_routable(ip)) continue;
+        if (seen > g_max_seen) g_max_seen = seen;
 
         int b = addr_bucket_of(ip, 1);
         slot_t *s = bucket_free(g_tried[b]);

@@ -107,6 +107,7 @@ static int64_t out_next, fallback_at;
  * the comparison below can never match by accident. */
 static uint8_t self_ip[16];
 static uint16_t self_port;
+static int trace_discovery;
 
 /* Defined with the rest of the outbound machinery below; finish_auth needs
  * them well before that, and the two halves read better kept together. */
@@ -438,13 +439,13 @@ static void handle_getaddr(int i, uint16_t len) {
      * `avoid` keeps the reply netgroup-diverse on the same rule the loop below
      * follows. */
     if (self_port) {
-        addr_netgroup(self_ip, avoid[n]);
+        addr_peer_group(self_ip, self_port, avoid[n]);
         addr_msg_put(out + 2, self_ip, self_port, (uint32_t)now_sec());
         n = 1;
     }
     addr_t got;
     while (n < ADDR_MAX_ENTRIES && addr_select(&got, avoid, n)) {
-        addr_netgroup(got.ip, avoid[n]);
+        addr_peer_group(got.ip, got.port, avoid[n]);
         addr_msg_put(out + 2 + (size_t)n * ADDR_MSG_ENTRY_SIZE, got.ip, got.port, got.seen);
         n++;
     }
@@ -463,8 +464,14 @@ static void handle_addr_msg(int i, const uint8_t *msg, uint16_t len) {
 
     if (len < 2) { drop(i); return; }         /* malformed: no room for count */
     uint16_t count = get16le(msg);
-    if (addr_msg_ingest(msg + 2, (uint16_t)(len - 2), count, (uint32_t)t) < 0) {
+    int before = addr_count(0) + addr_count(1);
+    int added = addr_msg_ingest(msg + 2, (uint16_t)(len - 2), count, (uint32_t)t);
+    if (added < 0) {
         drop(i);                              /* malformed: count/length mismatch */
+    } else if (trace_discovery && addr_count(0) + addr_count(1) > before) {
+        log_msg("p2p: discovery learned=%d known-new=%d known-tried=%d",
+                addr_count(0) + addr_count(1) - before,
+                addr_count(0), addr_count(1));
     }
 }
 
@@ -628,23 +635,27 @@ static void peer_dial_begin(peer_t *p, const addr_t *a) {
  * dialling it (B1) - it is an address like any other once the tables hold it. */
 static void peer_handshake_done(const peer_t *p) {
     if (!p->from_addr) return;
+    int before = addr_count(1);
     addr_good(p->dial_ip, p->dial_port, p->attempt);
+    if (trace_discovery && addr_count(1) > before)
+        log_msg("p2p: discovery promoted endpoint; known-new=%d known-tried=%d",
+                addr_count(0), addr_count(1));
 }
 
 /* Seeds and learned addresses share one outbound budget and one diversity
  * rule. Letting configured/DNS seeds bypass this check allowed up to sixteen
  * of them (including one netgroup repeated sixteen times) to crowd out every
  * table-selected peer. */
-static int outbound_slot_available(const uint8_t ip[16]) {
+static int outbound_slot_available(const uint8_t ip[16], uint16_t port) {
     uint8_t group[8];
-    if (ip) addr_netgroup(ip, group);
+    if (ip) addr_peer_group(ip, port, group);
     int have = 0;
     for (int i = 0; i < MAX_PEERS; i++) {
         if (P[i].state == P_FREE || P[i].inbound) continue;
         have++;
         if (ip && P[i].has_ip) {
             uint8_t existing[8];
-            addr_netgroup(P[i].dial_ip, existing);
+            addr_peer_group(P[i].dial_ip, P[i].dial_port, existing);
             if (!memcmp(group, existing, 8)) return 0;
         }
     }
@@ -652,7 +663,7 @@ static int outbound_slot_available(const uint8_t ip[16]) {
 }
 
 static void dial_addr(const addr_t *a) {
-    if (!outbound_slot_available(a->ip)) return;
+    if (!outbound_slot_available(a->ip, a->port)) return;
     struct sockaddr_storage ss;
     socklen_t sl = sa_pack(&ss, a->ip, a->port);
     int fd = socket(ss.ss_family, SOCK_STREAM, 0);
@@ -674,7 +685,7 @@ static void dial(int s) {
     uint8_t ip[16];
     uint16_t port = 0;
     int known = sa_unpack(res->ai_addr, ip, &port) == 0;
-    if (!outbound_slot_available(known ? ip : NULL)) { freeaddrinfo(res); return; }
+    if (!outbound_slot_available(known ? ip : NULL, port)) { freeaddrinfo(res); return; }
     int fd = socket(res->ai_family, SOCK_STREAM, 0);
     if (fd < 0) { freeaddrinfo(res); return; }
     nonblock(fd);
@@ -728,13 +739,12 @@ static int select_outbound(addr_t *out, int max, uint8_t avoid[][8], int nav) {
         if (!addr_select(&got, (const uint8_t (*)[8])avoid, nav)) break;
         if (got.port == self_port && !memcmp(got.ip, self_ip, 16)) {
             /* Review Focus 3: never select our own advertised address. Its
-             * netgroup goes on the avoid list as well - it is our own /16,
-             * so nothing in it adds outbound diversity, and leaving it
+             * effective group goes on the avoid list too; leaving it
              * selectable would burn the budget re-offering us. */
-            addr_netgroup(got.ip, avoid[nav++]);
+            addr_peer_group(got.ip, got.port, avoid[nav++]);
             continue;
         }
-        addr_netgroup(got.ip, avoid[nav++]);
+        addr_peer_group(got.ip, got.port, avoid[nav++]);
         out[n++] = got;
     }
     return n;
@@ -750,7 +760,8 @@ static void fill_outbound(void) {
     for (int i = 0; i < MAX_PEERS; i++) {
         if (P[i].state == P_FREE || P[i].inbound) continue;
         have++;
-        if (P[i].has_ip && nav < NET_AVOID_MAX) addr_netgroup(P[i].dial_ip, avoid[nav++]);
+        if (P[i].has_ip && nav < NET_AVOID_MAX)
+            addr_peer_group(P[i].dial_ip, P[i].dial_port, avoid[nav++]);
     }
     if (have >= NET_OUTBOUND) return;
     addr_t pick[NET_OUTBOUND];
@@ -819,6 +830,8 @@ int net_init(uint16_t port, const char *csv, const wallet_t *id,
              net_msg_fn on_msg, net_conn_fn on_conn) {
     if (!id) return -1;                    /* there is no unauthenticated mode */
     cb_msg = on_msg; cb_conn = on_conn;
+    trace_discovery = getenv("CONSTELLA_TRACE_DISCOVERY") &&
+                      !strcmp(getenv("CONSTELLA_TRACE_DISCOVERY"), "1");
     node_id = *id;
     lfd = socket(AF_INET, SOCK_STREAM, 0);
     if (lfd < 0) return -1;
@@ -1098,7 +1111,7 @@ int net_inbound_group_count_vector(const uint8_t ip[16]) {
 }
 
 int net_outbound_add_vector(const uint8_t ip[16]) {
-    if (!outbound_slot_available(ip)) return 0;
+    if (!outbound_slot_available(ip, 0)) return 0;
     int i = alloc_peer(-1, P_UP, -1, 0, NULL);
     if (i < 0) return 0;
     memcpy(P[i].dial_ip, ip, 16);
@@ -1107,7 +1120,7 @@ int net_outbound_add_vector(const uint8_t ip[16]) {
 }
 
 int net_outbound_slot_vector(const uint8_t ip[16]) {
-    return outbound_slot_available(ip);
+    return outbound_slot_available(ip, 0);
 }
 
 void net_dial_vector(const uint8_t ip[16], uint16_t port) {

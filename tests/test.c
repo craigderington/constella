@@ -1137,6 +1137,54 @@ static void t_netgroup(void) {
     uint8_t ula[16] = {0xfd}; CHECK(!addr_is_routable(ula));
 }
 
+/* A five-node lab may publish several nodes on different ports of the same
+ * RFC1918 host. Public mode must continue to reject those addresses; explicit
+ * private mode accepts them and lets each host:port appear in one discovery
+ * reply and in the outbound set. */
+static void t_private_net_discovery(void) {
+    uint8_t secret[16]; memset(secret, 0x6d, sizeof secret);
+    uint8_t ip[16], g1[8], g2[8];
+    mk4(ip, 192, 168, 1, 212);
+
+    addr_set_private(0);
+    addr_init(secret);
+    CHECK(!addr_is_routable(ip));
+    CHECK(addr_add(ip, 17043, 1) == 0);
+
+    addr_set_private(1);
+    addr_init(secret);
+    CHECK(addr_is_routable(ip));
+    CHECK(addr_add(ip, 17043, 1) == 1);
+    CHECK(addr_add(ip, 17044, 2) == 1);
+    addr_peer_group(ip, 17043, g1);
+    addr_peer_group(ip, 17044, g2);
+    CHECK(memcmp(g1, g2, sizeof g1) != 0);
+
+    addr_t first, second;
+    CHECK(addr_select(&first, NULL, 0) == 1);
+    addr_peer_group(first.ip, first.port, g1);
+    CHECK(addr_select(&second, (const uint8_t (*)[8])&g1, 1) == 1);
+    CHECK(first.port != second.port);
+
+    /* The mode is an operator policy, not a permanent weakening carried by
+     * peers.dat. A public-mode restart filters private entries even when the
+     * persisted file and checksum are otherwise valid. */
+    char dir[] = "/tmp/constella-private-XXXXXX";
+    if (!mkdtemp(dir)) { CHECK(0); addr_set_private(0); return; }
+    addr_save(dir);
+    addr_set_private(0);
+    CHECK(addr_load(dir) == 0);
+    CHECK(addr_count(0) + addr_count(1) == 0);
+    addr_set_private(1);
+    CHECK(addr_load(dir) == 0);
+    CHECK(addr_count(0) == 2);
+
+    /* The opt-in never turns loopback or link-local into gossip targets. */
+    mk4(ip, 127, 0, 0, 1); CHECK(!addr_is_routable(ip));
+    mk4(ip, 169, 254, 1, 1); CHECK(!addr_is_routable(ip));
+    addr_set_private(0);
+}
+
 static void t_addr_tables(void) {
     uint8_t secret[16] = {0};
     for (int i = 0; i < 16; i++) secret[i] = (uint8_t)(i * 7 + 1);
@@ -2015,7 +2063,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cli_socket(); t_netgroup(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

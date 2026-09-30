@@ -244,6 +244,11 @@ loaded as recovery paths: a warm node delays them for 30 seconds while it tries
 its cached table, and resets that delay while it has an authenticated outbound
 peer. Thus one stale persisted address cannot permanently disable bootstrap.
 `CONSTELLA_PEERS` remains a manual override for private networks and tests.
+RFC1918 endpoints are rejected by default. A closed lab can explicitly set
+`CONSTELLA_PRIVATE_NET=1`; only then are RFC1918 endpoints accepted, and their
+published ports participate in discovery diversity so several containers on
+one host can be learned independently. The setting is intentionally unsuitable
+for a public node and is never inferred automatically.
 
 Addresses live in two tables, `new` (unverified, heard about) and `tried`
 (handshake-confirmed). Both are bucketed by **network group** — the /16 for
