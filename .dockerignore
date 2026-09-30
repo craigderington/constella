@@ -2,3 +2,16 @@ constella
 test_constella
 constella-data
 *.log
+.git
+.aws
+.env
+.env.*
+**/*.env
+**/*.key
+**/peers.dat
+web_session.txt
+constella-explorer
+thermal_sim
+gate_snapshot
+test_chain_storage
+bench_ledger

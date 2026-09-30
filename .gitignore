@@ -7,3 +7,9 @@ gate_snapshot
 test_chain_storage
 bench_ledger
 web_session.txt
+.env
+.env.*
+!.env.example
+*.env
+*.key
+peers.dat
