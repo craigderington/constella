@@ -485,6 +485,57 @@ unverified defects.
   explorer's balances, nonces and all ledger totals at that exact tip. See
   [verification report](../deploy/testnet-five/BUG041.md).
 
+### BUG-042: Allocation failure during replay can truncate healthy history
+
+- Severity: high, persistence/data loss on memory pressure.
+- The old loader treated chain allocation failure as invalid consensus data
+  and truncated the unread suffix. Reproduced on a disposable public fixture.
+- Fixed locally: distinct `CH_ERROR`, non-destructive resource/I/O failures,
+  failing daemon exit, and allocation-fault regression with byte preservation.
+- Not deployed. See [production review](production-readiness-2026-09-30.md).
+
+### BUG-043: Concurrent chain writers are not excluded
+
+- Severity: high, shared-volume corruption risk.
+- Fixed locally: exclusive advisory lock before replay/repair, retained for
+  the writer lifetime. Two-process exclusion and release tests pass.
+- All writers must use the new implementation; network-filesystem behavior is
+  not validated. Not deployed.
+
+### BUG-044: Miner shutdown hangs under pipe backpressure
+
+- Severity: availability and graceful-shutdown failure.
+- Reproduced with both output pipes full: the old worker blocks in `write` and
+  `miner_stop` cannot join. Fixed with atomic nonblocking records and bounded
+  waits; the stop flag is now lock-free atomic across threads and signals.
+- Regression fails on old code and passes after the fix. Not deployed.
+
+### BUG-045: Explorer fork synchronization repeats canonical batches
+
+- Severity: availability / stale explorer state.
+- The C-node cursor fix did not cover the Go indexer. The explorer now advances
+  its per-connection locator on validated duplicates and weaker-fork shares,
+  retaining canonical fallback and clearing the cursor on reconnect.
+- Fixture test passes; removing cursor behavior makes it fail. Not deployed.
+
+### BUG-046: Chosen account prefixes create ledger hash collisions
+
+- Severity: high, persistent replay denial-of-service risk.
+- Recipient addresses sharing their first four bytes created one long index
+  cluster. The 4,096-account regression reproduces the problem.
+- Fixed locally with a fresh random keyed full-address hash. Index placement
+  is not consensus data; balances and account insertion order are unchanged.
+  This does not solve unbounded account growth. Not deployed.
+
+### BUG-047: Public payout override unnecessarily accesses a spending wallet
+
+- Severity: key-exposure hardening.
+- `CONSTELLA_ADDR` previously loaded or created `wallet.key` before applying
+  the public override. It now bypasses the payout wallet, retaining only the
+  separate network identity. A real disposable-node regression verifies this.
+- Wallet wiping uses `crypto_wipe`; existing key files are preserved. This
+  is not a substitute for offline custody or backup/restore. Not deployed.
+
 ## Protocol Decisions / Limitations
 
 ### DESIGN-001: State-invalid transactions remain in blocks

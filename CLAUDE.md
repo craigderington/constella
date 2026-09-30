@@ -16,6 +16,9 @@ independently.
 - Hosting plan: an existing underutilized Lightsail instance will run the
   Explorer, Postgres, and one node; another Lightsail instance and the homelab
   will each run a node. Target instance and cloud mining mode remain undecided.
+- Craig confirmed a month or more of testnet before mainnet (2026-09-30).
+  Use that period for deliberate failure/abuse/recovery tests and sustained
+  operation. Elapsed time alone does not close the production audit gates.
 - Docker Compose for everything; Postgres for anything stateful.
 - Keep explorer operation separate from mining nodes. The explorer/database
   use their own UI bridge; only the explorer also joins the P2P bridge to read
@@ -179,6 +182,13 @@ independently.
   fixed and deployed to all six nodes on 2026-09-30 (details below).
 
 ## Not yet verified
+- [ ] **Valuable-coin mainnet remains blocked.** Read
+  `docs/production-readiness-2026-09-30.md` before deployment preparation.
+  Local audit fixes cover destructive OOM replay, concurrent writers,
+  explorer fork pagination, mining shutdown backpressure, account-index
+  collisions and cold payout handling. They are not deployed. Open gates include mainnet/testnet domain
+  separation, public-peer resource budgets, 90-day state/SQL scale,
+  independent protocol review, custody/restore and shared-host operations.
 - [x] Forced partition/reorg convergence, changed-anchor and same-anchor claim
   recovery. Gate 2 closed 2026-09-29: four mini claims recovered at 13664–13665;
   six validated C replays and independent Go ledger agree at 25790. See
