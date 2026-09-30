@@ -5,6 +5,7 @@
 #include "chain.h"
 #include "ledger.h"
 #include "mempool.h"
+#include "miner.h"
 #include "net.h"
 #include "node.h"
 #include "tx.h"
@@ -31,6 +32,101 @@
 
 static int fails, runs;
 #define CHECK(c) do { runs++; if (!(c)) { fails++; fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #c); } } while (0)
+
+/* Exercise the actual two worker threads, not just controller duty output.
+ * Fork keeps the worker globals and fixed-duty override out of other tests. */
+static void t_miner_zero_duty(void) {
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid < 0) return;
+    if (!pid) {
+        alarm(25);
+        fails = 0;
+        int p[2], s[2];
+        if (pipe2(p, O_NONBLOCK) || pipe2(s, O_NONBLOCK)) _exit(1);
+        volatile sig_atomic_t running = 1;
+        share_t tmpl = {0};
+        tmpl.version = SHARE_VERSION; tmpl.height = 1; tmpl.bits = BITS_MIN;
+        tmpl.time = GENESIS_TIME + 1;
+        memset(tmpl.miner, 1, 32);
+        share_root(tmpl.tx_root, NULL, 0, NULL, 0);
+        uint8_t anchor[32] = {0};
+        throttle_fixed(0);
+        miner_set_job(&tmpl);
+        miner_set_sci(anchor, tmpl.miner);
+        if (miner_start(2, p[1], s[1], &running)) _exit(1);
+        usleep(1200000);
+        uint64_t w, sc;
+        miner_progress_vector(&w, &sc);
+        CHECK(w == 0 && sc == 0);  /* no search ranges consumed while paused */
+        CHECK(atomic_load(&miner_scanned) == 0);
+        CHECK(atomic_load(&miner_sci_found) == 0);
+
+        throttle_fixed(100);
+        uint64_t deadline = now_ns() + 5000000000ULL;
+        do {
+            usleep(10000);
+            miner_progress_vector(&w, &sc);
+        } while ((w < 2 || sc < 2 * (1u << 16)) && now_ns() < deadline);
+        CHECK(w >= 2 && sc >= 2 * (1u << 16)); /* both lanes resume */
+
+        throttle_fixed(0);
+        usleep(1200000);          /* allow the bounded in-flight batch to park */
+        uint64_t w0, sc0, found = atomic_load(&miner_sci_found);
+        miner_progress_vector(&w0, &sc0);
+        uint64_t scanned = atomic_load(&miner_scanned);
+        usleep(1200000);
+        miner_progress_vector(&w, &sc);
+        CHECK(w == w0 && sc == sc0);
+        CHECK(atomic_load(&miner_scanned) == scanned);
+        CHECK(atomic_load(&miner_sci_found) == found);
+
+        /* A tip/epoch change must interrupt the parked old job, without
+         * consuming ranges on its replacement until duty becomes positive. */
+        uint8_t discard[4096];
+        while (read(p[0], discard, sizeof discard) > 0) {}
+        while (read(s[0], discard, sizeof discard) > 0) {}
+        memset(tmpl.prev, 2, 32); anchor[0] = 3;
+        miner_set_job(&tmpl);
+        miner_set_sci(anchor, tmpl.miner);
+        usleep(1200000);
+        miner_progress_vector(&w, &sc);
+        CHECK(w == 0 && sc == 0);
+        throttle_fixed(100);
+        uint8_t raw[SCI_SIZE];
+        ssize_t got = -1;
+        deadline = now_ns() + 5000000000ULL;
+        while (now_ns() < deadline && (got = read(s[0], raw, sizeof raw)) < 0)
+            usleep(10000);
+        CHECK(got == SCI_SIZE);
+        if (got == SCI_SIZE) {
+            sci_t claim; bn base;
+            sci_deser(&claim, raw); sci_region(&base, anchor, tmpl.miner);
+            CHECK(sci_check(&base, &claim) == 0); /* current anchor after resume */
+        }
+        uint8_t share_raw[SHARE_SIZE];
+        got = -1;
+        deadline = now_ns() + 5000000000ULL;
+        while (now_ns() < deadline && (got = read(p[0], share_raw, sizeof share_raw)) < 0)
+            usleep(10000);
+        CHECK(got == SHARE_SIZE);
+        if (got == SHARE_SIZE) {
+            share_t resumed; share_deser(&resumed, share_raw);
+            CHECK(!memcmp(resumed.prev, tmpl.prev, 32));
+        }
+        throttle_fixed(0);
+        usleep(600000);
+        uint64_t start = now_ns();
+        running = 0;
+        miner_stop();
+        CHECK(now_ns() - start < 1500000000ULL); /* pause cannot hang shutdown */
+        close(p[0]); close(p[1]); close(s[0]); close(s[1]);
+        _exit(fails ? 1 : 0);
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
 
 static void t_host_temperature(void) {
     char path[] = "/tmp/constella-temperature-XXXXXX";
@@ -2203,9 +2299,14 @@ int main(int argc, char **argv) {
         }
         return 0;
     }
+    if (argc > 1 && !strcmp(argv[1], "--miner-pause")) {
+        t_miner_zero_duty();
+        printf("%d/%d worker pause checks passed\n", runs - fails, runs);
+        return fails != 0;
+    }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_host_temperature(); t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_sync_fork_cursor(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_sci_pipe_region_switch(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
+    t_miner_zero_duty(); t_host_temperature(); t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_sync_fork_cursor(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_sci_pipe_region_switch(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

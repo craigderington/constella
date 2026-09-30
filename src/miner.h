@@ -16,4 +16,6 @@ void miner_set_job(const share_t *tmpl);
  * the region this share's science lane searches: sci_region(anchor, payout). */
 void miner_set_sci(const uint8_t anchor[32], const uint8_t payout[32]);
 void miner_stop(void);
+/* Test probe: reserved search ranges, not estimates derived from duty. */
+void miner_progress_vector(uint64_t *windows, uint64_t *science);
 #endif
