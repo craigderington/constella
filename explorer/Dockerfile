@@ -11,6 +11,7 @@
 FROM golang:1.22-alpine AS build
 WORKDIR /repo
 COPY src/params.h src/science.h src/net.h ./src/
+COPY tests/fixtures/sync-fork.v3 ./tests/fixtures/
 COPY explorer/go.mod explorer/go.sum ./explorer/
 COPY explorer/vendor ./explorer/vendor
 COPY explorer/cmd ./explorer/cmd
