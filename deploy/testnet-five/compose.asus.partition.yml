@@ -1,0 +1,14 @@
+services:
+  node4:
+    ports: !reset []
+    environment:
+      CONSTELLA_ADVERTISE: "node4:7043"
+      CONSTELLA_PEERS: "node5:7043"
+  node5:
+    ports: !reset []
+    environment:
+      CONSTELLA_ADVERTISE: "node5:7043"
+      CONSTELLA_PEERS: "node4:7043"
+networks:
+  gate:
+    internal: true

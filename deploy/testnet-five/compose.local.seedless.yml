@@ -1,0 +1,6 @@
+# Apply after a clean stop to prove peers.dat can bootstrap without configured
+# seeds: docker compose -f compose.local.yml -f compose.local.seedless.yml up
+services:
+  node1: { environment: { CONSTELLA_PEERS: "" } }
+  node2: { environment: { CONSTELLA_PEERS: "" } }
+  node3: { environment: { CONSTELLA_PEERS: "" } }

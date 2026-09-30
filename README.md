@@ -31,6 +31,8 @@ block lands, P2Pool-style, instead of racing for blocks.
 | `CONSTELLA_PORT` | 7043 | P2P listen |
 | `CONSTELLA_PEERS` | – | `host:port,...` |
 | `CONSTELLA_ADVERTISE` | – | `host:port` this node tells peers to reach it on |
+| `CONSTELLA_PRIVATE_NET` | 0 | set to `1` only for an RFC1918 lab/testnet; enables private endpoint discovery |
+| `CONSTELLA_TRACE_DISCOVERY` | 0 | set to `1` to log address learning/promotion during a discovery test |
 | `CONSTELLA_KEY` | $DATA/wallet.key | payout key, auto-created |
 | | $DATA/node.key | network identity, auto-created; **not** the payout key |
 | `CONSTELLA_ADDR` | wallet key | 64-hex payout override (e.g. a cold wallet) |
@@ -45,6 +47,10 @@ block lands, P2Pool-style, instead of racing for blocks.
     docker compose logs -f node1 explorer
     curl 127.0.0.1:3071                    # text dashboard; open it in a browser for the UI
     constella balance 127.0.0.1:7043
+
+For the isolated two-host release gate (three local nodes and two on ASUS),
+including private-LAN discovery and seedless-restart verification, see
+[`deploy/testnet-five/`](deploy/testnet-five/).
 
 Every connection is authenticated with per-node static keys and there is no
 secret to distribute: each node generates `node.key` on first run. The wallet

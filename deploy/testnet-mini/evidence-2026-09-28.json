@@ -1,0 +1,160 @@
+{
+  "status": "six-node exact-tip convergence; mini cold join, contribution, VM restart and stale-sensor duty-zero checks passed",
+  "release_gate_status": "Gate 2 same-anchor science recovery and later release gates remain incomplete",
+  "date": "2026-09-28",
+  "height": 10282,
+  "tip": "e69a601c9fdeb27e6ab292861f26a7e7a13a8ca0f8be77c6629562c4db6f251a",
+  "work": 3416547904,
+  "same_canonical_path_all_six": true,
+  "node6_full_replay_without_repair": true,
+  "independent_go_exact_tip_ledger_match": true,
+  "ledger": {
+    "escrow": 31499989988,
+    "txs": 6,
+    "blocks": 142,
+    "sci_paid": 465500010012,
+    "sci_claims": 71671,
+    "accounts": [
+      {
+        "address": "34d89b9ee084c78196b0ae1709dc08276a8ef90068149c1a7db451aa0280d84d",
+        "amount": 3817505928,
+        "nonce": 0,
+        "shares": 255
+      },
+      {
+        "address": "3ec619ac279656341b7782b6e445238104e593e87c2fc4511e3bfe948102da49",
+        "amount": 9218014458,
+        "nonce": 1,
+        "shares": 216
+      },
+      {
+        "address": "491dcaa5598b0056f220619e934a98668ecf43932c61617c9ea5f2f183e71b4e",
+        "amount": 7115440801,
+        "nonce": 0,
+        "shares": 221
+      },
+      {
+        "address": "c4805776e22c12662c8c5546975f9ccdc7e0abd69ac3aa56de1230daacff5395",
+        "amount": 204613755096,
+        "nonce": 1,
+        "shares": 3240
+      },
+      {
+        "address": "da21f3f0498d4baf73b500b193837e8a1527cc0dfc220d03b101dbf5cf5a752b",
+        "amount": 250545456738,
+        "nonce": 3,
+        "shares": 3124
+      },
+      {
+        "address": "f734e0923f002f58587c8a622b830dfdef96dfe149dd57281d5987d306672702",
+        "amount": 203189836991,
+        "nonce": 1,
+        "shares": 3226
+      }
+    ]
+  },
+  "mini": {
+    "host": "cd@mini",
+    "endpoint": "192.168.1.123:17046",
+    "wallet": "34d89b9ee084c78196b0ae1709dc08276a8ef90068149c1a7db451aa0280d84d",
+    "genesis_start": "2026-09-28T21:31:35Z",
+    "imported_chain_snapshot": false,
+    "image": "sha256:25e8df42e041c5ec80d0b195b405e1f36ee034530ba99a485caf407488dbb062",
+    "binary_sha256": "55c24bc854603df646470ceaee749b0f22cfce84f33dc6bf26e8e2928a442a0e",
+    "binary_bytes": 177856,
+    "tests": {
+      "host_c": 729,
+      "arm_c": 729,
+      "host_publisher": 4,
+      "snapshot_reader": 3,
+      "python_consensus_crosschecks": "pass",
+      "thermal_simulation": "pass"
+    },
+    "shares_at_checkpoint": 255,
+    "blocks_at_checkpoint": 1,
+    "first_block": {
+      "height": 10180,
+      "id": "c3897ba507184c650a0e6ed74b2778e6501e8aad814a21728f07fd7e45d366f7"
+    },
+    "second_block_after_checkpoint": {
+      "height": 10303,
+      "id": "1ff0dd0afa99a9b43cc50e90211e210f8e43d94335b46a6c69b9d408c4c852dd"
+    },
+    "stale_sensor_status": [
+      "21:41:35 status: h=10039 tip=e7b8692f bits=424 peers=5 mempool=0 orphans=0 duty=0% temp=68C/74C (sensor unavailable) found=280 8196369 cand/s sci=182871/16"
+    ],
+    "restart_completed": "2026-09-28T21:53:59Z",
+    "routing_fix": "post-Colima-start narrow replicated loopback LAN alias /24 to /32"
+  },
+  "explorer": {
+    "meta": {
+      "check_total": "6",
+      "check_at": "2026-09-28T21:55:09Z",
+      "check": "ok",
+      "check_height": "10280",
+      "check_count": "6",
+      "txs": "6",
+      "known": "10706",
+      "network": "testnet",
+      "escrow": "31499989988",
+      "sci_paid": "465500010012",
+      "bits": "448",
+      "sci_claims": "71671",
+      "blocks": "142",
+      "chain_id": "a8f4562e57e74f9d",
+      "updated_at": "2026-09-28T21:55:25Z",
+      "tip": "e69a601c9fdeb27e6ab292861f26a7e7a13a8ca0f8be77c6629562c4db6f251a",
+      "height": "10282",
+      "peer": "true"
+    },
+    "accounts": [
+      {
+        "address": "34d89b9ee084c78196b0ae1709dc08276a8ef90068149c1a7db451aa0280d84d",
+        "amount": 3817505928,
+        "nonce": 0,
+        "shares": 255
+      },
+      {
+        "address": "3ec619ac279656341b7782b6e445238104e593e87c2fc4511e3bfe948102da49",
+        "amount": 9218014458,
+        "nonce": 1,
+        "shares": 216
+      },
+      {
+        "address": "491dcaa5598b0056f220619e934a98668ecf43932c61617c9ea5f2f183e71b4e",
+        "amount": 7115440801,
+        "nonce": 0,
+        "shares": 221
+      },
+      {
+        "address": "c4805776e22c12662c8c5546975f9ccdc7e0abd69ac3aa56de1230daacff5395",
+        "amount": 204613755096,
+        "nonce": 1,
+        "shares": 3240
+      },
+      {
+        "address": "da21f3f0498d4baf73b500b193837e8a1527cc0dfc220d03b101dbf5cf5a752b",
+        "amount": 250545456738,
+        "nonce": 3,
+        "shares": 3124
+      },
+      {
+        "address": "f734e0923f002f58587c8a622b830dfdef96dfe149dd57281d5987d306672702",
+        "amount": 203189836991,
+        "nonce": 1,
+        "shares": 3226
+      }
+    ],
+    "duplicate_canonical_heights": 0,
+    "mini_shares": 255,
+    "mini_blocks": 1
+  },
+  "snapshot_sha256": {
+    "node1": "9e1bc9ded16acb25b82edbbf3337de1d401029eee19078bf0d1165bac5bc5f2d",
+    "node2": "5baa6291654cb9bf3960002b838d6e0b397aa8c54831ad7f83387f471e291af5",
+    "node3": "84d1e9c86e1b2c11ed40c99439622337703038005d3a615e53015894cc2fda92",
+    "node4": "159f9af24591a7e554f50e85163379a93a08cbdf8aea76773ef53c9f60355895",
+    "node5": "264621f2f305c76249a6f8bb973e82371122c17ab2825c55f23253c248380a08",
+    "node6": "e2b3d7238b9940602ea8c95e7197d2d0716d6bceefff52ce5c41b61ff7f592df"
+  }
+}

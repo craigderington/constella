@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>net.constella.testnet.temperature</string>
+	<key>LimitLoadToSessionType</key>
+	<string>Background</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/cd/constella-release-gate/python/bin/python3</string>
+		<string>/Users/cd/constella-release-gate/deploy/testnet-mini/host_temperature.py</string>
+		<string>--macmon</string>
+		<string>/Users/cd/constella-release-gate/macmon/bin/macmon</string>
+		<string>--output</string>
+		<string>/Users/cd/constella-release-gate/thermal/cpu_millidegrees</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/cd/constella-release-gate/temperature.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/cd/constella-release-gate/temperature.log</string>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
+</dict>
+</plist>

@@ -1,0 +1,165 @@
+{
+  "status": "BUG-041 fixed, deployed and verified on all six testnet nodes",
+  "recorded_utc": "2026-09-30T14:42:44.881253+00:00",
+  "tests": {
+    "host_C": "732/732",
+    "x86_image_C": "732/732",
+    "arm_image_C": "732/732",
+    "old_worker_negative_control": "failed as expected",
+    "sampler_integration": "2026-09-30-bug041-sampler.json",
+    "live_ARM_canary": "2026-09-30-bug041-canary.json"
+  },
+  "rollout": "2026-09-30-bug041-rollout.json",
+  "nodes": [
+    {
+      "name": "/constella-gate-local-node1-1",
+      "image": "sha256:7e704f61337e6bc679d98c2be5f449af96789e11a0d771af9309145353c61bd4",
+      "started": "2026-09-30T14:27:14.508403017Z",
+      "networks": [
+        "constella-gate-liveheal",
+        "constella-gate-local_gate"
+      ]
+    },
+    {
+      "name": "/constella-gate-local-node2-1",
+      "image": "sha256:7e704f61337e6bc679d98c2be5f449af96789e11a0d771af9309145353c61bd4",
+      "started": "2026-09-30T14:16:36.572391541Z",
+      "networks": [
+        "constella-gate-liveheal",
+        "constella-gate-local_gate"
+      ]
+    },
+    {
+      "name": "/constella-gate-local-node3-1",
+      "image": "sha256:7e704f61337e6bc679d98c2be5f449af96789e11a0d771af9309145353c61bd4",
+      "started": "2026-09-30T14:21:59.914143696Z",
+      "networks": [
+        "constella-gate-liveheal",
+        "constella-gate-local_gate"
+      ]
+    },
+    {
+      "name": "/constella-gate-asus-node4-1",
+      "image": "sha256:7e704f61337e6bc679d98c2be5f449af96789e11a0d771af9309145353c61bd4",
+      "started": "2026-09-30T14:16:32.202332912Z",
+      "networks": [
+        "constella-gate-asus_gate",
+        "constella-gate-liveheal"
+      ]
+    },
+    {
+      "name": "/constella-gate-asus-node5-1",
+      "image": "sha256:7e704f61337e6bc679d98c2be5f449af96789e11a0d771af9309145353c61bd4",
+      "started": "2026-09-30T14:18:55.854733815Z",
+      "networks": [
+        "constella-gate-asus_gate",
+        "constella-gate-liveheal"
+      ]
+    },
+    {
+      "name": "/constella-gate-mini-node6-1",
+      "image": "sha256:f91d3255e69c967e2f4a40831267ced4946224152acea18740782352e8aa5064",
+      "started": "2026-09-30T00:11:50.055534381Z",
+      "networks": [
+        "constella-gate-mini_gate"
+      ]
+    }
+  ],
+  "checkpoint": {
+    "height": 45774,
+    "tip": "893914fb77b94ec61c60f53672151add9acf8045b90109e69c1770bc77488584",
+    "work": 42257701808,
+    "ledger": {
+      "escrow": 31500000000,
+      "txs": 6,
+      "blocks": 512,
+      "sci_paid": 1760500000000,
+      "sci_claims": 261079,
+      "accounts": [
+        {
+          "address": "34d89b9ee084c78196b0ae1709dc08276a8ef90068149c1a7db451aa0280d84d",
+          "amount": 639724643179,
+          "nonce": 0,
+          "shares": 12188
+        },
+        {
+          "address": "3ec619ac279656341b7782b6e445238104e593e87c2fc4511e3bfe948102da49",
+          "amount": 379954007402,
+          "nonce": 1,
+          "shares": 7770
+        },
+        {
+          "address": "491dcaa5598b0056f220619e934a98668ecf43932c61617c9ea5f2f183e71b4e",
+          "amount": 415698352356,
+          "nonce": 0,
+          "shares": 7680
+        },
+        {
+          "address": "c4805776e22c12662c8c5546975f9ccdc7e0abd69ac3aa56de1230daacff5395",
+          "amount": 355953396711,
+          "nonce": 1,
+          "shares": 6034
+        },
+        {
+          "address": "da21f3f0498d4baf73b500b193837e8a1527cc0dfc220d03b101dbf5cf5a752b",
+          "amount": 405173850969,
+          "nonce": 3,
+          "shares": 5993
+        },
+        {
+          "address": "f734e0923f002f58587c8a622b830dfdef96dfe149dd57281d5987d306672702",
+          "amount": 331995749383,
+          "nonce": 1,
+          "shares": 6109
+        }
+      ]
+    }
+  },
+  "verification": {
+    "six_canonical_paths_identical": true,
+    "node1_entire_stored_history_C_revalidated_without_repair": true,
+    "C_ledger_matches_independent_Go_at_exact_tip": true,
+    "duplicate_canonical_heights": 0,
+    "source_files_unchanged": true
+  },
+  "explorer": {
+    "check_at": "2026-09-30T14:35:09Z",
+    "check": "ok",
+    "check_height": "45773",
+    "check_count": "6",
+    "check_total": "6",
+    "bits": "520",
+    "blocks": "512",
+    "txs": "6",
+    "chain_id": "a8f4562e57e74f9d",
+    "tip": "893914fb77b94ec61c60f53672151add9acf8045b90109e69c1770bc77488584",
+    "height": "45774",
+    "escrow": "31500000000",
+    "sci_paid": "1760500000000",
+    "sci_claims": "261079",
+    "known": "48096",
+    "network": "testnet",
+    "updated_at": "2026-09-30T14:35:13Z",
+    "peer": "true"
+  },
+  "binary_sha256": {
+    "x86": "b414d8482a30a66bb3d641ebf336bceccb18064b584fb35e4f85542a831e86d1",
+    "arm": "3a88937dcbe21a455a1527df6af5d331e38573d88a7e65601a33312012e94d93"
+  },
+  "binary_bytes": {
+    "x86": 157520,
+    "arm": 177856
+  },
+  "snapshot_sha256": {
+    "node1": "dc529add98bb0af7cfed2eee6cc492f56fb1bab38fd9ed79201264633d1bb3ff",
+    "node2": "8d09f585d583a4d4fc4dc0a793987e55e3e2ddc963d84736a06181584420f870",
+    "node3": "f06740895d6f599f519b65014bc254aa689c136bd4468125b31bb83767c55f5e",
+    "node4": "b8adf95de603c52c7938289565a93d42a01a5aac37b49a522698ad86f531f417",
+    "node5": "fd65505a2b17a207fe316ce03ff0a2aa339b254a3f20c3606e7e444b43bf274f",
+    "node6": "29abe8072a1662f21663817d59b78a12cf069ef3d0b7fe60e9550e51e7b8bf7d"
+  },
+  "snapshot_directory": "/tmp/constella-gate2-same-20260929/bug041-final/after",
+  "explorer_started": "2026-09-28T18:49:24.317475888Z",
+  "postgres_started": "2026-09-28T18:35:14.280879985Z",
+  "scope": "Each x86 startup validated every record in its stopped pre-update file. Final canonical paths compared across six nodes, full offline replay of node1 compared with independent Go ledger. Synthetic battery/heat inputs confined to isolated lab; real-sensor outage verified on mini. All live nodes resumed; no consensus rule changed."
+}

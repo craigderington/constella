@@ -1,0 +1,93 @@
+{
+  "status": "PASS Gate 3 crash/persistence recovery; BUG-041 remains a separate release blocker",
+  "recorded_utc": "2026-09-29T19:13:47.373270+00:00",
+  "checkpoint": {
+    "height": 28822,
+    "tip": "7266aacc44ba78761f93e9a57375f46e0bd54474479e95496562d4e875cd27e1",
+    "work": 23469905936,
+    "ledger": {
+      "escrow": 31500000000,
+      "txs": 6,
+      "blocks": 348,
+      "sci_paid": 1186500000000,
+      "sci_claims": 177111,
+      "accounts": [
+        {
+          "address": "34d89b9ee084c78196b0ae1709dc08276a8ef90068149c1a7db451aa0280d84d",
+          "amount": 396786843715,
+          "nonce": 0,
+          "shares": 7069
+        },
+        {
+          "address": "3ec619ac279656341b7782b6e445238104e593e87c2fc4511e3bfe948102da49",
+          "amount": 185802173058,
+          "nonce": 1,
+          "shares": 3591
+        },
+        {
+          "address": "491dcaa5598b0056f220619e934a98668ecf43932c61617c9ea5f2f183e71b4e",
+          "amount": 209931506495,
+          "nonce": 0,
+          "shares": 3568
+        },
+        {
+          "address": "c4805776e22c12662c8c5546975f9ccdc7e0abd69ac3aa56de1230daacff5395",
+          "amount": 294451573322,
+          "nonce": 1,
+          "shares": 4851
+        },
+        {
+          "address": "da21f3f0498d4baf73b500b193837e8a1527cc0dfc220d03b101dbf5cf5a752b",
+          "amount": 335739040231,
+          "nonce": 3,
+          "shares": 4805
+        },
+        {
+          "address": "f734e0923f002f58587c8a622b830dfdef96dfe149dd57281d5987d306672702",
+          "amount": 285788863179,
+          "nonce": 1,
+          "shares": 4938
+        }
+      ]
+    }
+  },
+  "all_six_full_canonical_paths_identical": true,
+  "crashed_node2_full_C_replay_without_repair": true,
+  "node2_C_ledger_matches_independent_Go": true,
+  "duplicate_canonical_heights": 0,
+  "explorer": {
+    "check": "ok",
+    "check_height": "28822",
+    "check_count": "6",
+    "check_total": "6",
+    "check_at": "2026-09-29T19:09:09Z",
+    "peer": "true",
+    "txs": "6",
+    "chain_id": "a8f4562e57e74f9d",
+    "network": "testnet",
+    "tip": "7266aacc44ba78761f93e9a57375f46e0bd54474479e95496562d4e875cd27e1",
+    "escrow": "31500000000",
+    "sci_paid": "1186500000000",
+    "sci_claims": "177111",
+    "updated_at": "2026-09-29T19:08:59Z",
+    "height": "28822",
+    "bits": "520",
+    "blocks": "348",
+    "known": "30036"
+  },
+  "snapshot_sha256": {
+    "node1": "3754f85661e71af487e5a7cc215d1c17ff467af8d9ffffdc6e753c148a62e853",
+    "node2": "14368b9545fd9d1d1663f7e8430334721b49bce79c01653c3a16d226a8891ec2",
+    "node3": "771d688eed53fc7c40e786ac206b5c9f5d192a2dac684c9d70688875cbde22ff",
+    "node4": "19f3346792952a467018179a8efeb133bb77c8844b642df214a6a7fede4dd808",
+    "node5": "07949233aac9bff9741e3c31cee72dafaa0b12aba0f35bb5e948fcb69f4a9822",
+    "node6": "47340fb58a6bec7e60b623bb5466ee122798f7a029ccde2c64646c878de98ec8"
+  },
+  "canonical_path_sha256": "23a66ec0619509130c8a4e421eec59c09171ade2ff9aea0421176d002e1987aa",
+  "reader_sha256": "3a1d627a9a63cde65e724c5285fd96384c3b5ab3aaf8c771675c7569de2979b0",
+  "snapshot_directory": "/tmp/constella-gate2-same-20260929/gate3-final/after",
+  "scope": "All six canonical paths compared; only the deliberately crashed node2 was fully revalidated offline at this final checkpoint. Independent Go ledger matched. Prior six-node full replays at 25790 also verified the ASUS return.",
+  "lab_evidence": "2026-09-29-gate3-lab.json",
+  "live_kill_evidence": "2026-09-29-gate3-live-kill.json",
+  "operator_outage_evidence": "2026-09-29-asus-return.json"
+}
