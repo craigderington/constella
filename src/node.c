@@ -35,7 +35,10 @@ static int tnext;
  * Remembering just the remote tip used to suppress the HELLO that terminates
  * a full 500-share batch.  `chain_count` notices progress even when the batch
  * extends a side branch that has not overtaken our current tip yet. */
-static struct { uint8_t id[32]; int chain_count; int64_t at; } lastreq[64];
+static struct { uint8_t id[32], cursor[32]; int chain_count; int64_t at; } lastreq[64];
+/* The last validated share received from each peer, including duplicates.
+ * It may be on a weaker branch that has not yet displaced our own tip. */
+static uint8_t sync_cursor[64][32];
 static sci_t scipool[SCI_POOL];
 static int nscipool;
 static uint32_t sci_epoch_cur = 0xffffffffu;
@@ -230,24 +233,47 @@ static void send_hello(int peer) {
     net_send(peer, MSG_HELLO, chain_entry(chain_tip())->id, 32);
 }
 
+static void reset_sync_peer(int peer) {
+    if (peer >= 0 && peer < 64) {
+        memset(&lastreq[peer], 0, sizeof lastreq[peer]);
+        memset(sync_cursor[peer], 0, 32);
+    }
+}
+
+static void on_connect(int peer) {
+    reset_sync_peer(peer);
+    send_hello(peer);
+}
+
 static int chain_request_due(int peer, const uint8_t want[32],
                              int local_count, int64_t t) {
     if (peer < 0 || peer >= 64) return 1;
     if (!memcmp(lastreq[peer].id, want, 32) &&
+        !memcmp(lastreq[peer].cursor, sync_cursor[peer], 32) &&
         lastreq[peer].chain_count == local_count &&
         t >= lastreq[peer].at && t - lastreq[peer].at < 5)
         return 0;
     memcpy(lastreq[peer].id, want, 32);
+    memcpy(lastreq[peer].cursor, sync_cursor[peer], 32);
     lastreq[peer].chain_count = local_count;
     lastreq[peer].at = t;
     return 1;
+}
+
+static int sync_locator(int peer, uint8_t loc[32][32]) {
+    int n = 0;
+    if (peer >= 0 && peer < 64 && chain_find(sync_cursor[peer]) >= 0) {
+        memcpy(loc[n++], sync_cursor[peer], 32);
+    }
+    /* Retain the canonical fallback if the peer has changed branches. */
+    return n + chain_locator(loc + n, 32 - n);
 }
 
 static void request_chain(int peer, const uint8_t want[32]) {
     int64_t t = now_sec();
     if (!chain_request_due(peer, want, chain_count(), t)) return;
     uint8_t loc[32][32];
-    int n = chain_locator(loc, 32);
+    int n = sync_locator(peer, loc);
     net_send(peer, MSG_GETCHAIN, loc, (uint16_t)(n * 32));
 }
 
@@ -260,7 +286,11 @@ int node_chain_request_due_vector(int peer, const uint8_t want[32],
 }
 
 void node_chain_request_reset_vector(int peer) {
-    if (peer >= 0 && peer < 64) memset(&lastreq[peer], 0, sizeof lastreq[peer]);
+    reset_sync_peer(peer);
+}
+
+int node_sync_locator_vector(int peer, uint8_t loc[32][32]) {
+    return sync_locator(peer, loc);
 }
 
 static void serve_chain(int peer, const uint8_t *p, uint16_t len) {
@@ -292,6 +322,12 @@ static void on_msg(int peer, uint8_t type, const uint8_t *p, uint16_t len) {
         cur_src = peer;
         int r = chain_submit(p, len, miss, now_sec());
         cur_src = -1;
+        if (peer >= 0 && peer < 64 &&
+            (r == CH_TIP || r == CH_ACCEPT || r == CH_DUP)) {
+            share_t s;
+            share_deser(&s, p);
+            share_id(sync_cursor[peer], &s);
+        }
         if (r == CH_ORPHAN) request_chain(peer, miss);
     } else if (type == MSG_GETSHARE && len == 32) {
         int i = chain_find(p);
@@ -325,6 +361,10 @@ static void on_msg(int peer, uint8_t type, const uint8_t *p, uint16_t len) {
         for (int i = 0; i < 4; i++) out[24 + i] = (uint8_t)(h >> 8 * i);
         net_send(peer, MSG_ACCT, out, sizeof out);
     }
+}
+
+void node_sync_receive_vector(int peer, const uint8_t *msg, uint16_t len) {
+    on_msg(peer, MSG_SHARE, msg, len);
 }
 
 static void drain_found(int fd) {
@@ -468,7 +508,7 @@ int node_run(void) {
     if (pipe(pfd) || pipe(spfd)) return 1;
     fcntl(pfd[0], F_SETFL, O_NONBLOCK);
     fcntl(spfd[0], F_SETFL, O_NONBLOCK);
-    if (net_init((uint16_t)port, getenv("CONSTELLA_PEERS"), &nid, on_msg, send_hello)) {
+    if (net_init((uint16_t)port, getenv("CONSTELLA_PEERS"), &nid, on_msg, on_connect)) {
         log_msg("fatal: cannot listen on %d", port);
         return 1;
     }

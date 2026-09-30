@@ -114,6 +114,75 @@ static void t_sci_pipe_region_switch(void) {
     }
 }
 
+/* BUG-040: a peer's 500-share batch can contain only already-known history,
+ * or extend a weaker side branch. Neither changes our canonical locator.
+ * Drive real validated records through on_msg and inspect the next locator
+ * and request guard: progress must follow that peer's received batch. */
+static void t_sync_fork_cursor(void) {
+    pid_t child = fork();
+    if (child == 0) {
+        int before = fails;
+        char dir[] = "/tmp/constella-sync-XXXXXX", path[256];
+        if (!mkdtemp(dir)) _exit(1);
+        snprintf(path, sizeof path, "%s/shares.v3", dir);
+        FILE *in = fopen("tests/fixtures/sync-fork.v3", "rb");
+        FILE *out = fopen(path, "wb");
+        if (!in || !out) _exit(1);
+        uint8_t first[SHARE_MSG_MAX], side[SHARE_MSG_MAX], msg[SHARE_MSG_MAX], lh[2];
+        uint16_t first_len = 0, side_len = 0;
+        int records = 0;
+        while (fread(lh, 1, 2, in) == 2) {
+            uint16_t len = (uint16_t)(lh[0] | lh[1] << 8);
+            if (len > sizeof msg || fread(msg, 1, len, in) != len) _exit(1);
+            if (!records) { memcpy(first, msg, len); first_len = len; }
+            if (++records == 29) { memcpy(side, msg, len); side_len = len; break; }
+            if (fwrite(lh, 1, 2, out) != 2 || fwrite(msg, 1, len, out) != len) _exit(1);
+        }
+        fclose(in); fclose(out);
+        CHECK(records == 29 && side_len > 0);
+        CHECK(chain_init(dir, NULL) == 0);
+        CHECK(chain_entry(chain_tip())->height == 28);
+        int tip = chain_tip(), count = chain_count(), peer = 62;
+        uint8_t loc[32][32], first_id[32], side_id[32], want[32] = {0x91};
+        share_t s;
+        share_deser(&s, first); share_id(first_id, &s);
+        share_deser(&s, side); share_id(side_id, &s);
+        node_chain_request_reset_vector(peer);
+        CHECK(node_sync_locator_vector(peer, loc) > 0);
+        CHECK(!memcmp(loc[0], chain_entry(tip)->id, 32));
+        CHECK(node_chain_request_due_vector(peer, want, count, 100));
+        CHECK(!node_chain_request_due_vector(peer, want, count, 101));
+        node_sync_receive_vector(peer, first, first_len); /* CH_DUP */
+        CHECK(chain_count() == count && chain_tip() == tip);
+        CHECK(node_sync_locator_vector(peer, loc) > 0);
+        CHECK(!memcmp(loc[0], first_id, 32));
+        CHECK(node_chain_request_due_vector(peer, want, count, 101));
+        node_sync_receive_vector(peer, first, first_len);
+        CHECK(!node_chain_request_due_vector(peer, want, count, 102));
+        node_sync_receive_vector(peer, side, side_len); /* CH_ACCEPT, not tip */
+        CHECK(chain_count() == count + 1 && chain_tip() == tip);
+        CHECK(node_sync_locator_vector(peer, loc) > 0);
+        CHECK(!memcmp(loc[0], side_id, 32));
+        CHECK(node_chain_request_due_vector(peer, want, count + 1, 102));
+        node_sync_receive_vector(peer, side, 3); /* malformed: no cursor move */
+        CHECK(node_sync_locator_vector(peer, loc) > 0);
+        CHECK(!memcmp(loc[0], side_id, 32));
+        CHECK(!node_chain_request_due_vector(peer, want, count + 1, 103));
+        node_chain_request_reset_vector(peer); /* reused connection slot */
+        CHECK(node_sync_locator_vector(peer, loc) > 0);
+        CHECK(!memcmp(loc[0], chain_entry(tip)->id, 32));
+        CHECK(node_chain_request_due_vector(peer, want, count + 1, 103));
+        unlink(path); rmdir(dir);
+        _exit(fails != before);
+    }
+    int status = 0;
+    CHECK(child > 0);
+    if (child > 0) {
+        CHECK(waitpid(child, &status, 0) == child);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    }
+}
+
 /* Tests that drive the real ./constella binary. Skipping when it is absent is
  * right for a bare `./test_constella` during development, but a SILENT skip is
  * how a guard stops existing without anyone noticing: with ./constella missing
@@ -2103,7 +2172,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_sci_pipe_region_switch(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_sync_fork_cursor(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_sci_pipe_region_switch(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
