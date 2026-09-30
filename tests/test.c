@@ -214,18 +214,25 @@ static void t_chain_request_batch_continuation(void) {
     CHECK(node_chain_request_due_vector(peer, want, 1500, 106) == 1);
 }
 
-/* A valid peer share may sit MAX_FUTURE seconds ahead of our wall clock. The
- * child template must inherit that timestamp when necessary; using bare `now`
- * makes the child more than 600 seconds older than its parent and stalls the
- * built-in miner for almost two hours. */
+/* A future parent must not stall mining or freeze honest timestamps. Use
+ * the earliest locally current timestamp permitted by the parent bound. */
 static void t_future_tip_does_not_stall_miner(void) {
     int64_t now = 2000000000;
     uint64_t future = (uint64_t)now + MAX_FUTURE;
     uint64_t child = node_next_share_time_vector(future, now);
-    CHECK(child == future);
+    CHECK(child == future - 600);
     CHECK(child >= future - 600);
     CHECK(child - (uint64_t)now <= MAX_FUTURE);
     CHECK(node_next_share_time_vector((uint64_t)now - 1, now) == (uint64_t)now);
+    for (int i = 0; i < 12; i++) {
+        uint64_t parent = future;
+        now += SHARE_SPACING;
+        future = node_next_share_time_vector(parent, now);
+        CHECK(future >= (uint64_t)now && (future >= parent || parent - future <= 600));
+    }
+    CHECK(future == (uint64_t)now);
+    CHECK(node_next_share_time_vector(0, 0) == 0);
+    CHECK(node_next_share_time_vector(599, -1) == 0);
 }
 
 /* Reorg recovery feeds claims directly into the next mining template. A

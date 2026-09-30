@@ -153,14 +153,14 @@ static int rebuild_state(void) {
     return 0;
 }
 
-/* A peer may legally be MAX_FUTURE seconds ahead of our wall clock, while a
- * child may be only 600 seconds behind its parent. Mining at bare `now` after
- * accepting such a tip would make every locally found share invalid until the
- * clock almost caught up. Carry the parent's time forward instead; that time
- * was already checked when the parent was accepted. */
+/* Recover toward wall time using the existing 600-second parent allowance.
+ * Carrying a future parent's time unchanged freezes many retarget windows;
+ * bare wall time can violate the parent bound. This changes template policy,
+ * not share validity or the difficulty schedule. */
 static uint64_t next_share_time(uint64_t parent_time, int64_t now) {
     uint64_t wall = now > 0 ? (uint64_t)now : 0;
-    return wall < parent_time ? parent_time : wall;
+    uint64_t earliest = parent_time > 600 ? parent_time - 600 : 0;
+    return wall < earliest ? earliest : wall;
 }
 
 uint64_t node_next_share_time_vector(uint64_t parent_time, int64_t now) {
