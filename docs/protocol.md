@@ -1,3 +1,7 @@
+> This document describes the existing v3 testnet. The opt-in v4 network and
+> authentication changes are specified in [protocol-candidate-v4.md](protocol-candidate-v4.md).
+> Historical v3 mainnet parameters below are not a supported launch profile.
+
 # Constella protocol (v3, testnet)
 
 ## Work
