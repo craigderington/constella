@@ -1,0 +1,12 @@
+[Unit]
+Description=Constella local testnet LAN relay on port %i
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/bin/bash %h/.local/libexec/constella-gate-relay listen %i
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
