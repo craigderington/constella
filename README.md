@@ -35,7 +35,7 @@ block lands, P2Pool-style, instead of racing for blocks.
 | `CONSTELLA_TRACE_DISCOVERY` | 0 | set to `1` to log address learning/promotion during a discovery test |
 | `CONSTELLA_KEY` | $DATA/wallet.key | payout key, auto-created |
 | | $DATA/node.key | network identity, auto-created; **not** the payout key |
-| `CONSTELLA_ADDR` | wallet key | 64-hex payout override (e.g. a cold wallet) |
+| `CONSTELLA_ADDR` | wallet key | 64-hex public payout address; when set, no payout wallet is loaded or created |
 | `CONSTELLA_THREADS` | physical cores − 1 | hyperthreads add ~7% for much more heat |
 | `CONSTELLA_DUTY` | 50 | max % of each 100 ms slice |
 | `CONSTELLA_TEMP_MAX` | auto | °C cap; auto = chip critical − 12 (60–90), read from the thermal zone or hwmon. Settles 6° under it |
