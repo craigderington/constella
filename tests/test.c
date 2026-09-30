@@ -12,6 +12,7 @@
 #include "share.h"
 #include "sieve.h"
 #include "science.h"
+#include "throttle.h"
 #include "params.h"
 #include "util.h"
 #include "vendor/monocypher.h"
@@ -30,6 +31,38 @@
 
 static int fails, runs;
 #define CHECK(c) do { runs++; if (!(c)) { fails++; fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #c); } } while (0)
+
+static void t_host_temperature(void) {
+    char path[] = "/tmp/constella-temperature-XXXXXX";
+    int fd = mkstemp(path);
+    CHECK(fd >= 0);
+    if (fd < 0) return;
+    const char *samples[] = {"46001\n", "149999", "0\n", "150000\n", "-1\n",
+        "nan\n", "46000 garbage\n", "46000\n45000\n", "999999999999999999999999999999999999", ""};
+    const int expected[] = {46001, 149999, 0, -1, -1, -1, -1, -1, -1, -1};
+    struct timespec ts[2] = {{1000, 0}, {1000, 0}};
+    for (unsigned i = 0; i < sizeof samples / sizeof *samples; i++) {
+        CHECK(ftruncate(fd, 0) == 0 && lseek(fd, 0, SEEK_SET) == 0);
+        CHECK(write(fd, samples[i], strlen(samples[i])) == (ssize_t)strlen(samples[i]));
+        CHECK(futimens(fd, ts) == 0);
+        CHECK(throttle_read_temp_file(path, 1000) == expected[i]);
+    }
+    CHECK(ftruncate(fd, 0) == 0 && lseek(fd, 0, SEEK_SET) == 0);
+    CHECK(write(fd, "46000\n", 6) == 6 && futimens(fd, ts) == 0);
+    CHECK(throttle_read_temp_file(path, 1003) == 46000);
+    CHECK(throttle_read_temp_file(path, 1004) == -1);
+    CHECK(throttle_read_temp_file(path, 999) == -1);
+    close(fd); unlink(path);
+    CHECK(throttle_read_temp_file(path, 1000) == -1);
+    CHECK(mkfifo(path, 0600) == 0);
+    CHECK(throttle_read_temp_file(path, 1000) == -1); /* must not block */
+    unlink(path);
+    CHECK(throttle_read_temp_file("/tmp", 1000) == -1);
+    CHECK(setenv("CONSTELLA_TEMP_FILE", path, 1) == 0);
+    throttle_init(50, 80, 1);
+    CHECK(throttle_duty() == 0 && throttle_reason() == TH_SENSOR);
+    CHECK(unsetenv("CONSTELLA_TEMP_FILE") == 0);
+}
 
 /* A full GETCHAIN reply is capped at 500 shares.  Its terminal HELLO repeats
  * the still-unknown remote tip less than five seconds after the first request,
@@ -2172,7 +2205,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_sync_fork_cursor(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_sci_pipe_region_switch(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
+    t_host_temperature(); t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_sync_fork_cursor(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_sci_pipe_region_switch(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

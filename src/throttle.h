@@ -38,4 +38,6 @@ int  throttle_reason(void);
 const char *throttle_reason_str(void);
 int  throttle_has_battery(void);
 const char *throttle_sensor(void);
+/* Checked host-temperature input (millidegrees, or -1 when unavailable). */
+int throttle_read_temp_file(const char *path, int64_t now);
 #endif
