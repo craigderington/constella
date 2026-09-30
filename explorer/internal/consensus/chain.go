@@ -84,7 +84,8 @@ func NextBits(parent *Node) uint16 {
 
 func (c *Chain) accept(m *proto.Msg, id proto.Hash, par *Node, now int64) (*Node, error) {
 	s := &m.Share
-	if s.Version != proto.ShareVersion || s.Height != par.Height+1 {
+	if s.Version != proto.ShareVersion || s.Height != par.Height+1 ||
+		(proto.ShareVersion >= 4 && s.Rsv != proto.NetworkMarker) {
 		return nil, ErrInvalid
 	}
 	if s.Time > 1<<63-1 {
@@ -155,6 +156,9 @@ func (c *Chain) Add(m *proto.Msg) (added []*Node, missing *proto.Hash, err error
 // AddAt is used during persistence replay with now=0, matching the node's
 // startup path, which validates historical records without a wall-clock bound.
 func (c *Chain) AddAt(m *proto.Msg, now int64) (added []*Node, missing *proto.Hash, err error) {
+	if m.Share.Version != proto.ShareVersion || (proto.ShareVersion >= 4 && m.Share.Rsv != proto.NetworkMarker) {
+		return nil, nil, ErrInvalid
+	}
 	id := m.Share.ID()
 	if c.nodes[id] != nil {
 		return nil, nil, nil

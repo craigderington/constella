@@ -26,9 +26,15 @@ func TestParamsMatchC(t *testing.T) {
 		missingHeader(t, err, "params.h")
 		return
 	}
+	network, err := os.ReadFile("../../../src/" + NetworkHeader)
+	if err != nil {
+		missingHeader(t, err, NetworkHeader)
+		return
+	}
+	src = append(append(src, '\n'), network...)
 	want := map[string]int64{
 		"SHARE_VERSION": ShareVersion, "TUPLE_N": TupleN, "TUPLE_RES": TupleRes, "WHEEL": Wheel,
-		"SHARE_K": ShareK, "BLOCK_K": BlockK, "GENESIS_BITS": GenesisBits, "PPLNS_N": PPLNSN,
+		"SHARE_K": ShareK, "NETWORK_BLOCK_K": BlockK, "NETWORK_MARKER": NetworkMarker, "GENESIS_BITS": GenesisBits, "PPLNS_N": PPLNSN,
 		"CONSENSUS_PCT": ConsensusPct, "RETARGET_N": RetargetN, "SHARE_SPACING": ShareSpacing,
 		"BITS_MIN": BitsMin, "BITS_MAX": BitsMax, "MAX_FUTURE": MaxFuture,
 		"SCI_BITS": SciBits, "SCI_EPOCH": SciEpoch, "SCI_G_MIN": SciGMin,

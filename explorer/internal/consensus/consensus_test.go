@@ -112,6 +112,7 @@ func TestOrphanPayloadMustMatchHeaderCommitment(t *testing.T) {
 	c := NewChain()
 	s := proto.Share{
 		Version: proto.ShareVersion,
+		Rsv:     proto.NetworkMarker,
 		Height:  1,
 		Time:    proto.GenesisTime + 2,
 		Bits:    proto.BitsMin,
@@ -121,6 +122,13 @@ func TestOrphanPayloadMustMatchHeaderCommitment(t *testing.T) {
 		s.Prev[i] = 0xa5
 	}
 
+	if proto.ShareVersion >= 4 {
+		for s.K = 0; s.K < 1000000 && TupleLen(Candidate(&s)) < proto.ShareK; s.K++ {
+		}
+		if s.K == 1000000 {
+			t.Fatal("candidate orphan proof search exhausted")
+		}
+	}
 	invalid := &proto.Msg{Share: s, Txs: []proto.Tx{{}}, Raw: make([]byte, proto.ShareSize+4+proto.TxSize)}
 	if _, _, err := c.AddAt(invalid, 0); err != ErrInvalid {
 		t.Fatalf("uncommitted orphan payload returned %v, want ErrInvalid", err)

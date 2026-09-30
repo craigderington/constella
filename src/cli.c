@@ -22,7 +22,7 @@ static const char *keypath(const char *arg) {
     const char *k = getenv("CONSTELLA_KEY");
     if (k && *k) return k;
     const char *h = getenv("HOME");
-    snprintf(buf, sizeof buf, "%s/.constella", h ? h : ".");
+    snprintf(buf, sizeof buf, "%s/%s", h ? h : ".", NETWORK_WALLET_DIR);
     mkdir(buf, 0700);
     snprintf(buf + strlen(buf), sizeof buf - strlen(buf), "/wallet.key");
     return buf;

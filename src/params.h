@@ -2,10 +2,27 @@
 #ifndef PARAMS_H
 #define PARAMS_H
 
-#define NET_MAGIC      0x33545343u     /* "CST3": the handshake changed, so an
-                                        * old peer must refuse rather than fail
-                                        * opaquely at decrypt */
-#define SHARE_VERSION  3
+/* 0: existing testnet, 1: isolated v4 testnet, 2: prelaunch v4 mainnet.
+ * The historical -DBLOCK_K=6 switch must no longer select v3 shared history. */
+#ifndef CONSTELLA_NETWORK
+#if defined(BLOCK_K) && BLOCK_K == 6
+#define CONSTELLA_NETWORK 2
+#else
+#define CONSTELLA_NETWORK 0
+#endif
+#endif
+#if CONSTELLA_NETWORK == 0
+#include "network_legacy.h"
+#elif CONSTELLA_NETWORK == 1
+#include "network_testnet_v4.h"
+#elif CONSTELLA_NETWORK == 2
+#include "network_mainnet_v4.h"
+#else
+#error "unknown CONSTELLA_NETWORK"
+#endif
+#if defined(BLOCK_K) && BLOCK_K != NETWORK_BLOCK_K
+#error "BLOCK_K conflicts with the selected network"
+#endif
 
 /* Constellation: p, p+4, p+6, p+10, p+12, p+16 (prime sextuplet pattern).
  * Every sextuplet above 7 satisfies p = 97 (mod 210). */
@@ -14,7 +31,7 @@
 #define WHEEL          210
 #define SHARE_K        4               /* share = leading prime quadruplet  */
 #ifndef BLOCK_K
-#define BLOCK_K        5               /* testnet: quintuplet; mainnet: 6   */
+#define BLOCK_K        NETWORK_BLOCK_K
 #endif
 #define K_MAX          (1ULL << 40)    /* offset bound: work is tied to seed */
 

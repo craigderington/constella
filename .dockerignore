@@ -15,3 +15,5 @@ thermal_sim
 gate_snapshot
 test_chain_storage
 bench_ledger
+constella-*-v4
+constella-data-*

@@ -1,8 +1,7 @@
 package p2p
 
 // The static-key handshake, mirroring src/net.c. Normative description:
-// .superpowers/sdd/2026-09-26-peer-discovery/task-5-report.md §2, which
-// supersedes docs/protocol.md until Task 11 updates it.
+// docs/protocol.md (legacy) and docs/protocol-candidate-v4.md (v4).
 //
 // Two phases, separated by message type rather than by arrival order, and
 // symmetric: there is no initiator and no responder, both ends run this exact
@@ -16,6 +15,7 @@ package p2p
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -46,6 +46,27 @@ func hsTranscript(ephSelf, ephPeer []byte) []byte {
 	return append(t, ephPeer...)
 }
 
+// V4 binds the selected network and both advertised identities. Legacy
+// testnet bytes remain unchanged; there is no wire-level downgrade fallback.
+func boundTranscript(ephSelf, ephPeer, idSelf, idPeer []byte) []byte {
+	if proto.ShareVersion < 4 {
+		return hsTranscript(ephSelf, ephPeer)
+	}
+	t := append([]byte("CSTL-HS2"), networkDomain()...)
+	t = append(t, ephSelf...)
+	t = append(t, ephPeer...)
+	t = append(t, idSelf...)
+	return append(t, idPeer...)
+}
+
+func networkDomain() []byte {
+	domain := make([]byte, 12)
+	binary.LittleEndian.PutUint32(domain, proto.Magic)
+	id := proto.ChainID()
+	copy(domain[4:], id[:])
+	return domain
+}
+
 // hsSessionKeys derives both direction keys from the raw 32-byte X25519 output
 // and the two raw 32-byte EdDSA-BLAKE2b public keys as they travelled in
 // phase 1 — NOT BLAKE2b-256(pubkey), which is the address-store ID and a
@@ -65,6 +86,10 @@ func hsSessionKeys(shared, idSelf, idPeer []byte) (kLo, kHi []byte, selfIsLo boo
 	lo, hi := idSelf, idPeer
 	if !selfIsLo {
 		lo, hi = idPeer, idSelf
+	}
+	if proto.ShareVersion >= 4 {
+		return keyed(shared, []byte("CSTL-P2P3"), []byte("lo"), lo, hi, networkDomain()),
+			keyed(shared, []byte("CSTL-P2P3"), []byte("hi"), lo, hi, networkDomain()), selfIsLo
 	}
 	return keyed(shared, []byte(kdfLabel), []byte("lo"), lo, hi),
 		keyed(shared, []byte(kdfLabel), []byte("hi"), lo, hi),
@@ -151,7 +176,7 @@ func staticHandshake(conn net.Conn, r io.Reader, id *identity) (*session, error)
 	}
 
 	// Phase 2 out: our signature over our own transcript.
-	if err := proto.WriteFrame(conn, proto.MsgAuth2, id.sign(hsTranscript(ephPub, peerEph))); err != nil {
+	if err := proto.WriteFrame(conn, proto.MsgAuth2, id.sign(boundTranscript(ephPub, peerEph, id.pub, peerID))); err != nil {
 		return nil, err
 	}
 
@@ -161,7 +186,7 @@ func staticHandshake(conn net.Conn, r io.Reader, id *identity) (*session, error)
 		return nil, err
 	}
 	// Rejection 2, at phase 2. EdDSA-BLAKE2b, not crypto/ed25519.
-	if !eddsaVerify(peerID, sig, hsTranscript(peerEph, ephPub)) {
+	if !eddsaVerify(peerID, sig, boundTranscript(peerEph, ephPub, peerID, id.pub)) {
 		return nil, errors.New("peer signature failed verification")
 	}
 	// Rejection 3, after the signature check.

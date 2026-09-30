@@ -182,6 +182,7 @@ static void update_job(void) {
     share_root(tm->root, tm->txs, tm->ntx, tm->sci, tm->nsci);
     share_t s = {0};
     s.version = SHARE_VERSION;
+    s.rsv = NETWORK_MARKER;
     s.height = t->height + 1;
     memcpy(s.prev, t->id, 32);
     s.time = next_share_time(t->s.time, now_sec());
@@ -448,7 +449,7 @@ int node_run(void) {
     signal(SIGTERM, on_sig);
     signal(SIGPIPE, SIG_IGN);
 
-    const char *data = env("CONSTELLA_DATA", "./constella-data");
+    const char *data = env("CONSTELLA_DATA", NETWORK_DATA_DIR);
     char keypath[512], idpath[512];
     snprintf(keypath, sizeof keypath, "%s/wallet.key", data);
     snprintf(idpath, sizeof idpath, "%s/node.key", data);
@@ -610,7 +611,7 @@ int bench_run(unsigned bits, int secs, int threads) {
      * `threads` workers, same as before this task -- no science lane. */
     miner_start(threads, pfd[1], -1, &running);
     share_t s = {0};
-    s.version = SHARE_VERSION; s.bits = (uint16_t)bits; s.time = (uint64_t)now_sec();
+    s.version = SHARE_VERSION; s.rsv = NETWORK_MARKER; s.bits = (uint16_t)bits; s.time = (uint64_t)now_sec();
     miner_set_job(&s);
     uint64_t t0 = now_ns(), shares = 0, blocks = 0;
     uint8_t raw[SHARE_SIZE];
