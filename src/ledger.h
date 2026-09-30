@@ -14,6 +14,8 @@ typedef struct {
     int      n, cap;
     int32_t *idx;              /* open-addressed index into a[] */
     uint32_t icap;
+    uint8_t hash_key[16];      /* ephemeral index salt; never consensus data */
+    uint32_t recent[64];       /* exact-address cache: account index + 1 */
     uint64_t escrow, txs;
     uint32_t blocks;
     uint64_t sci_paid;

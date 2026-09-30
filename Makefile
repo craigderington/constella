@@ -39,6 +39,10 @@ test_chain_storage: $(CORE) tests/test_chain_storage.c src/*.h
 storage-test: test_chain_storage
 	./test_chain_storage
 
+# Optional synthetic scale probe; no proof validation, networking or database.
+bench_ledger: $(CORE) tests/bench_ledger.c src/*.h
+	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/chain.c,$(CORE)) tests/bench_ledger.c $(LDFLAGS)
+
 unit: constella test_constella thermal_sim
 	CONSTELLA_CI=1 ./test_constella
 	./thermal_sim
@@ -62,6 +66,6 @@ explorer:
 	cd explorer && CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o ../constella-explorer ./cmd/explorer
 
 clean:
-	rm -f constella test_constella thermal_sim constella-explorer gate_snapshot test_chain_storage
+	rm -f constella test_constella thermal_sim constella-explorer gate_snapshot test_chain_storage bench_ledger
 
 .PHONY: all fast unit test size explorer explorer-test gate-test storage-test clean

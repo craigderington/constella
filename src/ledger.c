@@ -2,20 +2,42 @@
 #include "chain.h"
 #include "science.h"
 #include "params.h"
+#include "vendor/monocypher.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 
 typedef unsigned __int128 u128;
 
-static uint32_t hk(const uint8_t a[32]) { uint32_t k; memcpy(&k, a, 4); return k; }
+/* Recipients choose all address bytes, so a raw prefix permits cheap,
+ * permanent collision clusters. A fresh keyed full-address hash controls
+ * only bucket placement; account order and ledger arithmetic do not change. */
+static uint32_t hk(const ledger_t *L, const uint8_t a[32]) {
+    uint32_t k;
+    crypto_blake2b_keyed((uint8_t *)&k, sizeof k, L->hash_key, sizeof L->hash_key, a, 32);
+    return k;
+}
+
+static int index_key(ledger_t *L) {
+    size_t used = 0;
+    while (used < sizeof L->hash_key) {
+        ssize_t n = getrandom(L->hash_key + used, sizeof L->hash_key - used, 0);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return -1;
+        used += (size_t)n;
+    }
+    return 0;
+}
 
 static int regrow(ledger_t *L) {
     uint32_t nc = L->icap ? L->icap * 2 : 64;
     int32_t *ni = malloc(nc * sizeof *ni);
     if (!ni) return -1;
+    if (!L->icap && index_key(L)) { free(ni); return -1; }
     memset(ni, 0xff, nc * sizeof *ni);
     for (int i = 0; i < L->n; i++) {
-        uint32_t j = hk(L->a[i].addr) & (nc - 1);
+        uint32_t j = hk(L, L->a[i].addr) & (nc - 1);
         while (ni[j] >= 0) j = (j + 1) & (nc - 1);
         ni[j] = i;
     }
@@ -25,10 +47,19 @@ static int regrow(ledger_t *L) {
 }
 
 acct_t *ledger_acct(ledger_t *L, const uint8_t addr[32], int create) {
+    /* Payout windows repeatedly visit the same miners. Avoid rehashing a
+     * cached exact address, never just a matching prefix. Adversarial cache
+     * misses fall back to the keyed index and cannot create long chains. */
+    unsigned slot = addr[0] & 63;
+    uint32_t cached = L->recent[slot];
+    if (cached && !memcmp(L->a[cached - 1].addr, addr, 32)) return &L->a[cached - 1];
     if (L->icap) {
-        for (uint32_t j = hk(addr) & (L->icap - 1);; j = (j + 1) & (L->icap - 1)) {
+        for (uint32_t j = hk(L, addr) & (L->icap - 1);; j = (j + 1) & (L->icap - 1)) {
             if (L->idx[j] < 0) break;
-            if (!memcmp(L->a[L->idx[j]].addr, addr, 32)) return &L->a[L->idx[j]];
+            if (!memcmp(L->a[L->idx[j]].addr, addr, 32)) {
+                L->recent[slot] = (uint32_t)L->idx[j] + 1;
+                return &L->a[L->idx[j]];
+            }
         }
     }
     if (!create) return NULL;
@@ -42,9 +73,10 @@ acct_t *ledger_acct(ledger_t *L, const uint8_t addr[32], int create) {
     acct_t *a = &L->a[L->n];
     memset(a, 0, sizeof *a);
     memcpy(a->addr, addr, 32);
-    uint32_t j = hk(addr) & (L->icap - 1);
+    uint32_t j = hk(L, addr) & (L->icap - 1);
     while (L->idx[j] >= 0) j = (j + 1) & (L->icap - 1);
     L->idx[j] = L->n++;
+    L->recent[slot] = (uint32_t)L->n;
     return a;
 }
 
