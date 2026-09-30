@@ -8,6 +8,18 @@ permissions:
   contents: read
 
 jobs:
+  protocol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: explorer/go.mod
+          cache: false
+      - name: Check isolated network profiles and C/Go interoperability
+        run: make protocol-test
+
   c:
     runs-on: ubuntu-latest
     steps:

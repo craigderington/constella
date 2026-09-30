@@ -16,7 +16,7 @@ static int usage(void) {
             "       constella balance <host:port> [addr]\n"
             "       constella send <host:port> <to> <amount> [fee]\n"
             "       constella bench [bits] [secs] [threads]\n"
-            "env:   CONSTELLA_PORT=7043 CONSTELLA_PEERS=host:port,.. CONSTELLA_DATA=./constella-data\n"
+            "env:   CONSTELLA_PORT=7043 CONSTELLA_PEERS=host:port,.. CONSTELLA_DATA=" NETWORK_DATA_DIR "\n"
             "       CONSTELLA_KEY=<keyfile> CONSTELLA_ADDR=<hex payout override>\n"
             "       CONSTELLA_THREADS=cores-1 CONSTELLA_DUTY=50 CONSTELLA_TEMP_MAX=auto\n"
             "       CONSTELLA_BATTERY_PAUSE=1\n");

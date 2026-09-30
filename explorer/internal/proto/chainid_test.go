@@ -22,7 +22,7 @@ func TestChainTagVectors(t *testing.T) {
 		{"testnet BlockK=5", 5, "a8f4562e57e74f9d"},
 		{"mainnet BlockK=6", 6, "a2da89e8309ab40b"},
 	} {
-		got := ChainTag(ShareVersion, tc.blockK, GenesisBits, GenesisTime)
+		got := ChainTag(3, tc.blockK, GenesisBits, GenesisTime)
 		if h := hex.EncodeToString(got[:]); h != tc.want {
 			t.Errorf("%s: ChainTag = %s, want %s", tc.name, h, tc.want)
 		}
@@ -33,6 +33,12 @@ func TestChainTagVectors(t *testing.T) {
 // constants (testnet: BlockK=5), matching the first vector above.
 func TestChainID(t *testing.T) {
 	want := "a8f4562e57e74f9d"
+	if ShareVersion == 4 {
+		want = "54ed18767151b15d"
+		if BlockK == 6 {
+			want = "52a550111b2d0b38"
+		}
+	}
 	if got := ChainIDHex(); got != want {
 		t.Errorf("ChainIDHex() = %s, want %s", got, want)
 	}

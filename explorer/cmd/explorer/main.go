@@ -12,6 +12,7 @@ import (
 
 	"github.com/craig/constella/explorer/internal/indexer"
 	"github.com/craig/constella/explorer/internal/p2p"
+	"github.com/craig/constella/explorer/internal/proto"
 	"github.com/craig/constella/explorer/internal/store"
 	"github.com/craig/constella/explorer/internal/web"
 )
@@ -25,6 +26,13 @@ func env(k, d string) string {
 
 func main() {
 	log.SetFlags(log.Ltime)
+	if proto.ShareVersion >= 4 {
+		for _, key := range []string{"EXPLORER_DB", "EXPLORER_NODE", "EXPLORER_HTTP"} {
+			if os.Getenv(key) == "" {
+				log.Fatalf("candidate network requires explicit %s; use an isolated database and ports", key)
+			}
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

@@ -23,7 +23,7 @@ int main(int argc, char **argv) {
     if (!src) { perror(argv[1]); return 1; }
     char tmp[] = "/tmp/constella-snapshot-XXXXXX", path[128];
     if (!mkdtemp(tmp)) { perror("mkdtemp"); fclose(src); return 1; }
-    snprintf(path, sizeof path, "%s/shares.v3", tmp);
+    snprintf(path, sizeof path, "%s/%s", tmp, CHAIN_FILE);
     FILE *dst = fopen(path, "wb");
     int bad = !dst;
     size_t bytes = 0, n;

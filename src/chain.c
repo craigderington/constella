@@ -132,6 +132,7 @@ static int accept(const share_t *s, const tx_t *txs, int ntx, const sci_t *sci, 
                   const uint8_t *msg, size_t len, const uint8_t id[32], int par, int64_t now) {
     const entry_t *p = &E[par];
     if (s->version != SHARE_VERSION || s->height != p->height + 1) return CH_INVALID;
+    if (SHARE_VERSION >= 4 && s->rsv != NETWORK_MARKER) return CH_INVALID;
     if (s->time > (uint64_t)INT64_MAX) return CH_INVALID;
     if (s->bits != chain_next_bits(par)) return CH_INVALID;
     if (now > 0 && s->time > (uint64_t)now && s->time - (uint64_t)now > MAX_FUTURE) return CH_INVALID;
@@ -211,6 +212,7 @@ static int submit_one(const uint8_t *msg, size_t len, uint8_t missing[32], int64
     sci_t sci[SHARE_MAX_SCI];
     int ntx, nsci;
     if (chain_parse_msg(msg, len, &s, txs, &ntx, sci, &nsci)) return CH_INVALID;
+    if (s.version != SHARE_VERSION || (SHARE_VERSION >= 4 && s.rsv != NETWORK_MARKER)) return CH_INVALID;
     if (s.time > (uint64_t)INT64_MAX ||
         (now > 0 && s.time > (uint64_t)now && s.time - (uint64_t)now > MAX_FUTURE)) return CH_INVALID;
     share_id(id, &s);
@@ -316,7 +318,16 @@ int chain_init(const char *dir, accept_fn cb) {
     uint8_t gid[32], miss[32], msg[SHARE_MSG_MAX], l[2];
     char path[512];
     if (db || (mkdir(dir, 0755) && errno != EEXIST)) return -1;
-    if (snprintf(path, sizeof path, "%s/shares.v3", dir) >= (int)sizeof path) return -1;
+    const char *files[] = {"shares.v3", "shares.testnet-v4", "shares.mainnet-v4"};
+    for (unsigned i = 0; i < sizeof files / sizeof *files; i++) {
+        if (!strcmp(files[i], CHAIN_FILE)) continue;
+        if (snprintf(path, sizeof path, "%s/%s", dir, files[i]) >= (int)sizeof path) return -1;
+        if (!access(path, F_OK) || errno != ENOENT) {
+            log_msg("fatal: data directory contains another network's chain");
+            return -1;
+        }
+    }
+    if (snprintf(path, sizeof path, "%s/%s", dir, CHAIN_FILE) >= (int)sizeof path) return -1;
     /* Lock before replay or repair, not merely before appending. Two daemons
      * sharing a volume must not interpret each other's partial writes as
      * corruption or append interleaved records. Keep this inode locked for
@@ -328,6 +339,7 @@ int chain_init(const char *dir, accept_fn cb) {
     if (!f) { close(fd); return -1; }
     if (fseek(f, 0, SEEK_SET)) { fclose(f); return -1; }
     g.version = SHARE_VERSION; g.time = GENESIS_TIME; g.bits = GENESIS_BITS;
+    g.rsv = NETWORK_MARKER;
     share_id(gid, &g);
     if (reserve()) { fclose(f); return -1; }
     memset(&E[0], 0, sizeof E[0]);
@@ -352,6 +364,13 @@ int chain_init(const char *dir, accept_fn cb) {
             if (ferror(f)) local_error = 1;
             else damaged = 1;
             break;
+        }
+        share_t header;
+        share_deser(&header, msg);
+        if ((header.version == 3 || header.version == 4) &&
+            (header.version != SHARE_VERSION || (header.version == 4 && header.rsv != NETWORK_MARKER))) {
+            log_msg("fatal: foreign-network history; leaving original bytes intact");
+            local_error = 1; break;
         }
         int r = chain_submit(msg, len, miss, 0);
         if (r == CH_ERROR) { local_error = 1; break; }

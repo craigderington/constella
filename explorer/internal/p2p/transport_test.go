@@ -20,8 +20,8 @@ import (
 // change to key derivation, the AD, the nonce layout or the direction split
 // fails on whichever side moved first.
 const (
-	vecKeyLo     = "64e678befc6f30cc634c3fab917765710082860242940aab5efa6e61fe321938"
-	vecKeyHi     = "e267cd603f4c9e72797c67a49a384b2fd18f41ba87974d76859f2a51332167fd"
+	vecKeyLo = "64e678befc6f30cc634c3fab917765710082860242940aab5efa6e61fe321938"
+	vecKeyHi = "e267cd603f4c9e72797c67a49a384b2fd18f41ba87974d76859f2a51332167fd"
 	// header || ciphertext || tag, type 2, counter 0, "constella", lo key
 	vecFrameLo = "43535433021900c06b492f10b03168623a1f5ab88274c4992382b1d6e10fdc9a"
 	// type 5, counter 1, "second frame, counter 1", hi key
@@ -49,11 +49,16 @@ func sealVec(t *testing.T, psk, local, remote []byte, seq uint64, typ byte, text
 
 func TestTransportVector(t *testing.T) {
 	psk, low, high := vecInputs()
+	loFrame, hiFrame := vecFrameLo, vecFrameHi
+	if proto.ShareVersion >= 4 {
+		v := networkVector(t)
+		loFrame, hiFrame = v["frame_lo"], v["frame_hi"]
+	}
 	for _, c := range []struct{ name, got, want string }{
 		{"lo key", hex.EncodeToString(sessionKeyVec(psk, "lo", low, high)), vecKeyLo},
 		{"hi key", hex.EncodeToString(sessionKeyVec(psk, "hi", low, high)), vecKeyHi},
-		{"lo frame", hex.EncodeToString(sealVec(t, psk, low, high, 0, 2, "constella")), vecFrameLo},
-		{"hi frame", hex.EncodeToString(sealVec(t, psk, high, low, 1, 5, "second frame, counter 1")), vecFrameHi},
+		{"lo frame", hex.EncodeToString(sealVec(t, psk, low, high, 0, 2, "constella")), loFrame},
+		{"hi frame", hex.EncodeToString(sealVec(t, psk, high, low, 1, 5, "second frame, counter 1")), hiFrame},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s: got %s, want %s", c.name, c.got, c.want)
@@ -64,7 +69,11 @@ func TestTransportVector(t *testing.T) {
 // Nothing in the suite checked that a bad frame is actually rejected.
 func TestSecureFrameRejectsTampering(t *testing.T) {
 	psk, low, high := vecInputs()
-	frame, err := hex.DecodeString(vecFrameLo)
+	wantFrame := vecFrameLo
+	if proto.ShareVersion >= 4 {
+		wantFrame = networkVector(t)["frame_lo"]
+	}
+	frame, err := hex.DecodeString(wantFrame)
 	if err != nil {
 		t.Fatal(err)
 	}

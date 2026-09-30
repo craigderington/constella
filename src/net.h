@@ -139,6 +139,8 @@ int net_seal_vector(uint8_t *out, const uint8_t key[32], uint64_t seq,
 
 /* Test-only: the handshake key schedule on fixed keys. Returns 0, or -1 if the
  * two ends disagree on the X25519 shared secret. */
+size_t net_transcript_vector(uint8_t out[148], const uint8_t a[32], const uint8_t b[32],
+                             const uint8_t ia[32], const uint8_t ib[32]);
 int net_handshake_vector(uint8_t out_lo[32], uint8_t out_hi[32],
                          const uint8_t eph_a_sk[32], const uint8_t eph_b_sk[32],
                          const uint8_t id_a[32], const uint8_t id_b[32]);

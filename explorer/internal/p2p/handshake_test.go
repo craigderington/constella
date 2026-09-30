@@ -199,12 +199,17 @@ func TestHandshakeVector(t *testing.T) {
 	if aIsLo {
 		t.Error("id_a = 0xaa*32 must not sort below id_b = 0x55*32")
 	}
+	wantLo, wantHi := vecHsKeyLo, vecHsKeyHi
+	if proto.ShareVersion >= 4 {
+		v := networkVector(t)
+		wantLo, wantHi = v["key_lo"], v["key_hi"]
+	}
 	for _, c := range []struct{ name, got, want string }{
 		{"eph_a_pk", hex.EncodeToString(pubA), vecEphAPub},
 		{"eph_b_pk", hex.EncodeToString(pubB), vecEphBPub},
 		{"shared", hex.EncodeToString(shared), vecShared},
-		{"k_lo", hex.EncodeToString(kLo), vecHsKeyLo},
-		{"k_hi", hex.EncodeToString(kHi), vecHsKeyHi},
+		{"k_lo", hex.EncodeToString(kLo), wantLo},
+		{"k_hi", hex.EncodeToString(kHi), wantHi},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s: got %s, want %s", c.name, c.got, c.want)
@@ -347,7 +352,7 @@ func (p *probe) run(conn net.Conn) {
 		return
 	}
 	p.got = 1
-	sig := p.id.sign(hsTranscript(p.sendEph, peer[:32]))
+	sig := p.id.sign(boundTranscript(p.sendEph, peer[:32], p.sendID, peer[32:]))
 	if p.corrupt {
 		sig[0] ^= 1
 	}

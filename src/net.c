@@ -1,6 +1,7 @@
 #include "net.h"
 #include "addr.h"
 #include "params.h"
+#include "tx.h"
 #include "util.h"
 #include "vendor/monocypher.h"
 #include <errno.h>
@@ -155,27 +156,54 @@ static void put_hdr(uint8_t *h, uint8_t type, uint16_t len) {
     h[4] = type; h[5] = (uint8_t)len; h[6] = (uint8_t)(len >> 8);
 }
 
-/* The handshake signs "CSTL-HS1" || eph_self || eph_peer. Ordering is by
+/* Legacy signs "CSTL-HS1" || eph_self || eph_peer; v4 additionally binds
+ * network and identities (docs/protocol-candidate-v4.md). Ordering is by
  * point of view, not by who dialled: each side signs its own key first, so
  * both ends run identical code. An initiator/responder split here is exactly
  * where the C node and the Go explorer would drift apart. */
-#define HS_TRANSCRIPT 72
+#define HS_TRANSCRIPT (SHARE_VERSION >= 4 ? 148 : 72)
 static void hs_transcript(uint8_t out[HS_TRANSCRIPT], const uint8_t eph_self[32],
-                          const uint8_t eph_peer[32]) {
+                          const uint8_t eph_peer[32], const uint8_t id_self[32],
+                          const uint8_t id_peer[32]) {
+#if SHARE_VERSION >= 4
+    memcpy(out, "CSTL-HS2", 8);
+    for (int k = 0; k < 4; k++) out[8 + k] = (uint8_t)(NET_MAGIC >> (8 * k));
+    tx_chain_id(out + 12);
+    memcpy(out + 20, eph_self, 32);
+    memcpy(out + 52, eph_peer, 32);
+    memcpy(out + 84, id_self, 32);
+    memcpy(out + 116, id_peer, 32);
+#else
+    (void)id_self; (void)id_peer;
     memcpy(out, "CSTL-HS1", 8);
     memcpy(out + 8, eph_self, 32);
     memcpy(out + 40, eph_peer, 32);
+#endif
+}
+
+size_t net_transcript_vector(uint8_t out[148], const uint8_t a[32], const uint8_t b[32],
+                             const uint8_t ia[32], const uint8_t ib[32]) {
+    hs_transcript(out, a, b, ia, ib);
+    return HS_TRANSCRIPT;
 }
 
 /* Both direction keys at once, from the ephemeral-ephemeral shared secret.
  * The identities go in sorted, so the two ends agree without negotiating. */
 static void hs_session_keys(uint8_t k_lo[32], uint8_t k_hi[32], const uint8_t shared[32],
                             const uint8_t low[32], const uint8_t high[32]) {
+#if SHARE_VERSION >= 4
+    static const uint8_t tag[] = "CSTL-P2P3";
+#else
     static const uint8_t tag[] = "CSTL-P2P2";
-    uint8_t msg[sizeof tag - 1 + 2 + 64];
+#endif
+    uint8_t msg[9 + 2 + 64 + (SHARE_VERSION >= 4 ? 12 : 0)];
     memcpy(msg, tag, sizeof tag - 1);
     memcpy(msg + sizeof tag + 1, low, 32);
     memcpy(msg + sizeof tag + 1 + 32, high, 32);
+#if SHARE_VERSION >= 4
+    for (int k = 0; k < 4; k++) msg[75 + k] = (uint8_t)(NET_MAGIC >> (8 * k));
+    tx_chain_id(msg + 79);
+#endif
     memcpy(msg + sizeof tag - 1, "lo", 2);
     crypto_blake2b_keyed(k_lo, 32, shared, 32, msg, sizeof msg);
     memcpy(msg + sizeof tag - 1, "hi", 2);
@@ -527,7 +555,7 @@ static int finish_auth(int i, uint8_t type, const uint8_t *payload, uint16_t len
             return -1;
         }
         uint8_t tr[HS_TRANSCRIPT], sig[64];
-        hs_transcript(tr, p->eph_pk, p->peer_eph);
+        hs_transcript(tr, p->eph_pk, p->peer_eph, node_id.pk, p->peer_id);
         crypto_eddsa_sign(sig, node_id.sk, tr, sizeof tr);
         p->hs_phase = 1;
         if (append_hs(p, MSG_AUTH2, sig)) return -1;
@@ -537,7 +565,7 @@ static int finish_auth(int i, uint8_t type, const uint8_t *payload, uint16_t len
     if (p->hs_phase != 1 || type != MSG_AUTH2) return -1;
     /* Phase 2: the transcript as the peer saw it - its ephemeral first. */
     uint8_t tr[HS_TRANSCRIPT];
-    hs_transcript(tr, p->peer_eph, p->eph_pk);
+    hs_transcript(tr, p->peer_eph, p->eph_pk, p->peer_id, node_id.pk);
     if (crypto_eddsa_check(payload, p->peer_id, tr, sizeof tr)) return -1;
     if (hs_derive(p->txkey, p->rxkey, p->eph_sk, p->peer_eph, node_id.pk, p->peer_id)) return -1;
     crypto_wipe(p->eph_sk, sizeof p->eph_sk);   /* forward secrecy starts here */
@@ -816,7 +844,7 @@ static void add_seed(const char *tok, int fallback) {
  * seeds once resolved - a DNS failure just means that seed never connects,
  * exactly like an unreachable CONSTELLA_PEERS entry does today. */
 static const char *DNS_SEEDS[] = {
-    "seed.catasterism.xyz:7043",
+    NETWORK_SEED,
 };
 #define N_DNS_SEEDS (sizeof DNS_SEEDS / sizeof DNS_SEEDS[0])
 /* Hardcoded fallbacks: none yet - no real seed infrastructure is deployed
@@ -854,7 +882,7 @@ int net_init(uint16_t port, const char *csv, const wallet_t *id,
             add_seed(tok, 0);
     } else {
         for (size_t k = 0; k < N_DNS_SEEDS && nseeds < MAX_SEEDS; k++)
-            add_seed(DNS_SEEDS[k], 1);
+            if (*DNS_SEEDS[k]) add_seed(DNS_SEEDS[k], 1);
         /* N_HARDCODED_SEEDS is 0 today; see the comment above it. */
     }
     fallback_at = now_sec() + (addr_count(0) + addr_count(1) ? SEED_FALLBACK_DELAY : 0);
@@ -1037,11 +1065,11 @@ int net_client_open(net_client_t *c, const char *hostport, const wallet_t *id) {
         memcpy(peer_eph, buf, 32);
         memcpy(peer_id, buf + 32, 32);
         if (!memcmp(peer_id, id->pk, 32)) goto fail;      /* see finish_auth */
-        hs_transcript(tr, eph_pk, peer_eph);
+        hs_transcript(tr, eph_pk, peer_eph, id->pk, peer_id);
         crypto_eddsa_sign(pay, id->sk, tr, sizeof tr);
         if (cframe_send(fd, MSG_AUTH2, pay, sizeof pay)) goto fail;
         if (cframe_recv(fd, hdr, buf) != 64 || hdr[4] != MSG_AUTH2) goto fail;
-        hs_transcript(tr, peer_eph, eph_pk);
+        hs_transcript(tr, peer_eph, eph_pk, peer_id, id->pk);
         if (crypto_eddsa_check(buf, peer_id, tr, sizeof tr)) goto fail;
         if (hs_derive(c->txkey, c->rxkey, eph_sk, peer_eph, id->pk, peer_id)) goto fail;
         crypto_wipe(eph_sk, sizeof eph_sk);

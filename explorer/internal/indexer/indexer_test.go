@@ -29,7 +29,14 @@ func TestAccountCheckBatchRotatesPastFirstPage(t *testing.T) {
 }
 
 func TestForkSyncCursorAdvancesWithoutCanonicalProgress(t *testing.T) {
-	raw, err := os.ReadFile("../../../tests/fixtures/sync-fork.v3")
+	fixture := "sync-fork.v3"
+	if proto.ShareVersion >= 4 {
+		fixture = "sync-fork.testnet-v4"
+		if proto.BlockK == 6 {
+			fixture = "sync-fork.mainnet-v4"
+		}
+	}
+	raw, err := os.ReadFile("../../../tests/fixtures/" + fixture)
 	if err != nil {
 		t.Fatal(err)
 	}

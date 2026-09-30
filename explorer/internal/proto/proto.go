@@ -12,13 +12,10 @@ import (
 
 // Consensus constants. params_test.go asserts these match ../src/params.h.
 const (
-	Magic        = 0x33545343 // "CST3" — must match NET_MAGIC in src/params.h
-	ShareVersion = 3
 	TupleN       = 6
 	TupleRes     = 97
 	Wheel        = 210
 	ShareK       = 4
-	BlockK       = 5
 	GenesisBits  = 384
 	GenesisTime  = 1790121600
 	PPLNSN       = 256
@@ -215,7 +212,9 @@ func ParseShare(b []byte) (s Share) {
 func (s *Share) ID() Hash   { return blake2b.Sum256(s.Bytes()) }
 func (s *Share) Seed() Hash { return blake2b.Sum256(s.Bytes()[:ShareHdr]) }
 
-func Genesis() Share { return Share{Version: ShareVersion, Time: GenesisTime, Bits: GenesisBits} }
+func Genesis() Share {
+	return Share{Version: ShareVersion, Time: GenesisTime, Bits: GenesisBits, Rsv: NetworkMarker}
+}
 
 // ChainTag mirrors tx_chain_tag in src/tx.c: BLAKE2b-256 over the four
 // consensus constants packed little-endian as

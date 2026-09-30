@@ -65,7 +65,25 @@ explorer-test:
 explorer:
 	cd explorer && CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o ../constella-explorer ./cmd/explorer
 
-clean:
-	rm -f constella test_constella thermal_sim constella-explorer gate_snapshot test_chain_storage bench_ledger
+# Explicit opt-in candidates. Never overwrite the existing testnet executables.
+constella-testnet-v4: $(CORE) $(APP) src/*.h
+	$(CC) $(CFLAGS) -DCONSTELLA_NETWORK=1 -o $@ $(CORE) $(APP) $(LDFLAGS)
 
-.PHONY: all fast unit test size explorer explorer-test gate-test storage-test clean
+constella-mainnet-v4: $(CORE) $(APP) src/*.h
+	$(CC) $(CFLAGS) -DCONSTELLA_NETWORK=2 -o $@ $(CORE) $(APP) $(LDFLAGS)
+
+protocol-test:
+	python3 tests/test_network_profiles.py
+
+candidate-build: constella-testnet-v4 constella-mainnet-v4
+	cd explorer && CGO_ENABLED=0 go build -mod=vendor -tags protocolv4 -trimpath -ldflags="-s -w" -o ../constella-explorer-testnet-v4 ./cmd/explorer
+	cd explorer && CGO_ENABLED=0 go build -mod=vendor -tags mainnet -trimpath -ldflags="-s -w" -o ../constella-explorer-mainnet-v4 ./cmd/explorer
+	@for binary in constella-testnet-v4 constella-mainnet-v4; do \
+	  sz=$$(stat -c %s $$binary); echo "$$binary: $$sz bytes (limit $(SIZE_MAX_BYTES))"; \
+	  test $$sz -le $(SIZE_MAX_BYTES) || exit 1; done
+
+clean:
+	rm -f constella test_constella thermal_sim constella-explorer gate_snapshot test_chain_storage bench_ledger \
+	  constella-testnet-v4 constella-mainnet-v4 constella-explorer-testnet-v4 constella-explorer-mainnet-v4
+
+.PHONY: all fast unit test size explorer explorer-test gate-test storage-test clean protocol-test candidate-build
