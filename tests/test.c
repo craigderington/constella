@@ -74,6 +74,46 @@ static void t_sci_recovery_uses_active_region(void) {
     CHECK(!node_sci_recoverable_vector(1, 2, other_anchor, miner, 950, 776));
 }
 
+/* BUG-039: these exact stale results sat at pool[0] on the two live ASUS
+ * nodes. Queue the old result after the region switch, followed by valid
+ * new work: the real pipe reader must discard the stale record and retain
+ * the new one. A worker-side generation check cannot retract a pipe write. */
+static void t_sci_pipe_region_switch(void) {
+    uint8_t old_anchor[32], anchor[32], miner[32];
+    CHECK(!hex_dec(old_anchor, 32, "1b6661ce37f0ebec419f8ab2f5c18d71cbae21b8b8c47f90f3f2ca97630d0c7e"));
+    CHECK(!hex_dec(anchor, 32, "78499a74b174f0b24c594f4555cd69914164638b29c63e98aea961109095868c"));
+    const char *miners[] = {
+        "3ec619ac279656341b7782b6e445238104e593e87c2fc4511e3bfe948102da49",
+        "491dcaa5598b0056f220619e934a98668ecf43932c61617c9ea5f2f183e71b4e"
+    };
+    sci_t stale[] = {{15038026976ULL, 552}, {15127217097ULL, 454}};
+    sci_t fresh[] = {{520, 514}, {2215, 748}};
+    for (int i = 0; i < 2; i++) {
+        CHECK(!hex_dec(miner, 32, miners[i]));
+        bn base;
+        sci_region(&base, old_anchor, miner);
+        CHECK(!sci_check(&base, &stale[i]));
+        sci_region(&base, anchor, miner);
+        CHECK(sci_check(&base, &stale[i]) != 0);
+        CHECK(!sci_check(&base, &fresh[i]));
+        int fd[2];
+        if (pipe(fd)) { CHECK(0); continue; }
+        CHECK(fcntl(fd[0], F_SETFL, O_NONBLOCK) == 0);
+        uint8_t raw[SCI_SIZE];
+        sci_ser(raw, &stale[i]);
+        CHECK(write(fd[1], raw, sizeof raw) == sizeof raw);
+        sci_ser(raw, &fresh[i]);
+        CHECK(write(fd[1], raw, sizeof raw) == sizeof raw);
+        CHECK(write(fd[1], raw, sizeof raw) == sizeof raw); /* duplicate */
+        sci_t out[16];
+        int n = node_sci_drain_vector(fd[0], anchor, miner, out);
+        CHECK(n == 1);
+        CHECK(out[0].k == fresh[i].k && out[0].g == fresh[i].g);
+        CHECK(!sci_check_list(&base, out, n));
+        close(fd[0]); close(fd[1]);
+    }
+}
+
 /* Tests that drive the real ./constella binary. Skipping when it is absent is
  * right for a bare `./test_constella` during development, but a SILENT skip is
  * how a guard stops existing without anyone noticing: with ./constella missing
@@ -2063,7 +2103,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
+    t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_sci_pipe_region_switch(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
