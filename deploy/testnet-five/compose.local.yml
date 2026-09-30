@@ -1,0 +1,84 @@
+# Release-gate testnet: three nodes plus Postgres/explorer on the local host.
+# Run with project name `constella-gate-local`; its volumes are intentionally
+# separate from the repository's default docker-compose.yml.
+x-node: &node
+  image: constella:release-gate
+  restart: unless-stopped
+  cpus: 1.0
+  environment: &node-env
+    CONSTELLA_PORT: "7043"
+    CONSTELLA_THREADS: "${GATE_THREADS:-2}"
+    CONSTELLA_DUTY: "${GATE_DUTY:-50}"
+    CONSTELLA_BATTERY_PAUSE: "1"
+    CONSTELLA_PRIVATE_NET: "1"
+    CONSTELLA_TRACE_DISCOVERY: "1"
+  networks: [gate]
+
+services:
+  node1:
+    <<: *node
+    ports: ["${LOCAL_HOST:?set LOCAL_HOST}:17043:7043"]
+    environment:
+      <<: *node-env
+      CONSTELLA_ADVERTISE: "${LOCAL_HOST}:17043"
+      CONSTELLA_PEERS: "${REMOTE_HOST}:17043"
+    volumes: [node1:/data]
+
+  node2:
+    <<: *node
+    ports: ["${LOCAL_HOST:?set LOCAL_HOST}:17044:7043"]
+    environment:
+      <<: *node-env
+      CONSTELLA_ADVERTISE: "${LOCAL_HOST}:17044"
+      # Cross-host seeds avoid depending on Docker hairpin NAT.
+      CONSTELLA_PEERS: "${REMOTE_HOST}:17043"
+    volumes: [node2:/data]
+
+  node3:
+    <<: *node
+    ports: ["${LOCAL_HOST:?set LOCAL_HOST}:17045:7043"]
+    environment:
+      <<: *node-env
+      CONSTELLA_ADVERTISE: "${LOCAL_HOST}:17045"
+      CONSTELLA_PEERS: "${REMOTE_HOST}:17044"
+    volumes: [node3:/data]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: constella
+      POSTGRES_PASSWORD: constella
+      POSTGRES_DB: explorer
+    ports: ["127.0.0.1:15439:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [explorer-ui]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U constella -d explorer"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  explorer:
+    image: constella-explorer:release-gate
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      EXPLORER_NODE: node1:7043
+      EXPLORER_DB: postgres://constella:constella@postgres:5432/explorer?sslmode=disable
+      EXPLORER_HTTP: ":3071"
+    ports: ["127.0.0.1:13071:3071"]
+    # P2P access to node1, plus a separate bridge for HTTP and the database.
+    # Explorer operations must not start/recreate any mining service.
+    networks: [gate, explorer-ui]
+
+networks:
+  gate: {}
+  explorer-ui: {}
+
+volumes:
+  node1: {}
+  node2: {}
+  node3: {}
+  pgdata: {}

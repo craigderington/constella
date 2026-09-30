@@ -1,0 +1,126 @@
+{
+  "local": {
+    "group": "local",
+    "nodes": {
+      "node2": {
+        "before_image": "sha256:47bccc2c58292f346c56f163a7a9e7dcb70e73dffc38de8456f2210f73e484a0",
+        "before_started": "2026-09-29T18:57:15.559961792Z",
+        "wallet": "f734e0923f002f58587c8a622b830dfdef96dfe149dd57281d5987d306672702",
+        "stage": "caught-up",
+        "image": "sha256:7e704f61337e6bc679d98c2be5f449af96789e11a0d771af9309145353c61bd4",
+        "started": "2026-09-30T14:16:36.572391541Z",
+        "relay_ip": "172.21.0.2",
+        "relay_unit": "constella-gate2-relay-17044-pause",
+        "caught_up": {
+          "height": 45561,
+          "tip_prefix": "aa78cebf",
+          "peers": 10,
+          "orphans": 0
+        }
+      },
+      "node3": {
+        "before_image": "sha256:47bccc2c58292f346c56f163a7a9e7dcb70e73dffc38de8456f2210f73e484a0",
+        "before_started": "2026-09-28T20:52:34.422652548Z",
+        "wallet": "c4805776e22c12662c8c5546975f9ccdc7e0abd69ac3aa56de1230daacff5395",
+        "stage": "caught-up",
+        "image": "sha256:7e704f61337e6bc679d98c2be5f449af96789e11a0d771af9309145353c61bd4",
+        "started": "2026-09-30T14:21:59.914143696Z",
+        "relay_ip": "172.21.0.4",
+        "relay_unit": "constella-gate2-relay-17045-pause",
+        "caught_up": {
+          "height": 45642,
+          "tip_prefix": "921ea642",
+          "peers": 11,
+          "orphans": 0
+        }
+      },
+      "node1": {
+        "before_image": "sha256:47bccc2c58292f346c56f163a7a9e7dcb70e73dffc38de8456f2210f73e484a0",
+        "before_started": "2026-09-28T20:52:33.891469957Z",
+        "wallet": "da21f3f0498d4baf73b500b193837e8a1527cc0dfc220d03b101dbf5cf5a752b",
+        "stage": "caught-up",
+        "image": "sha256:7e704f61337e6bc679d98c2be5f449af96789e11a0d771af9309145353c61bd4",
+        "started": "2026-09-30T14:27:14.508403017Z",
+        "relay_ip": "172.21.0.3",
+        "relay_unit": "constella-gate2-relay-17043-pause",
+        "caught_up": {
+          "height": 45748,
+          "tip_prefix": "dbe6de22",
+          "peers": 12,
+          "orphans": 0
+        }
+      }
+    },
+    "status": "PASS"
+  },
+  "asus": {
+    "group": "asus",
+    "nodes": {
+      "node4": {
+        "before_image": "sha256:47bccc2c58292f346c56f163a7a9e7dcb70e73dffc38de8456f2210f73e484a0",
+        "before_started": "2026-09-29T15:30:36.92296275Z",
+        "wallet": "3ec619ac279656341b7782b6e445238104e593e87c2fc4511e3bfe948102da49",
+        "stage": "caught-up",
+        "image": "sha256:7e704f61337e6bc679d98c2be5f449af96789e11a0d771af9309145353c61bd4",
+        "started": "2026-09-30T14:16:32.202332912Z",
+        "relay_ip": "172.23.0.3",
+        "relay_unit": "constella-gate2-relay-17043-pause",
+        "caught_up": {
+          "height": 45537,
+          "tip_prefix": "152a3555",
+          "peers": 6,
+          "orphans": 0
+        }
+      },
+      "node5": {
+        "before_image": "sha256:47bccc2c58292f346c56f163a7a9e7dcb70e73dffc38de8456f2210f73e484a0",
+        "before_started": "2026-09-29T15:30:36.92472267Z",
+        "wallet": "491dcaa5598b0056f220619e934a98668ecf43932c61617c9ea5f2f183e71b4e",
+        "stage": "caught-up",
+        "image": "sha256:7e704f61337e6bc679d98c2be5f449af96789e11a0d771af9309145353c61bd4",
+        "started": "2026-09-30T14:18:55.854733815Z",
+        "relay_ip": "172.23.0.2",
+        "relay_unit": "constella-gate2-relay-17044-pause",
+        "caught_up": {
+          "height": 45554,
+          "tip_prefix": "3ffa4d23",
+          "peers": 7,
+          "orphans": 0
+        }
+      }
+    },
+    "status": "PASS"
+  },
+  "restart_validation": {
+    "node2": {
+      "records_before": 51558,
+      "loaded_on_restart": 51558,
+      "snapshot_sha256": "751f5ed22a7ef770ea8aab445505ec1b7211baf68a12f75e8a3a51b20c1610d1",
+      "snapshot_bytes": 7941812
+    },
+    "node3": {
+      "records_before": 51626,
+      "loaded_on_restart": 51626,
+      "snapshot_sha256": "80a00003ced505dfd7cf45f96de200bc662c6784e6f459770508e1641e31d883",
+      "snapshot_bytes": 7952284
+    },
+    "node1": {
+      "records_before": 51717,
+      "loaded_on_restart": 51717,
+      "snapshot_sha256": "e94ee52923a0bab5f25aeea27a96186a932497d3f0e0ee3bd20618f8ecef66c7",
+      "snapshot_bytes": 7966298
+    },
+    "node4": {
+      "records_before": 51301,
+      "loaded_on_restart": 51301,
+      "snapshot_sha256": "0642f7c2d549b786d96a405ff7c13298bf8c17fd4de9e30d90286793454b7ba7",
+      "snapshot_bytes": 7902234
+    },
+    "node5": {
+      "records_before": 51330,
+      "loaded_on_restart": 51330,
+      "snapshot_sha256": "8f06ad5bf08cb0009812dfa5e5934eeb062ac3aa39443a2f9b51017bb3ab3508",
+      "snapshot_bytes": 7906700
+    }
+  }
+}

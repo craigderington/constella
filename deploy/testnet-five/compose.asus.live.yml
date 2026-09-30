@@ -1,0 +1,18 @@
+# Apply after compose.asus.partition.yml for the healed testnet.
+services:
+  node4:
+    image: constella:pause-fix-20260929
+    networks: [gate, liveheal]
+    environment:
+      CONSTELLA_ADVERTISE: "${REMOTE_HOST}:17043"
+      CONSTELLA_PEERS: "node5:7043,${LOCAL_HOST}:17043,${MINI_HOST:-192.168.1.123}:17046"
+  node5:
+    image: constella:pause-fix-20260929
+    networks: [gate, liveheal]
+    environment:
+      CONSTELLA_ADVERTISE: "${REMOTE_HOST}:17044"
+      CONSTELLA_PEERS: "node4:7043,${LOCAL_HOST}:17044,${MINI_HOST:-192.168.1.123}:17046"
+networks:
+  liveheal:
+    external: true
+    name: constella-gate-liveheal

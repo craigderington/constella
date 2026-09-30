@@ -1,0 +1,106 @@
+{
+  "image": "constella:pause-fix-20260929",
+  "cases": {
+    "battery": {
+      "before": {
+        "duty": 25,
+        "reason": "running",
+        "found": 2,
+        "candidates_per_second": 3110775.0,
+        "science_found": 1429
+      },
+      "paused": [
+        {
+          "duty": 0,
+          "reason": "on battery, paused",
+          "found": 2,
+          "candidates_per_second": 0.0,
+          "science_found": 1534
+        },
+        {
+          "duty": 0,
+          "reason": "on battery, paused",
+          "found": 2,
+          "candidates_per_second": 0.0,
+          "science_found": 1534
+        }
+      ],
+      "resumed": {
+        "duty": 25,
+        "reason": "running",
+        "found": 4,
+        "candidates_per_second": 2359296.0,
+        "science_found": 2827
+      },
+      "shutdown_exit_code": 0
+    },
+    "sensor": {
+      "before": {
+        "duty": 25,
+        "reason": "running",
+        "found": 7,
+        "candidates_per_second": 2979703.0,
+        "science_found": 1513
+      },
+      "paused": [
+        {
+          "duty": 0,
+          "reason": "sensor unavailable",
+          "found": 10,
+          "candidates_per_second": 0.0,
+          "science_found": 1903
+        },
+        {
+          "duty": 0,
+          "reason": "sensor unavailable",
+          "found": 10,
+          "candidates_per_second": 0.0,
+          "science_found": 1903
+        }
+      ],
+      "resumed": {
+        "duty": 25,
+        "reason": "running",
+        "found": 17,
+        "candidates_per_second": 2542797.0,
+        "science_found": 3194
+      },
+      "shutdown_exit_code": 0
+    },
+    "hot": {
+      "before": {
+        "duty": 25,
+        "reason": "running",
+        "found": 2,
+        "candidates_per_second": 2857370.0,
+        "science_found": 1562
+      },
+      "paused": [
+        {
+          "duty": 0,
+          "reason": "too hot, stopped",
+          "found": 2,
+          "candidates_per_second": 0.0,
+          "science_found": 1729
+        },
+        {
+          "duty": 0,
+          "reason": "too hot, stopped",
+          "found": 2,
+          "candidates_per_second": 0.0,
+          "science_found": 1729
+        }
+      ],
+      "resumed": {
+        "duty": 25,
+        "reason": "running",
+        "found": 5,
+        "candidates_per_second": 2472892.0,
+        "science_found": 2909
+      },
+      "shutdown_exit_code": 0
+    }
+  },
+  "stop_seconds": 2.717,
+  "status": "PASS"
+}

@@ -1,0 +1,28 @@
+# Fresh sixth testnet node on the ARM Mac mini. No explorer/database services.
+services:
+  node6:
+    image: constella:pause-fix-arm-20260929
+    build:
+      context: ../..
+    restart: unless-stopped
+    cpus: 1.0
+    environment:
+      CONSTELLA_PORT: "7043"
+      CONSTELLA_THREADS: "2"
+      CONSTELLA_DUTY: "50"
+      CONSTELLA_TEMP_MAX: "80"
+      CONSTELLA_TEMP_FILE: /host-thermal/cpu_millidegrees
+      CONSTELLA_BATTERY_PAUSE: "1"
+      CONSTELLA_PRIVATE_NET: "1"
+      CONSTELLA_TRACE_DISCOVERY: "1"
+      CONSTELLA_ADVERTISE: "${MINI_HOST:?set MINI_HOST}:17046"
+      CONSTELLA_PEERS: "${LOCAL_HOST:?set LOCAL_HOST}:17043,${REMOTE_HOST:?set REMOTE_HOST}:17043"
+    ports: ["${MINI_HOST}:17046:7043"]
+    volumes:
+      - node6:/data
+      - ${HOST_THERMAL_DIR:?set HOST_THERMAL_DIR}:/host-thermal:ro
+    networks: [gate]
+networks:
+  gate: {}
+volumes:
+  node6: {}

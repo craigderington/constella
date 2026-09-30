@@ -1,0 +1,3 @@
+services:
+  node4: { environment: { CONSTELLA_PEERS: "" } }
+  node5: { environment: { CONSTELLA_PEERS: "" } }

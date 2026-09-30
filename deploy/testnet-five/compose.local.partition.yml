@@ -1,0 +1,20 @@
+# Keep learned peer tables intact, but remove routes to the other host.
+services:
+  node1:
+    ports: !reset []
+    environment:
+      CONSTELLA_ADVERTISE: "node1:7043"
+      CONSTELLA_PEERS: "node2:7043"
+  node2:
+    ports: !reset []
+    environment:
+      CONSTELLA_ADVERTISE: "node2:7043"
+      CONSTELLA_PEERS: "node3:7043"
+  node3:
+    ports: !reset []
+    environment:
+      CONSTELLA_ADVERTISE: "node3:7043"
+      CONSTELLA_PEERS: "node1:7043"
+networks:
+  gate:
+    internal: true

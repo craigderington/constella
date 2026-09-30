@@ -1,0 +1,26 @@
+# Apply after compose.local.partition.yml when operating the healed testnet.
+# Keep the explorer on its existing networks; persist miners' outbound bridge
+# across container replacement, with mini as a stable cross-host bootstrap.
+services:
+  node1:
+    image: constella:pause-fix-20260929
+    networks: [gate, liveheal]
+    environment:
+      CONSTELLA_ADVERTISE: "${LOCAL_HOST}:17043"
+      CONSTELLA_PEERS: "node2:7043,${MINI_HOST:-192.168.1.123}:17046"
+  node2:
+    image: constella:pause-fix-20260929
+    networks: [gate, liveheal]
+    environment:
+      CONSTELLA_ADVERTISE: "${LOCAL_HOST}:17044"
+      CONSTELLA_PEERS: "node3:7043,${MINI_HOST:-192.168.1.123}:17046"
+  node3:
+    image: constella:pause-fix-20260929
+    networks: [gate, liveheal]
+    environment:
+      CONSTELLA_ADVERTISE: "${LOCAL_HOST}:17045"
+      CONSTELLA_PEERS: "node1:7043,${MINI_HOST:-192.168.1.123}:17046"
+networks:
+  liveheal:
+    external: true
+    name: constella-gate-liveheal
