@@ -21,7 +21,9 @@ typedef struct {
     sci_t   *sci;
 } entry_t;
 
-enum { CH_TIP, CH_ACCEPT, CH_DUP, CH_ORPHAN, CH_INVALID };
+/* Local resource failure is not evidence that a share is invalid. In
+ * particular, startup must never truncate history after an allocation error. */
+enum { CH_TIP, CH_ACCEPT, CH_DUP, CH_ORPHAN, CH_INVALID, CH_ERROR };
 
 typedef void (*accept_fn)(int idx, int is_tip);
 
