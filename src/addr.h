@@ -13,8 +13,16 @@
  * Returns the key length in bytes. */
 int addr_netgroup(const uint8_t ip[16], uint8_t out[8]);
 
-/* Loopback, unspecified, RFC1918, link-local and ULA are never worth storing:
- * they cannot be dialled across the internet and they all share a netgroup. */
+/* Private-network testnets are opt-in. The public default rejects RFC1918
+ * addresses and groups endpoints by public network. When enabled, RFC1918
+ * endpoints are accepted and their port participates in outbound/gossip
+ * diversity so several nodes behind one lab host can discover each other.
+ * This must be set before addr_load(). */
+void addr_set_private(int allow);
+void addr_peer_group(const uint8_t ip[16], uint16_t port, uint8_t out[8]);
+
+/* Loopback, unspecified, link-local and ULA are never stored. RFC1918 is also
+ * rejected unless the operator explicitly enabled private-network mode. */
 int addr_is_routable(const uint8_t ip[16]);
 
 typedef struct { uint8_t ip[16]; uint16_t port; uint32_t seen; uint8_t tried, ok; } addr_t;
