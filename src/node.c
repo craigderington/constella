@@ -9,6 +9,7 @@
 #include "throttle.h"
 #include "util.h"
 #include "wallet.h"
+#include "vendor/monocypher.h"
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
@@ -490,13 +491,17 @@ int node_run(void) {
         return 1;
     }
 
-    wallet_t w;
-    int wr = wallet_load(&w, env("CONSTELLA_KEY", keypath), 1);
-    if (wr < 0) { log_msg("fatal: cannot load or create key %s", env("CONSTELLA_KEY", keypath)); return 1; }
-    memcpy(payout, w.pk, 32);
     const char *ov = getenv("CONSTELLA_ADDR");
-    if (ov && *ov && hex_dec(payout, 32, ov)) { log_msg("fatal: CONSTELLA_ADDR must be 64 hex chars"); return 1; }
-    memset(&w, 0, sizeof w);                    /* the node never signs */
+    int wr = 0;
+    if (ov && *ov) {
+        if (hex_dec(payout, 32, ov)) { log_msg("fatal: CONSTELLA_ADDR must be 64 hex chars"); return 1; }
+    } else {
+        wallet_t w;
+        wr = wallet_load(&w, env("CONSTELLA_KEY", keypath), 1);
+        if (wr < 0) { log_msg("fatal: cannot load or create key %s", env("CONSTELLA_KEY", keypath)); return 1; }
+        memcpy(payout, w.pk, 32);
+        crypto_wipe(&w, sizeof w);              /* the node never signs */
+    }
 
     /* The network identity is deliberately not the payout key: a compromised
      * node key must not cost coins, and who you talk to must not leak what you
@@ -527,9 +532,11 @@ int node_run(void) {
     fcntl(pfd[0], F_SETFL, O_NONBLOCK);
     fcntl(spfd[0], F_SETFL, O_NONBLOCK);
     if (net_init((uint16_t)port, getenv("CONSTELLA_PEERS"), &nid, on_msg, on_connect)) {
+        crypto_wipe(&nid, sizeof nid);
         log_msg("fatal: cannot listen on %d", port);
         return 1;
     }
+    crypto_wipe(&nid, sizeof nid); /* net owns its separate identity copy */
     /* Self-advertisement (Task 10): unset means "connects out, syncs, mines,
      * receives no inbound" - the documented and correct default for a node
      * behind NAT. A failure to resolve is logged, not fatal. */

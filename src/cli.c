@@ -70,14 +70,14 @@ int cli_wallet(int argc, char **argv) {
     int r;
     if (!strcmp(sub, "new")) {
         r = wallet_load(&w, path, 1);
-        if (r != 1) { fprintf(stderr, r == 0 ? "exists: %s\n" : "cannot create %s\n", path); return 1; }
+        if (r != 1) { crypto_wipe(&w, sizeof w); fprintf(stderr, r == 0 ? "exists: %s\n" : "cannot create %s\n", path); return 1; }
         fprintf(stderr, "created %s (back it up; it is your only copy)\n", path);
     } else if (!strcmp(sub, "addr")) {
         if (wallet_load(&w, path, 0)) { fprintf(stderr, "no wallet at %s (try: wallet new)\n", path); return 1; }
     } else { fprintf(stderr, "usage: constella wallet new|addr [keyfile]\n"); return 2; }
     hex_enc(a, w.pk, 32);
     puts(a);
-    memset(&w, 0, sizeof w);
+    crypto_wipe(&w, sizeof w);
     return 0;
 }
 
@@ -90,7 +90,7 @@ int cli_balance(int argc, char **argv) {
     } else {
         if (wallet_load(&w, keypath(NULL), 0)) { fprintf(stderr, "no wallet; pass an address\n"); return 1; }
         memcpy(addr, w.pk, 32);
-        memset(&w, 0, sizeof w);
+        crypto_wipe(&w, sizeof w);
     }
     net_client_t c;
     acct_info a;
@@ -116,10 +116,10 @@ int cli_send(int argc, char **argv) {
 
     net_client_t c;
     acct_info a;
-    if (query(&c, argv[2], t.from, &a)) { unreachable(argv[2]); return 1; }
+    if (query(&c, argv[2], t.from, &a)) { crypto_wipe(&w, sizeof w); unreachable(argv[2]); return 1; }
     t.nonce = a.next;
     tx_sign(&t, w.sk);
-    memset(&w, 0, sizeof w);
+    crypto_wipe(&w, sizeof w);
 
     uint8_t raw[TX_SIZE], r[NET_MAXPAY], id[32];
     uint16_t l;

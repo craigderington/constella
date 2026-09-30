@@ -1669,8 +1669,8 @@ static int peers_secret(const char *path, uint8_t out[16]) {
  * the persistence code t_addr_persist already covers - and node.c is not
  * linked into this test binary. Returns 0 only if the node started, reached
  * addr_load and exited 0 (so its addr_save at shutdown ran). */
-static int node_start_stop_env(const char *dir, uint16_t port,
-                              const char *peers, const char *advertise) {
+static int node_start_stop_config(const char *dir, uint16_t port,
+                                 const char *peers, const char *advertise, const char *payout_addr) {
     int pfd[2];
     if (pipe(pfd)) return -1;
     char pbuf[16];
@@ -1688,7 +1688,8 @@ static int node_start_stop_env(const char *dir, uint16_t port,
         if (advertise) setenv("CONSTELLA_ADVERTISE", advertise, 1);
         else unsetenv("CONSTELLA_ADVERTISE");
         unsetenv("CONSTELLA_KEY");
-        unsetenv("CONSTELLA_ADDR");
+        if (payout_addr) setenv("CONSTELLA_ADDR", payout_addr, 1);
+        else unsetenv("CONSTELLA_ADDR");
         execl("./constella", "constella", (char *)NULL);
         _exit(127);
     }
@@ -1713,6 +1714,30 @@ static int node_start_stop_env(const char *dir, uint16_t port,
     waitpid(pid, &status, 0);
     if (!ready) return -1;
     return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
+
+static int node_start_stop_env(const char *dir, uint16_t port,
+                              const char *peers, const char *advertise) {
+    return node_start_stop_config(dir, port, peers, advertise, NULL);
+}
+
+static void t_cold_payout_node(void) {
+    if (!need_constella("cold payout")) return;
+    char dir[] = "/tmp/constella-cold-XXXXXX", path[256], address[65];
+    if (!mkdtemp(dir)) { CHECK(0); return; }
+    wallet_t wallet; uint8_t seed[32] = {0x72};
+    wallet_from_seed(&wallet, seed); hex_enc(address, wallet.pk, 32);
+    CHECK(node_start_stop_config(dir, 18241, "127.0.0.1:1", NULL, address) == 0);
+    snprintf(path, sizeof path, "%s/wallet.key", dir);
+    CHECK(access(path, F_OK) != 0); /* no payout secret created or required */
+    snprintf(path, sizeof path, "%s/node.key", dir);
+    struct stat st;
+    CHECK(stat(path, &st) == 0 && (st.st_mode & 0777) == 0600);
+    const char *files[] = {"shares.v3", "peers.dat", "node.key"};
+    for (unsigned i = 0; i < sizeof files / sizeof *files; i++) {
+        snprintf(path, sizeof path, "%s/%s", dir, files[i]); unlink(path);
+    }
+    rmdir(dir);
 }
 
 static int node_start_stop(const char *dir, uint16_t port) {
@@ -2357,7 +2382,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_miner_zero_duty(); t_miner_backpressure(); t_host_temperature(); t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_sync_fork_cursor(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_sci_pipe_region_switch(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
+    t_miner_zero_duty(); t_miner_backpressure(); t_host_temperature(); t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_sync_fork_cursor(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_sci_pipe_region_switch(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cold_payout_node(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
