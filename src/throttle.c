@@ -1,6 +1,8 @@
 #include "throttle.h"
 #include "util.h"
 #include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <math.h>
 #include <sched.h>
@@ -10,6 +12,7 @@
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -58,6 +61,7 @@ double ctl_step(ctl_t *c, const ctl_cfg *k, double t, double dt) {
 static char sens[MAX_SENS][200];
 static int nsens;
 static char sens_name[48] = "none";
+static const char *host_temp_file;
 static ctl_cfg cfg;
 static ctl_t ctl;
 static int batt_pause = 1, has_batt;
@@ -147,7 +151,33 @@ static int discover(void) {
     return crit;
 }
 
+/* Optional real-host sensor for VMs. The producer atomically replaces a text
+ * file containing millidegrees Celsius. A missing, malformed, nonregular,
+ * future-dated, or >3-second-old sample fails closed, including at startup.
+ * Read and stat the same inode so atomic replacement cannot freshen old data. */
+int throttle_read_temp_file(const char *path, int64_t now) {
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return -1;
+    struct stat st;
+    char buf[32];
+    ssize_t n = -1;
+    if (!fstat(fd, &st) && S_ISREG(st.st_mode) && st.st_mtime <= now &&
+        st.st_mtime >= now - 3)
+        n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n < 1 || n == (ssize_t)sizeof buf - 1) return -1;
+    buf[n] = 0;
+    if (memchr(buf, 0, (size_t)n) || buf[0] < '0' || buf[0] > '9') return -1;
+    char *end;
+    errno = 0;
+    long v = strtol(buf, &end, 10);
+    if (errno || v < 0 || v >= 150000) return -1;
+    if (*end == '\n') end++;
+    return *end ? -1 : (int)v;
+}
+
 static int read_temp(void) {
+    if (host_temp_file) return throttle_read_temp_file(host_temp_file, now_sec());
     int best = -1;
     char buf[32];
     for (int i = 0; i < nsens; i++)
@@ -182,7 +212,10 @@ static int read_battery(int *present) {
 }
 
 void throttle_init(int dmax, int cap_c, int pause_batt) {
-    int crit = discover();
+    host_temp_file = getenv("CONSTELLA_TEMP_FILE");
+    if (host_temp_file && !*host_temp_file) host_temp_file = NULL;
+    int crit = host_temp_file ? 0 : discover();
+    if (host_temp_file) snprintf(sens_name, sizeof sens_name, "host-cpu");
     read_battery(&has_batt);
     batt_pause = pause_batt;
     if (cap_c <= 0) {                                   /* auto: 12 °C under critical */
@@ -196,6 +229,10 @@ void throttle_init(int dmax, int cap_c, int pause_batt) {
     cfg.duty_max = dmax < 0 ? 0 : dmax > 100 ? 100 : dmax;
     memset(&ctl, 0, sizeof ctl);
     atomic_store(&duty, (int)(cfg.duty_max * 0.25));
+    if (host_temp_file && read_temp() < 0) {
+        atomic_store(&duty, 0);
+        atomic_store(&reason, TH_SENSOR);
+    }
 }
 
 double median(double *v, int n) {
