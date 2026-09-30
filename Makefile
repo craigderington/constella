@@ -27,11 +27,17 @@ test_constella: $(CORE) src/node.c tests/test.c src/*.h
 thermal_sim: src/throttle.c src/util.c tests/thermal_sim.c src/throttle.h
 	$(CC) $(CFLAGS) -Isrc -o $@ src/throttle.c src/util.c tests/thermal_sim.c $(LDFLAGS)
 
+gate_snapshot: $(CORE) tests/gate_snapshot.c src/*.h
+	$(CC) $(CFLAGS) -Isrc -o $@ $(CORE) tests/gate_snapshot.c $(LDFLAGS)
+
+gate-test: gate_snapshot
+	python3 tests/test_gate_snapshot.py
+
 unit: constella test_constella thermal_sim
 	CONSTELLA_CI=1 ./test_constella
 	./thermal_sim
 
-test: unit
+test: unit gate-test
 	python3 tests/crosscheck.py ./test_constella
 
 size: constella
@@ -50,6 +56,6 @@ explorer:
 	cd explorer && CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o ../constella-explorer ./cmd/explorer
 
 clean:
-	rm -f constella test_constella thermal_sim constella-explorer
+	rm -f constella test_constella thermal_sim constella-explorer gate_snapshot
 
-.PHONY: all fast unit test size explorer explorer-test clean
+.PHONY: all fast unit test size explorer explorer-test gate-test clean

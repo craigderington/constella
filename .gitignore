@@ -3,4 +3,5 @@ test_constella
 constella-data/
 constella-explorer
 thermal_sim
+gate_snapshot
 web_session.txt
