@@ -16,6 +16,9 @@ independently.
 - Hosting plan: an existing underutilized Lightsail instance will run the
   Explorer, Postgres, and one node; another Lightsail instance and the homelab
   will each run a node. Target instance and cloud mining mode remain undecided.
+- Craig chose to preserve the current testnet and build an isolated candidate.
+  Default builds remain v3; opt-in v4 profiles and their test scope are in
+  `docs/protocol-candidate-v4.md`. No candidate is deployed.
 - Craig confirmed a month or more of testnet before mainnet (2026-09-30).
   Use that period for deliberate failure/abuse/recovery tests and sustained
   operation. Elapsed time alone does not close the production audit gates.
@@ -186,8 +189,9 @@ independently.
   `docs/production-readiness-2026-09-30.md` before deployment preparation.
   Local audit fixes cover destructive OOM replay, concurrent writers,
   explorer fork pagination, mining shutdown backpressure, account-index
-  collisions and cold payout handling. They are not deployed. Open gates include mainnet/testnet domain
-  separation, public-peer resource budgets, 90-day state/SQL scale,
+  collisions and cold payout handling. They are not deployed. The opt-in v4 candidate adds network separation and authenticated binding,
+  with local cross-profile tests; deployment and independent review remain open.
+  Other open gates include public-peer resource budgets, timestamp abuse, 90-day state/SQL scale,
   independent protocol review, custody/restore and shared-host operations.
 - [x] Forced partition/reorg convergence, changed-anchor and same-anchor claim
   recovery. Gate 2 closed 2026-09-29: four mini claims recovered at 13664–13665;
@@ -258,8 +262,9 @@ independently.
   snapshot design remains separate work if explorer-scale growth requires it.
 - Mempool: fee priority is implemented; reorged transactions are returned to
   the mempool after tip changes.
-- Mainnet params: BLOCK_K=6. One constant, but it makes blocks ~77x rarer
-  (measured 4->5 ratio), so the economics need thinking through first.
+- The prelaunch mainnet candidate uses the complete v4 profile and BLOCK_K=6.
+  Economics and difficulty still require review; changing block K alone is
+  not adequate network separation.
 - Thermal policy is decided: target 82 C, cap 88 C, hard stop 95 C.
 - Thermal protection now fails safe on a sensor outage: the sampler stops
   workers when no temperature samples arrive in a control window.

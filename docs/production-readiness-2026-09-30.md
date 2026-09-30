@@ -58,7 +58,8 @@ not independently validated merely by referencing them here.
 | F-06 | Public payout wallet bypass and key wiping fixed locally; checksummed addresses, fee review, custody/restore and strict key-file handling remain open. |
 | F-23 | Concurrent writers excluded and replay resource failures separated from corruption; local regressions pass. |
 | F-27 | Common secret files, metadata and local artifacts excluded from Git/Docker contexts; this is not a repository-history secret scan. |
-| F-01, F-13, F-19 | Open protocol/security decisions: timestamp manipulation, authenticated network/identity binding and reset/network separation. |
+| F-01 | Compatible timestamp recovery policy and 32-phase model added; live and repeated-adversary timestamp/retarget gate remains open. |
+| F-13, F-19 | Opt-in v4 candidate binds network and both identities, separates genesis/wire/transaction domains and data files. Local cross-profile lab added; current testnet preserved. Deployment, independent review and coordinated launch remain open. |
 | F-02, F-05, F-09, F-10, F-11, F-15, F-22, F-25 | Open network, queue, DNS, discovery and HTTP abuse/availability work; require adversarial integration tests. |
 | F-04, F-14 | Open full-history CPU/memory/SQL growth. One quadratic membership scan is removed; no claim that replay is now incremental. |
 | F-07, F-08 | Open cloud mining policy and template-result lifetime/job-churn behavior. |
@@ -73,31 +74,35 @@ and the proposed rule under adversarial conditions before choosing a fork.
 
 ### P0 — separate mainnet from testnet before any valuable launch
 
-`BLOCK_K` changes the transaction signing domain, but not the genesis header,
-network magic or authenticated handshake. Compiling the reader with
-`-DBLOCK_K=6` accepted all 29 transaction-free testnet fixture records and
-reached the same canonical height 28 and tip as the normal testnet build.
-Transaction replay protection alone is insufficient network separation.
+The pre-fix `-DBLOCK_K=6` reader accepted all 29 transaction-free legacy
+fixture records, reaching the same height 28 and tip. This demonstrated that
+transaction signing domains alone were insufficient separation.
 
-Required: specify distinct genesis/network domains and seed configuration;
-bind the network identity into the authenticated protocol; reject foreign
-shares, handshakes and transactions in both directions in C and Go tests.
-Agree on the mainnet protocol and migration policy before implementing this;
-silently changing the running testnet's consensus is not a repair.
+The opt-in v4 candidate now selects separate genesis headers, network magic,
+share markers, authenticated transcripts, KDF domains and data files. Candidate
+DNS seeds are empty. Default v3 builds preserve existing testnet compatibility.
+See [the candidate specification](protocol-candidate-v4.md) for exact bytes,
+local test scope and the explicit no-migration boundary.
 
-### P0 — timestamp/difficulty manipulation needs a protocol decision
+This closes the local implementation gap for the proposed profiles, conditional
+on their recorded tests; it does not approve mainnet parameters or deployment.
+Independent protocol/cryptographic review and staging remain required.
 
-The separate read-only audit, `docs/audit-2026-09-30.md`, identifies a future-time
-ratchet. Source inspection confirms that shares may be up to two hours ahead,
-honest mining carries the parent's time forward, and retargeting uses two
-endpoint timestamps rather than median time. Thus multiple retarget windows
-can see a near-zero span while wall time catches up. That report's duration
-and difficulty estimates are simulation results, not a live exploit reproduced
-here. This review's future-time boundary tests do not close that risk.
+### P0 — timestamp/difficulty manipulation needs further adversarial evidence
 
-Required: adversarial simulation and isolated multi-node reproduction; specify
-timestamp/retarget rules and verify C/Go agreement, clock skew, recovery and
-fork choice before changing consensus. Treat this as an open mainnet gate.
+The old honest mining policy carried a future parent's timestamp unchanged.
+The compatible replacement recovers toward wall time within the existing
+600-second parent bound. A deterministic model using the real C retarget and
+template functions tests the old policy across all 32
+retarget phases: worst peak 832 bits from 448, versus 448 after the change;
+wall-time recovery improves from up to 450 shares to 12.
+
+These are synthetic single-injection, honest-descendant results, not live
+exploit or general resistance evidence. Consensus still permits two-hour future
+timestamps and uses endpoint retargeting. Required next: isolated multi-node
+probes with repeated malicious timestamps, mixed old/new mining policy, skew,
+partitions and fork recovery. Any changed validity/retarget rule requires
+explicit candidate version management and C/Go agreement. Mainnet remains blocked.
 
 ### P0 — custody, recovery and monetary rules need an independent release gate
 
@@ -253,6 +258,12 @@ recovery commands are supplied until the target and validated configuration
 make those commands concrete and reviewable.
 
 ## Local verification
+
+The following baseline evidence predates the isolated v4 candidate. The candidate
+follow-up passed 757/757 legacy C checks, all three Go race suites, live C/Go
+interoperability, cross-profile rejection and ASAN/UBSAN. Its evidence and
+remaining limitations are recorded in [protocol-candidate-v4.md](protocol-candidate-v4.md).
+
 
 - `make test`: **742/742** top-level C checks, thermal simulations, three
   snapshot-reader tests, storage-fault/locking/time-boundary harness and Python

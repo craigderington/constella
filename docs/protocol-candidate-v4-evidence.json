@@ -1,0 +1,56 @@
+{
+  "scope": "disposable localhost only",
+  "profiles": {
+    "network_legacy.h": {
+      "chain_id": "a8f4562e57e74f9d",
+      "genesis_id": "55f6a863da389ea0a4bcdaa7d5cae686e6f7113990af79f60de519706dbbead1",
+      "magic": 861164355,
+      "file": "shares.v3"
+    },
+    "network_testnet_v4.h": {
+      "chain_id": "54ed18767151b15d",
+      "genesis_id": "95c8524ba945db51feb44c746e656fdf9e8b16beff44975cf2b814f1913c0343",
+      "magic": 1412715587,
+      "file": "shares.testnet-v4"
+    },
+    "network_mainnet_v4.h": {
+      "chain_id": "52a550111b2d0b38",
+      "genesis_id": "9eb98e11b2e38f1178a0c69199404dd1a9c01b39a2eabbf007d8e701916dae2e",
+      "magic": 1295275075,
+      "file": "shares.mainnet-v4"
+    }
+  },
+  "checks": {
+    "shares_transactions_replay": "all ordered profile pairs passed",
+    "wire": "all ordered pairs direct and magic-rewriting proxy passed",
+    "go": "full race suite and C/Go interoperability passed for all profiles",
+    "shutdown": "all disposable nodes exited cleanly"
+  },
+  "clock_model": {
+    "phases": 32,
+    "baseline_bits": 448,
+    "legacy_peak_bits": 832,
+    "candidate_peak_bits": 448,
+    "legacy_recovery_shares": 450,
+    "candidate_recovery_shares": 12
+  },
+  "verification": {
+    "date": "2026-09-30",
+    "sanitizers": "Clang AddressSanitizer and UndefinedBehaviorSanitizer: same lab passed",
+    "legacy_c_checks": "757/757; make test and make size passed",
+    "candidate_node_bytes": 161560,
+    "size_limit_bytes": 196608,
+    "explorer_docker": "default v3 local image build and embedded tests passed",
+    "limitations": [
+      "No production or retained testnet services accessed or changed",
+      "No database integration in protocol lab",
+      "No ARM candidate test",
+      "Clock evidence is a model, not a live attack",
+      "Independent cryptographic review and sustained adversarial testing remain open"
+    ]
+  },
+  "source_commits": {
+    "timestamp_policy": "ca7d457",
+    "protocol_candidate": "6ac225a"
+  }
+}
