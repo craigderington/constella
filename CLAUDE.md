@@ -8,7 +8,19 @@ independently.
 
 ## Rules
 - Never `git push`. Never touch production servers. Craig owns deploys.
+- Confirmed 2026-09-30: only Craig executes production commands. Agents prepare
+  and test locally, then provide exact deployment, verification, and rollback
+  commands for Craig to run. Do not SSH into production or change production
+  infrastructure. Requests to prepare/configure deployment do not authorize
+  agent execution in production. See `AGENTS.md` for the persistent boundary.
+- Hosting plan: an existing underutilized Lightsail instance will run the
+  Explorer, Postgres, and one node; another Lightsail instance and the homelab
+  will each run a node. Target instance and cloud mining mode remain undecided.
 - Docker Compose for everything; Postgres for anything stateful.
+- Keep explorer operation separate from mining nodes. The explorer/database
+  use their own UI bridge; only the explorer also joins the P2P bridge to read
+  the chain. Never attach miners to the UI bridge or couple their lifecycle
+  to explorer startup/restart. Use service-targeted Compose commands.
 - Ports are deliberately off the usual ranges: P2P 7043, explorer 3071, Postgres 5439.
   Pick new random-ish ports for any new service.
 - Sprints with a checklist: plan, work, assess, build, test, deploy, iterate.
@@ -18,7 +30,7 @@ independently.
 ## Commands
     make test            # C unit tests + thermal sim + Python cross-checks
     make size            # size gate
-    make explorer-test   # go vet + go test (includes params.h drift guard)
+    make explorer-test   # go vet + go test (includes C-header drift guard)
     docker compose up --build -d && docker compose logs -f node1 explorer
     curl 127.0.0.1:3071  # explorer text dashboard
 
@@ -31,11 +43,12 @@ independently.
 - `docs/protocol.md` wire formats and consensus rules; `docs/science-lane.md` draft spec.
 
 ## Invariants
-- `explorer/internal/proto` mirrors `src/params.h` and `src/science.h`'s
-  `SCI_SIZE`; a test fails on drift. This guard now genuinely runs inside
-  `docker build`, not just on the host: `explorer/Dockerfile` builds from the
+- `explorer/internal/proto` mirrors constants from `src/params.h`,
+  `src/science.h`, and `src/net.h`; a test fails on drift. This guard now
+  genuinely runs inside `docker build`, not just on the host:
+  `explorer/Dockerfile` builds from the
   repo root (`docker-compose.yml`'s explorer service sets `context: .`) so
-  `src/params.h`/`src/science.h` are reachable at the path the Go test
+  `src/params.h`/`src/science.h`/`src/net.h` are reachable at the path the Go test
   expects, and `CONSTELLA_CI=1` (set in the Dockerfile) turns the test's
   missing-header fallback into `t.Fatal` instead of `t.Skip`. Before this fix
   the explorer image was built from `./explorer` alone, the headers were
@@ -98,23 +111,93 @@ independently.
   This is the run that made the science lane live-verified; earlier partial
   runs on superseded builds have been removed rather than left to read as
   current.
-- A second host, `asus-tuf-a16` (16-core), ran 2 nodes on the same build and
-  crossed the epoch boundary at 257 independently. Note both hosts mined
-  **separate forks from the same genesis** for an hour, because nothing can
-  discover anything — see `docs/superpowers/specs/2026-09-26-peer-discovery-design.md`.
+- **Distributed release gate 2026-09-27:** 3 nodes on `macbook-pro-v1`, 2 on
+  `asus-tuf-a16`, plus Postgres/explorer locally. The five nodes started from
+  empty, project-isolated volumes with one bootstrap edge each. After gossip,
+  every checksummed `peers.dat` contained all five advertised endpoints and at
+  least one handshake-confirmed `tried` peer. Both groups were then cleanly
+  restarted with `CONSTELLA_PEERS` empty and reconnected from those tables.
+  All five accepted canonical height 512 as `d8ae6103...`, including two
+  science claims, and direct account queries against all five endpoints
+  returned the same balance. At the recorded checkpoint (height 523), the
+  explorer reported `check=ok`, 5/5 accounts checked, 6 blocks, 1 transaction,
+  5 miners, 2,120 paid science claims, 62.40391500 paid, and 147.59608500 in
+  escrow. Naturally mined blocks at heights 285 and 322 closed the previously
+  unverified post-256 payout window. No node or explorer log contained a
+  rejection, mismatch, fatal error, or nonzero orphan count. The final image
+  passed 649/649 C checks, the Python cross-checks, Go tests, ASAN/UBSAN, and
+  the 157,520/196,608-byte image size gate. Its node binary hash exactly
+  matched the exercised binary: `2a1102e5888513c9d10e48f38b3654eaa100b2a1d836bb4b28a6f8bd87368668`.
+  Both seedless stacks were stopped with their volumes preserved before gate 2.
+  BUG-039 stalled both ASUS nodes at height 1792 on 2026-09-28: old-region
+  science results poisoned their current templates. The fix validates pipe
+  results before pool admission and logs local-share rejection. It passed
+  673/673 C checks and all host/image cross-checks, and is deployed to all
+  five gate nodes with preserved volumes and isolation. ASUS crossed 2048/2049
+  and reached 2248; local nodes crossed 7168/7169 and reached 7236. Gate 2
+  was incomplete at that point (closed 2026-09-29 below). See `deploy/testnet-five/GATE2.md` for exact binary hash,
+  baseline fork work, and repair evidence; the new image needs final Gate 1
+  reconfirmation before release.
+- **Gate 2 live heal 2026-09-28:** BUG-040 prevented fork sync from advancing
+  beyond repeated canonical batches. The per-peer validated-share cursor fix
+  passed 676/676 host/image C checks and cross-checks, then shipped to all five
+  testnet nodes with preserved volumes. A subsequent heal without restarting
+  processes converged all five at height 9402, full tip `6610735b…`; every
+  account/nonce and ledger total matched across all five full replays and the
+  independent Go explorer at that exact tip. The ASUS-only transfer recovered
+  once in share 9349 without resubmission. Gate 2 was still incomplete: the
+  same-anchor attempt gave the losing, battery-paused miner no canonical share
+  before epoch expiry, so claim recovery needs another adequate test. See
+  `deploy/testnet-five/GATE2.md` for exact hashes and evidence. Three additional
+  sample transfers are applied in share 9473. Explorer and mining lifecycles
+  remain separate.
 - `CONSTELLA_P2P_KEY` is **gone**. A network-wide shared key cannot
   authenticate an open network: every holder can impersonate every node. It was
   replaced by per-node static identities and a two-phase forward-secret
   handshake; see `docs/protocol.md`.
+- **Sixth testnet node (mini), 2026-09-28:** `cd@mini` is ARM macOS, now using
+  a dedicated Colima VM and Compose node6 with an independently generated
+  wallet. It synced from peers, mined canonical science-bearing shares, and
+  rejoined after a clean VM restart. The explorer checks all six accounts.
+  A real macmon host-temperature input (`CONSTELLA_TEMP_FILE`, three-second
+  expiry) retains the thermal controller inside the sensorless Linux VM;
+  stale-input duty-zero behavior was verified live. Host/ARM suites passed
+  729/729 checks. ARM image targets 4 KiB-page Linux and passes the size gate
+  at 177,856 bytes. Colima's copied `/24` loopback address needs the post-start
+  `/32` correction in `deploy/testnet-mini/start.sh`; use that startup service.
+  See `deploy/testnet-mini/README.md` for services, hashes and operating details.
 - Final operating decisions: retain the thermal controller at an 82 C target,
   88 C cap, and 95 C hard stop. The shared-PSK transport is retired; per-peer
   static identities are implemented, so that mainnet gate is closed.
+- **ASUS school trip, 2026-09-29:** Craig took the host offline for school and
+  brought it back. Its restarts were operator activity. Both nodes reloaded
+  22783, reached 25620 with five peers and zero orphans by their first status,
+  and joined the fully validated six-node ledger checkpoint at 25790. See
+  `deploy/testnet-five/GATE3.md` for shutdown/rejoin timing and the generic
+  handshake-warning limitation. The audit also confirmed BUG-041: zero-duty
+  battery/sensor/thermal pause still permitted slow worker batches. It was
+  fixed and deployed to all six nodes on 2026-09-30 (details below).
 
 ## Not yet verified
-- [ ] A naturally mined block in the narrow h257..295 window remains
-      observationally unverified. The deterministic Go fixture explicitly
-      proves a claim first listed at h40 pays in a block at h257, after the
-      h256 epoch rollover.
+- [x] Forced partition/reorg convergence, changed-anchor and same-anchor claim
+  recovery. Gate 2 closed 2026-09-29: four mini claims recovered at 13664–13665;
+  six validated C replays and independent Go ledger agree at 25790. See
+  `deploy/testnet-five/GATE2.md` and its evidence JSON for scope and process history.
+- [x] Gate 3 crash/persistence recovery, 2026-09-29: ten isolated persistence
+  cases, four lab SIGKILLs and three live node2 SIGKILLs passed. Six canonical
+  paths agree at 28822; crashed node2's validated C replay matches the Go
+  explorer ledger there. ASUS school-trip rejoin audited. See
+  `deploy/testnet-five/GATE3.md` and its public evidence.
+- [x] BUG-041: both mining lanes now wait at zero duty with interruptible
+  shutdown/job checks and no paused range consumption. Host/native x86/ARM
+  suites passed 732/732; all three sampler pause causes passed integration
+  tests, and mini's real sensor-outage canary stopped mining while syncing.
+  Deployed to all six nodes; identical canonical paths and C/Go ledger at
+  45774. `release-gate` points to `pause-fix-20260929` on x86; mini uses
+  `pause-fix-arm-20260929`. Keep the `compose.*.live.yml` override after the
+  partition override on local/ASUS replacements. See `deploy/testnet-five/BUG041.md`.
+- [ ] Live future-time and orphan-replay adversarial probes.
+- [ ] Public bootstrap with a real DNS seed and hardcoded fallbacks.
 
 ## Tuning (i7-8850H, 6C/12T)
 - Default threads = physical cores - 1. HT buys ~7% for a lot more heat.
@@ -146,7 +229,7 @@ independently.
   the gap range suggested.
 - `make size` quantises in 4096-byte pages for code, so growth shows up in
   4 KB steps and a sub-page change is invisible in the reported number.
-  Current: 157,464/196,608 bytes - an unchanged number means "no page
+  Current release image: 157,520/196,608 bytes - an unchanged number means "no page
   crossed," not "nothing changed."
 - One miner worker goes to science when `threads >= 2`, costing ~1/threads of
   constellation throughput (~17% at the default 6: 5 of 6 workers left

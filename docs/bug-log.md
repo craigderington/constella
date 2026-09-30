@@ -390,6 +390,101 @@ unverified defects.
 - Status: fixed; bounded checks rotate through the complete address set, and
   ledgers above the bound are explicitly labelled as sampled coverage.
 
+### BUG-038: The explorer container omitted a header required by its drift gate
+
+- Severity: release blocker
+- Area: explorer build / protocol compatibility
+- Reproduction: build `explorer/Dockerfile` from the repository root.
+- Cause: the protocol drift test was extended to compare gossip constants in
+  `src/net.h`, but the container build copied only `params.h` and `science.h`.
+  Host tests passed because all repository headers were present; the shipped
+  image failed its test stage.
+- Status: fixed; the explorer build now copies all three guarded C headers,
+  and `CONSTELLA_CI=1` keeps a missing header as a hard build failure.
+
+### BUG-039: In-flight science results poison the pool after an epoch change
+
+- Severity: release blocker
+- Area: miner-to-node science result delivery
+- Observed 2026-09-28 on both ASUS Gate 2 nodes: the chain stopped at height
+  1792 at 13:46:58 UTC while mining and `found` counters continued increasing.
+- Cause: `refresh_sci_region()` clears the pool and changes the worker's
+  region, but a prior-region result can still arrive through the pipe.
+  The pipe carries only `(k, g)`, and `drain_sci()` admits results without
+  checking their region. An invalid first claim then enters every template;
+  it cannot be spent because every resulting share fails validation. A full
+  pool also discards new results. `drain_found()` ignores `CH_INVALID`, hiding
+  the failure from logs.
+- Confirmation: each live node had exactly one old-anchor-valid,
+  current-anchor-invalid claim at pool index 0; its other 15 claims were
+  valid in the current region. All four templates on each node included the
+  bad claim. One captured share per node had valid quadruplet work and a
+  matching payload root, but `chain_submit()` returned `CH_INVALID`.
+  The exact scheduling of the original stale delivery was not captured.
+- Evidence: [public live-state capture](../deploy/testnet-five/evidence/2026-09-28-asus-stall.json).
+  Claim validity was checked with the C `--sci` vector interface under both
+  anchors; proof and payload root were independently checked in Python.
+- Status: **fixed and deployed to all five isolated gate nodes, 2026-09-28**.
+  The pipe reader validates claims against the active region before admission;
+  unexpected local-share rejections are logged. The regression feeds both
+  captured stale claims followed by fresh work through the actual pipe reader,
+  failing before the fix and passing afterward. No consensus rule changed.
+  Host and Docker suites passed 673/673 C checks, Python cross-checks, thermal
+  simulation, snapshot tests, and the size gate. ASUS resumed from 1792 and
+  crossed 2048/2049; the local group crossed 7168/7169. See the
+  [recovery evidence](../deploy/testnet-five/evidence/2026-09-28-bug039-recovery.json).
+
+### BUG-040: Fork sync repeatedly requested the same canonical batch
+
+- Severity: release blocker
+- Area: live fork synchronization / GETCHAIN pagination
+- Observed in the 2026-09-28 Gate 2 live heal. The forks diverged after height
+  789. ASUS's canonical locator first matched genesis, so the winning peer
+  returned heights 1–500, which ASUS already knew. The next request repeated
+  the unchanged canonical locator. A frozen ASUS checkpoint at height 3894
+  contained no winning-branch records beyond the divergence despite connected
+  peers and accumulating orphans. The prior chain-count retry guard cannot
+  advance either a duplicate-only batch or a still-weaker received branch.
+- Fix: retain each peer's last validated received share, including duplicates,
+  prepend it to the next locator, and include cursor movement in retry
+  suppression. Keep the canonical locator as fallback and reset peer progress
+  on connection-slot reuse. Invalid/orphan messages cannot advance the cursor.
+- Regression: real public fork records exercise the actual node message
+  handler, duplicate-only progress without chain-count changes, weaker-branch
+  progress without tip changes, malformed input, and connection reset.
+- Status: fixed and live-verified on all five testnet nodes. Host and image
+  suites passed 676/676 top-level checks, including the forked regression.
+  After restart with the fix, a subsequent live heal converged all five nodes
+  at height 9402 with identical full tip, balances, nonces, and science totals;
+  the independent Go explorer matched that exact checkpoint. The losing
+  branch's transfer was recovered once at height 9349 without resubmission.
+  No node restarted during that heal. Full Gate 2 remains pending its remaining
+  acceptance checks; see `deploy/testnet-five/GATE2.md` and the public evidence.
+
+### BUG-041: Zero-duty pause still permits slow mining
+
+- Severity: operational safety / release blocker for advertised pause behavior.
+- Area: miner throttling, battery pause, sensor outage and hard thermal stop.
+- Observed during Craig's ASUS school trip on 2026-09-29: status reported
+  `duty=0% (on battery, paused)` but approximately 100,000 candidates/second
+  continued to be scanned. The isolated ASUS branch advanced from 22775 to
+  22783. The Gate 3 isolated lab also mined a new valid share with duty set to
+  zero; this was valid chain growth, not persistence corruption.
+- Cause: `throttle_tick()` sleeps 250–500 ms at zero duty, then returns.
+  Both mining callbacks check only shutdown/generation afterward, so they
+  admit another search batch despite the controller remaining at zero duty.
+- Fix: both mining lanes wait for positive duty, checking shutdown and job
+  generation after bounded sleeps. The wait also precedes range reservation.
+- Regression: real worker pause/resume, unchanged search cursors, current-job
+  resume and prompt shutdown; fails against the original worker code. Host,
+  native x86 and ARM image suites pass 732/732 checks. All three sampler pause
+  causes passed an isolated integration test; mini passed a live real-sensor
+  outage with zero scans and science work while peer sync continued.
+- Status: fixed, deployed and verified on all six nodes, 2026-09-30. All six
+  canonical paths agree at 45774; a full offline C replay matches the Go
+  explorer's balances, nonces and all ledger totals at that exact tip. See
+  [verification report](../deploy/testnet-five/BUG041.md).
+
 ## Protocol Decisions / Limitations
 
 ### DESIGN-001: State-invalid transactions remain in blocks
