@@ -441,6 +441,79 @@ static void t_amount(void) {
     fmt_amount(s, 150000001ULL); CHECK(!strcmp(s, "1.50000001"));
 }
 
+/* Recipient addresses are arbitrary bytes. Shared prefixes must not create
+ * a contiguous collision cluster that makes every ledger replay quadratic. */
+static void t_ledger_index_collisions(void) {
+    ledger_t state = {0};
+    int good = 1;
+    for (unsigned i = 0; i < 4096; i++) {
+        uint8_t address[32] = {0};
+        address[30] = (uint8_t)(i >> 8); address[31] = (uint8_t)i;
+        if (ledger_credit(&state, address, i + 1)) { good = 0; break; }
+    }
+    for (unsigned i = 0; good && i < 4096; i++) {
+        uint8_t address[32] = {0};
+        address[30] = (uint8_t)(i >> 8); address[31] = (uint8_t)i;
+        const acct_t *a = ledger_acct(&state, address, 0);
+        if (!a || a->amt != i + 1) good = 0;
+    }
+    unsigned run = 0, longest = 0;
+    for (unsigned i = 0; i < 2 * state.icap; i++) {
+        run = state.idx[i % state.icap] < 0 ? 0 : run + 1;
+        if (run > longest) longest = run;
+    }
+    CHECK(good && state.n == 4096);
+    CHECK(longest < 256); /* old prefix-only index creates a 4096-entry run */
+    ledger_free(&state);
+}
+
+/* Conservation and atomic rejection across sender/recipient/miner aliases,
+ * zero transfers, stale/max nonces, and values at the uint64 boundary. */
+static void t_ledger_conservation(void) {
+    uint64_t rng = 0x9bdec71148a320f5ULL;
+    int good = 1, accepted = 0, rejected = 0;
+    for (int trial = 0; trial < 4096 && good; trial++) {
+        ledger_t state = {0};
+        uint8_t addresses[3][32] = {{1}, {2}, {3}};
+        uint64_t before[3], nonces[3];
+        __int128 want[3], total = 0;
+        for (int i = 0; i < 3; i++) {
+            rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+            before[i] = trial % 8 == 0 ? UINT64_MAX - (uint64_t)i : rng;
+            nonces[i] = trial % 13 == 0 ? UINT64_MAX : (uint64_t)trial;
+            if (ledger_credit(&state, addresses[i], before[i])) { good = 0; break; }
+            ledger_acct(&state, addresses[i], 0)->nonce = nonces[i];
+            want[i] = before[i]; total += before[i];
+        }
+        if (!good) { ledger_free(&state); break; }
+        int from = trial % 3, to = trial / 3 % 3, miner = trial / 9 % 3;
+        tx_t tx = {0};
+        memcpy(tx.from, addresses[from], 32); memcpy(tx.to, addresses[to], 32);
+        tx.amount = trial % 11 == 0 ? 0 : before[from] / 2;
+        tx.fee = trial % 7 == 0 ? UINT64_MAX : before[from] / 4;
+        tx.nonce = nonces[from] ^ (trial % 5 == 0 ? 1 : 0);
+        __int128 debit = (__int128)tx.amount + tx.fee;
+        int valid = tx.amount && tx.nonce == nonces[from] && nonces[from] != UINT64_MAX &&
+                    debit <= before[from];
+        want[from] -= debit; want[to] += tx.amount; want[miner] += tx.fee;
+        for (int i = 0; i < 3; i++) valid &= want[i] >= 0 && want[i] <= UINT64_MAX;
+        int r = ledger_apply_tx(&state, &tx, addresses[miner]);
+        if (r != (valid ? 0 : LEDGER_INVALID)) good = 0;
+        __int128 after = 0;
+        for (int i = 0; i < 3; i++) {
+            const acct_t *a = ledger_acct(&state, addresses[i], 0);
+            if (a->amt != (valid ? (uint64_t)want[i] : before[i]) ||
+                a->nonce != nonces[i] + (uint64_t)(valid && i == from)) good = 0;
+            after += a->amt;
+        }
+        if (after != total || state.txs != (uint64_t)valid) good = 0;
+        accepted += valid; rejected += !valid;
+        ledger_free(&state);
+    }
+    CHECK(good);
+    CHECK(accepted > 0 && rejected > 0);
+}
+
 /* Chain id: the signing domain must separate networks, so a transaction signed
  * for one chain cannot be replayed on another. Tags cross-checked against
  * hashlib in tests/crosscheck.py territory; pinned here to catch param drift. */
@@ -2370,6 +2443,11 @@ int main(int argc, char **argv) {
         }
         return 0;
     }
+    if (argc > 1 && !strcmp(argv[1], "--ledger-index")) {
+        t_ledger_index_collisions();
+        printf("%d/%d ledger index checks passed\n", runs - fails, runs);
+        return fails != 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "--miner-backpressure")) {
         t_miner_backpressure();
         printf("%d/%d backpressure checks passed\n", runs - fails, runs);
@@ -2382,7 +2460,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_miner_zero_duty(); t_miner_backpressure(); t_host_temperature(); t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_sync_fork_cursor(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_sci_pipe_region_switch(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cold_payout_node(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
+    t_miner_zero_duty(); t_miner_backpressure(); t_host_temperature(); t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_ledger_index_collisions(); t_ledger_conservation(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_sync_fork_cursor(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_sci_pipe_region_switch(); t_tx(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cold_payout_node(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;
