@@ -1,6 +1,7 @@
 #ifndef NODE_H
 #define NODE_H
 #include <stdint.h>
+#include "science.h"
 int node_run(void);
 int bench_run(unsigned bits, int secs, int threads);
 
@@ -17,4 +18,7 @@ uint64_t node_next_share_time_vector(uint64_t parent_time, int64_t now);
 int node_sci_recoverable_vector(uint32_t entry_height, uint32_t next_height,
                                 const uint8_t anchor[32], const uint8_t miner[32],
                                 uint64_t k, uint32_t g);
+/* Test-only: drain queued worker results in an explicitly selected region. */
+int node_sci_drain_vector(int fd, const uint8_t anchor[32], const uint8_t miner[32],
+                          sci_t out[16]);
 #endif

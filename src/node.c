@@ -336,7 +336,10 @@ static void drain_found(int fd) {
         for (int i = 0; i < TMPL_RING; i++) {
             if (memcmp(T[i].root, s.tx_root, 32)) continue;
             size_t l = share_msg(msg, &s, T[i].txs, T[i].ntx, T[i].sci, T[i].nsci);
-            chain_submit(msg, l, miss, now_sec());
+            int r = chain_submit(msg, l, miss, now_sec());
+            if (r == CH_INVALID)
+                log_msg("mined share rejected: h=%u bits=%u txs=%d sci=%d",
+                        s.height, s.bits, T[i].ntx, T[i].nsci);
             break;
         }
     }
@@ -347,15 +350,38 @@ static void drain_found(int fd) {
  * only needs to land in the pool and mark the next template dirty. */
 static void drain_sci(int fd) {
     uint8_t raw[SCI_SIZE];
+    bn base;
+    sci_region(&base, sci_anchor_cur, payout);
     while (read(fd, raw, SCI_SIZE) == SCI_SIZE) {
         sci_t c;
         sci_deser(&c, raw);
         int dup = 0;
         for (int i = 0; i < nscipool; i++) if (scipool[i].k == c.k) { dup = 1; break; }
         if (dup || nscipool >= SCI_POOL) continue;
+        /* A completed result may already be in the pipe when the epoch or
+         * reorg anchor changes. Clearing the pool and cancelling the worker
+         * cannot retract that record: validate against the active region
+         * before it can poison every subsequent mining template. */
+        if (sci_check(&base, &c)) continue;
         scipool[nscipool++] = c;
         job_dirty = 1;
     }
+}
+
+/* Test-only: feed the real worker pipe reader after installing a new region.
+ * No miners run in this process; production never calls this entry point. */
+int node_sci_drain_vector(int fd, const uint8_t anchor[32], const uint8_t miner[32],
+                          sci_t out[16]) {
+    memcpy(sci_anchor_cur, anchor, 32);
+    memcpy(payout, miner, 32);
+    nscipool = 0;
+    job_dirty = 0;
+    drain_sci(fd);
+    int n = nscipool;
+    memcpy(out, scipool, (size_t)n * sizeof *out);
+    nscipool = 0;
+    job_dirty = 0;
+    return n;
 }
 
 int node_run(void) {
