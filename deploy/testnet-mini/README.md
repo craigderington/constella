@@ -6,6 +6,18 @@ Docker context: `colima-constella-gate`. Compose project: `constella-gate-mini`.
 Node: `constella-gate-mini-node6-1`, advertised as `192.168.1.123:17046`.
 No explorer or database is deployed on mini.
 
+On 2026-10-01, Craig authorized adding `3.150.62.26:7043` as an explicit
+outbound bootstrap peer. The original LAN peers remain configured. Only node6
+was recreated, using its existing image and `constella-gate-mini_node6` volume.
+It reloaded 75,031 records to height 68,105, resumed mining with the same payout
+address, and an established TCP connection to Lightsail was verified inside
+the node's network namespace. Later status reached 68,262 with one authenticated
+peer, zero orphans, 57 C and no restart/OOM. This verifies mini's connection,
+not completion of the cloud node's catch-up or explorer ledger checks.
+The original remote Compose file is retained beside it as
+`compose.yml.before-lightsail-20261001`; restore that file and recreate only
+node6 to roll back the peer configuration without removing its volume.
+
 Remote source/deployment root: `/Users/cd/constella-release-gate`. Preserve
 `constella-gate-mini_node6`; its wallet and peer identity were generated there.
 Never copy those private keys into evidence. Node6's public payout address:
