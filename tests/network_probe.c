@@ -1,12 +1,16 @@
 /* Disposable protocol lab. The clock model calls the real retarget/template
  * code on synthetic ancestry; it does not claim to mine a live attack. */
+#define accept chain_accept
 #include "../src/chain.c"
+#undef accept
 #include "node.h"
 #include "net.h"
 #include "sieve.h"
 #include "wallet.h"
 #include "vendor/monocypher.h"
 #include <inttypes.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 
 static void field(const char *name, const uint8_t *p, size_t n) {
     char out[601];
@@ -124,7 +128,55 @@ static int clock_model(void) {
     return worst[1] <= BASE + 128 || worst[0] > BASE + 64 || longest[0] > 12;
 }
 
+static int sync_fixture(const char *host, const char *fixture) {
+    FILE *file = fopen(fixture, "rb"); if (!file) return 1;
+    wallet_t identity; uint8_t seed[32] = {0x71}; wallet_from_seed(&identity, seed);
+    net_client_t client;
+    if (net_client_open(&client, host, &identity)) { fclose(file); return 1; }
+    crypto_wipe(&identity, sizeof identity);
+    uint8_t locator[32] = {0}; int failed = net_client_send(&client, MSG_GETCHAIN, locator, 32);
+    for (int i = 0; i < 28 && !failed; i++) {
+        uint8_t length[2], expected[NET_MAXPAY], actual[NET_MAXPAY]; uint16_t got;
+        if (fread(length, 1, 2, file) != 2) { failed = 1; break; }
+        size_t want = (size_t)length[0] | (size_t)length[1] << 8;
+        if (want > sizeof expected || fread(expected, 1, want, file) != want ||
+            net_client_wait(&client, MSG_SHARE, actual, &got) || got != want || memcmp(actual, expected, want)) failed = 1;
+    }
+    fclose(file); net_client_close(&client); return failed;
+}
+
+/* Authenticated flood/slow reader for the disposable localhost lab. */
+static int flood(const char *host, const char *mode) {
+    wallet_t identity; uint8_t seed[32] = {0x61}; wallet_from_seed(&identity, seed);
+    tx_t tx = {0}; memcpy(tx.from, identity.pk, 32); tx.to[0] = 2; tx.amount = 1;
+    tx_sign(&tx, identity.sk);
+    uint8_t raw[TX_SIZE] = {0};
+    int transaction = !strcmp(mode, "tx");
+    if (transaction) tx_ser(raw, &tx);
+    unsigned connections = 0, sent = 0;
+    uint64_t end = now_ns() + 6000000000ULL;
+    while (now_ns() < end) {
+        net_client_t client;
+        if (net_client_open(&client, host, &identity)) continue;
+        connections++;
+        struct timeval timeout = {0, 200000};
+        setsockopt(client.fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
+        /* Never read the responses: exercise the bounded transmit queue. */
+        for (unsigned i = 0; i < 10000 && now_ns() < end; i++) {
+            if (net_client_send(&client, transaction ? MSG_TX : MSG_GETCHAIN,
+                                raw, transaction ? TX_SIZE : 32)) break;
+            sent++;
+        }
+        net_client_close(&client);
+    }
+    crypto_wipe(&identity, sizeof identity);
+    printf("{\"connections\":%u,\"sent\":%u}\n", connections, sent);
+    return connections && sent ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
+    if (argc == 4 && !strcmp(argv[1], "sync-fixture")) return sync_fixture(argv[2], argv[3]);
+    if (argc == 4 && !strcmp(argv[1], "flood")) return flood(argv[2], argv[3]);
     if (argc == 2 && !strcmp(argv[1], "info")) return info();
     if (argc == 2 && !strcmp(argv[1], "mine")) return mine();
     if (argc == 2 && !strcmp(argv[1], "fork-fixture")) return fork_fixture();
@@ -153,6 +205,7 @@ int main(int argc, char **argv) {
         uint8_t account[32] = {0}, response[NET_MAXPAY]; uint16_t n;
         result = net_client_send(&client, MSG_GETACCT, account, 32) ||
                  net_client_wait(&client, MSG_ACCT, response, &n) || n != 28;
+        if (!result) { char encoded[57]; hex_enc(encoded, response, 28); puts(encoded); }
         net_client_close(&client); return result != 0;
     }
     return 2;

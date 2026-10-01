@@ -560,7 +560,7 @@ int node_run(void) {
         pf[0].fd = pfd[0]; pf[0].events = POLLIN;
         pf[1].fd = spfd[0]; pf[1].events = POLLIN;
         int n = net_pollfds(pf + 2, 62);
-        if (poll(pf, (nfds_t)n + 2, 500) < 0 && !running) break;
+        if (poll(pf, (nfds_t)n + 2, net_poll_timeout(500)) < 0 && !running) break;
         if (pf[0].revents & POLLIN) drain_found(pfd[0]);
         if (pf[1].revents & POLLIN) drain_sci(spfd[0]);
         net_process(pf + 2, n);

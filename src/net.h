@@ -115,6 +115,8 @@ typedef void (*net_conn_fn)(int peer);
 int  net_init(uint16_t port, const char *peers_csv, const wallet_t *id,
               net_msg_fn on_msg, net_conn_fn on_conn);
 int  net_pollfds(struct pollfd *pf, int max);
+/* Use this timeout with the poll set: handles buffered frames and service pauses. */
+int  net_poll_timeout(int maximum_ms);
 void net_process(const struct pollfd *pf, int n);
 void net_send(int peer, uint8_t type, const void *p, uint16_t len);
 void net_broadcast(int except, uint8_t type, const void *p, uint16_t len);
