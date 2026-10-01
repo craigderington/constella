@@ -1,0 +1,164 @@
+{
+  "date": "2026-09-30",
+  "scope": "Disposable localhost nodes only; no deployment or existing service changes",
+  "ordinary_flood": {
+    "network_legacy.h": {
+      "healthy_query_and_sync_cycles": 9,
+      "max_cycle_seconds": 0.5719,
+      "node_cpu_fraction_one_core": 0.2184,
+      "measurement_seconds": 4.1213,
+      "connection_churn": 440,
+      "attackers": [
+        {
+          "connections": 19,
+          "sent": 189504
+        },
+        {
+          "connections": 18,
+          "sent": 170000
+        },
+        {
+          "connections": 19,
+          "sent": 186510
+        }
+      ]
+    },
+    "network_testnet_v4.h": {
+      "healthy_query_and_sync_cycles": 7,
+      "max_cycle_seconds": 1.4873,
+      "node_cpu_fraction_one_core": 0.1823,
+      "measurement_seconds": 4.3873,
+      "connection_churn": 493,
+      "attackers": [
+        {
+          "connections": 18,
+          "sent": 170000
+        },
+        {
+          "connections": 18,
+          "sent": 170000
+        },
+        {
+          "connections": 23,
+          "sent": 220000
+        }
+      ]
+    },
+    "network_mainnet_v4.h": {
+      "healthy_query_and_sync_cycles": 9,
+      "max_cycle_seconds": 0.5624,
+      "node_cpu_fraction_one_core": 0.1908,
+      "measurement_seconds": 4.1395,
+      "connection_churn": 418,
+      "attackers": [
+        {
+          "connections": 21,
+          "sent": 200000
+        },
+        {
+          "connections": 23,
+          "sent": 220000
+        },
+        {
+          "connections": 27,
+          "sent": 260000
+        }
+      ]
+    }
+  },
+  "sanitized_flood": {
+    "network_legacy.h": {
+      "healthy_query_and_sync_cycles": 4,
+      "max_cycle_seconds": 2.6831,
+      "node_cpu_fraction_one_core": 0.3257,
+      "measurement_seconds": 4.3604,
+      "connection_churn": 444,
+      "attackers": [
+        {
+          "connections": 11,
+          "sent": 107270
+        },
+        {
+          "connections": 17,
+          "sent": 160000
+        },
+        {
+          "connections": 14,
+          "sent": 138928
+        }
+      ]
+    },
+    "network_testnet_v4.h": {
+      "healthy_query_and_sync_cycles": 5,
+      "max_cycle_seconds": 1.5307,
+      "node_cpu_fraction_one_core": 0.2885,
+      "measurement_seconds": 4.5066,
+      "connection_churn": 455,
+      "attackers": [
+        {
+          "connections": 14,
+          "sent": 131055
+        },
+        {
+          "connections": 7,
+          "sent": 60000
+        },
+        {
+          "connections": 10,
+          "sent": 98029
+        }
+      ]
+    },
+    "network_mainnet_v4.h": {
+      "healthy_query_and_sync_cycles": 7,
+      "max_cycle_seconds": 0.881,
+      "node_cpu_fraction_one_core": 0.2868,
+      "measurement_seconds": 4.4282,
+      "connection_churn": 429,
+      "attackers": [
+        {
+          "connections": 10,
+          "sent": 90000
+        },
+        {
+          "connections": 16,
+          "sent": 154017
+        },
+        {
+          "connections": 12,
+          "sent": 113693
+        }
+      ]
+    }
+  },
+  "checks": {
+    "shares_transactions_replay": "all ordered profile pairs passed",
+    "wire": "all ordered pairs direct and magic-rewriting proxy passed",
+    "go": "full race suite and C/Go interoperability passed for all profiles",
+    "shutdown": "all disposable nodes exited cleanly"
+  },
+  "additional_checks": [
+    "757/757 legacy C checks, thermal simulation, storage-fault harness and Python cross-checks passed",
+    "Encrypted scheduler regressions passed normally and under Clang ASAN/UBSAN",
+    "Three-profile protocol/flood lab passed normally and under Clang ASAN/UBSAN",
+    "Removing receive-frame quantum in disposable copy fails fairness regression",
+    "Node Docker image embedded suite passed; audit image only, no container replacement"
+  ],
+  "size_bytes": {
+    "host_legacy_and_each_candidate": 161560,
+    "limit": 196608
+  },
+  "acceptance_thresholds": {
+    "max_query_plus_fixture_sync_seconds": 3,
+    "max_node_cpu_fraction_of_one_core": 0.8
+  },
+  "limitations": [
+    "28-share canonical fixture, not a 90-day dataset",
+    "Six-second attack clients; CPU/latency sampled for at least four seconds",
+    "Sent frames are client writes, not confirmed validations",
+    "No maximum-cost science share or cascading-orphan flood",
+    "No ARM candidate run or database/HTTP load test",
+    "No sustained Sybil/eclipse resistance claim",
+    "No preemption inside a callback, blocking DNS or full ledger rebuild"
+  ]
+}
