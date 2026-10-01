@@ -1,0 +1,79 @@
+# Operator-run, existing v3 testnet. No builds or public database listener.
+name: constella-cloud-testnet
+x-runtime: &runtime
+  restart: unless-stopped
+  stop_grace_period: 60s
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: '3'}
+
+services:
+  node:
+    <<: *runtime
+    image: ${NODE_IMAGE:?set the tested node image}
+    pull_policy: never
+    read_only: true
+    tmpfs: ['/tmp:size=32m,mode=1777']
+    pids_limit: 32
+    cpus: ${NODE_CPUS:?size against available host CPU}
+    mem_limit: ${NODE_MEMORY:?size against available host memory}
+    environment:
+      CONSTELLA_MINE: '0'
+      CONSTELLA_DATA: /data
+      CONSTELLA_PORT: '7043'
+      CONSTELLA_PRIVATE_NET: '0'
+      CONSTELLA_PEERS: ${NODE_PEERS:-}
+      CONSTELLA_ADVERTISE: ${NODE_ADVERTISE:?set the public endpoint}
+    ports: ['${P2P_BIND:-0.0.0.0}:${P2P_PORT:-7043}:7043']
+    volumes: [node-data:/data]
+    networks: [p2p]
+
+  postgres:
+    <<: *runtime
+    image: ${POSTGRES_IMAGE:?set the tested Postgres image}
+    pull_policy: never
+    # The official image changes to its postgres UID during entrypoint setup.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    pids_limit: 128
+    cpus: ${POSTGRES_CPUS:?size against available host CPU}
+    mem_limit: ${POSTGRES_MEMORY:?size against available host memory}
+    environment:
+      POSTGRES_USER: constella
+      POSTGRES_DB: explorer
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?generate a dedicated random password}
+    command: [postgres, -c, max_connections=40, -c, shared_buffers=64MB]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [ui]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U constella -d explorer']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  explorer:
+    <<: *runtime
+    image: ${EXPLORER_IMAGE:?set the tested explorer image}
+    pull_policy: never
+    read_only: true
+    tmpfs: ['/tmp:size=16m,mode=1777']
+    pids_limit: 128
+    cpus: ${EXPLORER_CPUS:?size against available host CPU}
+    mem_limit: ${EXPLORER_MEMORY:?size against available host memory}
+    environment:
+      EXPLORER_NODE: node:7043
+      EXPLORER_DB: postgres://constella:${POSTGRES_PASSWORD:?set password}@postgres:5432/explorer?sslmode=disable
+      EXPLORER_HTTP: ':3071'
+    ports: ['127.0.0.1:${EXPLORER_HTTP_PORT:-3071}:3071']
+    networks: [p2p, ui]
+    # Deliberately no node dependency: explorer/DB operations must not restart it.
+    depends_on:
+      postgres: {condition: service_healthy}
+
+networks:
+  p2p: {}
+  ui: {internal: true}
+volumes:
+  node-data: {}
+  pgdata: {}
