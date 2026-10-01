@@ -1,0 +1,36 @@
+# Homelab node7, existing v3 testnet. No explorer/DB or published host ports.
+name: constella-gate-nixos
+services:
+  node7:
+    image: constella:lightsail-testnet-20261001
+    pull_policy: never
+    restart: unless-stopped
+    stop_grace_period: 60s
+    cpus: 1.0
+    mem_limit: 1g
+    pids_limit: 64
+    read_only: true
+    tmpfs: ['/tmp:size=32m,mode=1777']
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      CONSTELLA_DATA: /data
+      CONSTELLA_PORT: '7043'
+      # Initial synchronization: enable only after matching the retained chain.
+      CONSTELLA_MINE: '0'
+      CONSTELLA_THREADS: '2'
+      CONSTELLA_DUTY: '50'
+      CONSTELLA_TEMP_MAX: '88'
+      CONSTELLA_BATTERY_PAUSE: '1'
+      # Explicit LAN bootstrap is allowed; private-address gossip stays filtered.
+      CONSTELLA_PRIVATE_NET: '0'
+      CONSTELLA_PEERS: '3.150.62.26:7043,192.168.1.123:17046'
+    volumes: [node7:/data]
+    networks: [p2p]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+networks:
+  p2p: {}
+volumes:
+  node7: {}
