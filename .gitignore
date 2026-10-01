@@ -16,3 +16,11 @@ web_session.txt
 *.key
 peers.dat
 test_peer_budget
+
+# Local agent guidance, documentation and tests.
+/AGENTS.md
+/agents.md
+/CLAUDE.md
+/claude.md
+/docs/
+/tests/
