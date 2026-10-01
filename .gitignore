@@ -24,3 +24,9 @@ test_peer_budget
 /claude.md
 /docs/
 /tests/
+
+# Generated audit/run evidence is retained locally, not versioned.
+**/evidence/
+*-evidence.json
+*-evidence.js
+evidence-*.json
