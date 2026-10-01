@@ -60,7 +60,7 @@ not independently validated merely by referencing them here.
 | F-27 | Common secret files, metadata and local artifacts excluded from Git/Docker contexts; this is not a repository-history secret scan. |
 | F-01 | Compatible timestamp recovery policy and 32-phase model added; live and repeated-adversary timestamp/retarget gate remains open. |
 | F-13, F-19 | Opt-in v4 candidate binds network and both identities, separates genesis/wire/transaction domains and data files. Local cross-profile lab added; current testnet preserved. Deployment, independent review and coordinated launch remain open. |
-| F-02, F-05, F-09, F-10, F-11, F-15, F-22, F-25 | Open network, queue, DNS, discovery and HTTP abuse/availability work; require adversarial integration tests. |
+| F-02, F-05, F-09, F-10, F-11, F-15, F-22, F-25 | Partial transport mitigation: bounded fair service, accepts and output with short mixed-flood probes. Single-callback cost, sustained abuse, queues, DNS, discovery and HTTP availability gates remain open; see peer-service-budgets.md. |
 | F-04, F-14 | Open full-history CPU/memory/SQL growth. One quadratic membership scan is removed; no claim that replay is now incremental. |
 | F-07, F-08 | Open cloud mining policy and template-result lifetime/job-churn behavior. |
 | F-12, F-16 | Open compiler/container hardening, dependency provenance/support and automated security checks. |
@@ -136,19 +136,18 @@ is not an independent signature-verifying security boundary.
 
 ### P1 — public peer resource exhaustion
 
-`src/net.c` bounds peers, queues, frame size, orphan storage and gossip, but
-authenticated peers can still request repeated `GETCHAIN` traversals and send
-expensive share/transaction validation work. Identity authentication does not
-make a newly generated identity trustworthy. The listener's accept loop also
-has no per-iteration accept budget. This review establishes missing budgets
-from source; it has not measured a successful remote denial of service.
+The local scheduler now bounds frame dispatch, output turns and accepts, rotates
+peer service, and uses measured per-peer/aggregate service pauses. Encrypted
+socket regressions and a short three-profile mixed-flood lab verify healthy
+account queries and exact fixture synchronization during abuse. See
+[peer-service-budgets.md](peer-service-budgets.md) for the policy, evidence and
+throughput tradeoff. These changes are not deployed.
 
-Required: bounded per-peer and global validation/service work with fairness
-and backpressure; isolated flood tests for handshakes, connection churn,
-`GETCHAIN`, malformed/valid costly shares, transactions, slow readers and
-Sybil identities. Under attack, healthy peers must still sync, the ledger
-must agree, shutdown must complete, and CPU/RAM/queue limits must hold.
-Trusted-network operation can reduce exposure while this work is completed.
+This partially addresses the resource gate. A single callback can still run
+past a slice: worst-case science validation, cascading orphan replay and full
+GETCHAIN path construction require further work. Blocking DNS, full ledger
+rebuilds and other work outside the scheduler remain unbounded by this policy.
+The short small-chain lab is not 90-day capacity or sustained Sybil evidence.
 
 Also test the separate audit's related source findings: orphan pool exhaustion
 with cheap unknown-parent work; mempool monopolization; blocking DNS and
