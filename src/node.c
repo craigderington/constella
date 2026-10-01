@@ -30,6 +30,7 @@ _Static_assert(ATOMIC_INT_LOCK_FREE == 2, "shutdown flag must be signal-safe");
 static atomic_int running = 1;
 static uint8_t payout[32];
 static int cur_src = -1, live, tip_dirty, job_dirty, failed;
+static int mining_enabled = 1;
 static uint64_t found;
 static ledger_t L;
 static tmpl_t T[TMPL_RING];
@@ -107,7 +108,7 @@ int node_sci_recoverable_vector(uint32_t entry_height, uint32_t next_height,
 }
 
 static void recover_side_claims(const int *path, int n, int total) {
-    if (!path || n < 1) return;
+    if (!mining_enabled || !path || n < 1) return;
     int tip = chain_tip();
     refresh_sci_region(tip);
     uint32_t active_epoch = sci_epoch_cur;
@@ -168,6 +169,7 @@ uint64_t node_next_share_time_vector(uint64_t parent_time, int64_t now) {
 }
 
 static void update_job(void) {
+    if (!mining_enabled) return;
     int tip = chain_tip();
     const entry_t *t = chain_entry(tip);
     refresh_sci_region(tip);
@@ -449,6 +451,14 @@ int node_run(void) {
     signal(SIGTERM, on_sig);
     signal(SIGPIPE, SIG_IGN);
 
+    const char *mine = getenv("CONSTELLA_MINE");
+    if (!mine) mine = "1";
+    if (strcmp(mine, "0") && strcmp(mine, "1")) {
+        log_msg("fatal: CONSTELLA_MINE must be 0 or 1");
+        return 1;
+    }
+    mining_enabled = !strcmp(mine, "1");
+
     const char *data = env("CONSTELLA_DATA", NETWORK_DATA_DIR);
     char keypath[512], idpath[512];
     snprintf(keypath, sizeof keypath, "%s/wallet.key", data);
@@ -469,11 +479,16 @@ int node_run(void) {
     addr_set_private(allow_private);
     if (allow_private)
         log_msg("p2p: PRIVATE TESTNET MODE - RFC1918 discovery enabled");
-    throttle_init(atoi(env("CONSTELLA_DUTY", "50")), atoi(env("CONSTELLA_TEMP_MAX", "0")),
-                  atoi(env("CONSTELLA_BATTERY_PAUSE", "1")));
-    throttle_start();
-    log_msg("throttle: sensor=%s cap=%dC target=%dC%s", throttle_sensor(), throttle_cap_c(),
-            throttle_target_c(), throttle_has_battery() ? " (laptop)" : "");
+    if (mining_enabled) {
+        throttle_init(atoi(env("CONSTELLA_DUTY", "50")), atoi(env("CONSTELLA_TEMP_MAX", "0")),
+                      atoi(env("CONSTELLA_BATTERY_PAUSE", "1")));
+        throttle_start();
+        log_msg("throttle: sensor=%s cap=%dC target=%dC%s", throttle_sensor(), throttle_cap_c(),
+                throttle_target_c(), throttle_has_battery() ? " (laptop)" : "");
+    } else {
+        threads = 0;
+        log_msg("mode: validation-only; mining and thermal sampler disabled");
+    }
 
     if (chain_init(data, on_accept)) { log_msg("fatal: cannot open data dir %s", data); return 1; }
 
@@ -494,7 +509,9 @@ int node_run(void) {
 
     const char *ov = getenv("CONSTELLA_ADDR");
     int wr = 0;
-    if (ov && *ov) {
+    if (!mining_enabled) {
+        memset(payout, 0, sizeof payout); /* no spending key is needed */
+    } else if (ov && *ov) {
         if (hex_dec(payout, 32, ov)) { log_msg("fatal: CONSTELLA_ADDR must be 64 hex chars"); return 1; }
     } else {
         wallet_t w;
@@ -521,7 +538,7 @@ int node_run(void) {
     hex_enc(nh, nid.pk, 32);
     nh[16] = 0;
     log_msg("constella: payout=%s%s threads=%d duty<=%d%% port=%d chain=%s node=%s", a,
-            wr == 1 ? " (new key)" : "", threads, atoi(env("CONSTELLA_DUTY", "50")), port, cid, nh);
+            wr == 1 ? " (new key)" : "", threads, mining_enabled ? atoi(env("CONSTELLA_DUTY", "50")) : 0, port, cid, nh);
     /* Printed after addr_load, so an operator seeing it at all is evidence
      * the peer table was loaded rather than silently left at zero. */
     log_msg("peers: known new=%d tried=%d", addr_count(0), addr_count(1));
@@ -546,7 +563,7 @@ int node_run(void) {
         if (net_advertise(adv)) log_msg("advertise: could not resolve %s; not advertising", adv);
         else log_msg("advertise: %s", adv);
     }
-    if (miner_start(threads, pfd[1], spfd[1], &running)) {
+    if (mining_enabled && miner_start(threads, pfd[1], spfd[1], &running)) {
         log_msg("fatal: cannot start miner workers");
         return 1;
     }
@@ -576,14 +593,15 @@ int node_run(void) {
         if (t >= t_status) {
             uint64_t sc = atomic_load(&miner_scanned);
             const entry_t *tp = chain_entry(chain_tip());
-            int tc = throttle_temp_c();
+            int tc = mining_enabled ? throttle_temp_c() : -1;
             char tid[9], tb[16];
             sh(tid, tp->id);
             if (tc < 0) snprintf(tb, sizeof tb, "n/a");
             else snprintf(tb, sizeof tb, "%dC/%dC", tc, throttle_target_c());
             log_msg("status: h=%u tip=%s bits=%u peers=%d mempool=%d orphans=%d duty=%d%% temp=%s (%s) found=%llu %.0f cand/s sci=%llu/%d",
                     tp->height, tid, chain_next_bits(chain_tip()), net_peers(), mempool_count(),
-                    chain_orphans(), throttle_duty(), tb, throttle_reason_str(),
+                    chain_orphans(), mining_enabled ? throttle_duty() : 0, tb,
+                    mining_enabled ? throttle_reason_str() : "validation-only",
                     (unsigned long long)found, (double)(sc - last_scan) / 30.0,
                     (unsigned long long)atomic_load(&miner_sci_found), nscipool);
             last_scan = sc;
@@ -591,7 +609,7 @@ int node_run(void) {
         }
     }
     log_msg("shutting down");
-    miner_stop();
+    if (mining_enabled) miner_stop();
     /* The bucket secret and both tables outlive this process. Rerolling the
      * secret on every restart would relearn `tried` from nothing each time,
      * which is the same eclipse exposure a fresh node has, every boot. */
