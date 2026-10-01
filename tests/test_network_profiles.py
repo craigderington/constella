@@ -16,6 +16,8 @@ import tempfile
 import threading
 import time
 
+from peer_flood import exercise
+
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests/fixtures"
 PROFILES = [
@@ -172,6 +174,8 @@ def main():
             for index, probe in enumerate(probes):
                 port = available_port(); ports.append(port)
                 data = lab / f"node-{index}"; data.mkdir()
+                fixture = FIXTURES / ("sync-fork.v3" if index == 0 else "sync-fork.testnet-v4" if index == 1 else "sync-fork.mainnet-v4")
+                (data / PROFILES[index][6]).write_bytes(fixture.read_bytes())
                 env = os.environ.copy()
                 for name in ("CONSTELLA_ADVERTISE", "CONSTELLA_KEY", "CONSTELLA_PRIVATE_NET"):
                     env.pop(name, None)
@@ -201,6 +205,11 @@ def main():
                         assert not thread.is_alive(), "proxy did not shut down"
             evidence["checks"]["wire"] = "all ordered pairs direct and magic-rewriting proxy passed"
             print("live C handshakes, encrypted account queries and magic-rewriting proxy: passed", flush=True)
+            evidence["peer_flood"] = {}
+            for index, profile in enumerate(PROFILES):
+                fixture = FIXTURES / ("sync-fork.v3" if index == 0 else "sync-fork.testnet-v4" if index == 1 else "sync-fork.mainnet-v4")
+                evidence["peer_flood"][profile[0]] = exercise(probes[index], nodes[index], ports[index], fixture)
+                print(f"mixed flood with healthy account queries and full fixture sync: {profile[0]} passed", flush=True)
             for index, profile in enumerate(PROFILES):
                 env = os.environ.copy(); env["CONSTELLA_TEST_PEER"] = f"127.0.0.1:{ports[index]}"
                 env.pop("EXPLORER_TEST_DB", None)  # this lab never uses a database

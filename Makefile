@@ -47,7 +47,13 @@ unit: constella test_constella thermal_sim
 	CONSTELLA_CI=1 ./test_constella
 	./thermal_sim
 
-test: unit gate-test storage-test
+test_peer_budget: $(CORE) tests/test_peer_budget.c src/*.h
+	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/net.c,$(CORE)) tests/test_peer_budget.c $(LDFLAGS)
+
+peer-test: test_peer_budget
+	./test_peer_budget
+
+test: unit gate-test storage-test peer-test
 	python3 tests/crosscheck.py ./test_constella
 
 size: constella
@@ -73,7 +79,7 @@ constella-mainnet-v4: $(CORE) $(APP) src/*.h
 	$(CC) $(CFLAGS) -DCONSTELLA_NETWORK=2 -o $@ $(CORE) $(APP) $(LDFLAGS)
 
 protocol-test:
-	python3 tests/test_network_profiles.py
+	python3 -B tests/test_network_profiles.py
 
 candidate-build: constella-testnet-v4 constella-mainnet-v4
 	cd explorer && CGO_ENABLED=0 go build -mod=vendor -tags protocolv4 -trimpath -ldflags="-s -w" -o ../constella-explorer-testnet-v4 ./cmd/explorer
@@ -83,7 +89,7 @@ candidate-build: constella-testnet-v4 constella-mainnet-v4
 	  test $$sz -le $(SIZE_MAX_BYTES) || exit 1; done
 
 clean:
-	rm -f constella test_constella thermal_sim constella-explorer gate_snapshot test_chain_storage bench_ledger \
+	rm -f constella test_constella thermal_sim constella-explorer gate_snapshot test_chain_storage bench_ledger test_peer_budget \
 	  constella-testnet-v4 constella-mainnet-v4 constella-explorer-testnet-v4 constella-explorer-mainnet-v4
 
-.PHONY: all fast unit test size explorer explorer-test gate-test storage-test clean protocol-test candidate-build
+.PHONY: all fast unit test size explorer explorer-test gate-test storage-test clean protocol-test candidate-build peer-test

@@ -23,6 +23,14 @@
 #define RXCAP     8192
 #define TXMAX     (4u << 20)
 #define RX_TIMEOUT 30
+/* Local service policy, not consensus. Charge monotonic elapsed work so slow
+ * validation/storage receives backpressure too. One callback is not preemptible. */
+#define READ_FRAMES 4
+#define READ_SLICE_NS 5000000ULL
+#define TURN_NS 20000000ULL
+#define WRITE_SLICE (64u << 10)
+#define ACCEPT_BATCH 4
+#define ACCEPT_PAUSE_NS 50000000ULL
 #define HDR       NET_HDR
 #define MAXPAY    (NET_MAXPAY + 16)
 #define CONNECT_TIMEOUT 10
@@ -52,6 +60,7 @@ typedef struct {
 	uint8_t rx[RXCAP];
 	int rxn;
 	int64_t rx_at, up_at;
+    uint64_t read_after;
     uint8_t *tx;
     size_t txn, txcap;
 	/* Handshake frames get their own queue. They are the only thing allowed
@@ -91,6 +100,8 @@ typedef struct {
 	uint64_t born;
 } peer_t;
 
+static int buffered(const peer_t *p);
+
 typedef struct { char host[128], port[8]; int peer, fallback; int64_t next; } seed_t;
 
 static peer_t P[MAX_PEERS];
@@ -101,6 +112,8 @@ static net_conn_fn cb_conn;
 static int n_inbound;
 static wallet_t node_id;
 static uint64_t attempt_ctr, conn_ctr;
+static uint64_t work_after, accept_after;
+static int next_peer;
 static int64_t out_next, fallback_at;
 /* This node's own address, so outbound selection never picks it (Review
  * Focus 3). All-zero means "not known yet", and costs no separate flag: an
@@ -371,11 +384,14 @@ static void flush(int i) {
         p->hs_txn -= (int)w;
     }
     if (!p->auth_ready) return;                 /* application traffic waits */
-    while (p->txn) {
-        ssize_t w = send(p->fd, p->tx, p->txn, MSG_NOSIGNAL);
+    size_t remaining = WRITE_SLICE;
+    while (p->txn && remaining) {
+        size_t amount = p->txn < remaining ? p->txn : remaining;
+        ssize_t w = send(p->fd, p->tx, amount, MSG_NOSIGNAL);
 		if (w <= 0) { if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return; drop(i); return; }
         memmove(p->tx, p->tx + w, p->txn - (size_t)w);
         p->txn -= (size_t)w;
+        remaining -= (size_t)w;
     }
 }
 
@@ -385,7 +401,8 @@ void net_send(int i, uint8_t type, const void *pay, uint16_t len) {
     int r = p->auth_ready ? append_encrypted(p, type, pay, len) :
             append_plain(p, type, pay, len);
     if (r) { drop(i); return; }
-    flush(i);
+    /* Application output is drained once per peer turn, never recursively
+     * inside a GETCHAIN response or a broadcast callback. */
 }
 
 void net_broadcast(int except, uint8_t type, const void *pay, uint16_t len) {
@@ -802,7 +819,8 @@ void net_tick(void) {
 	for (int i = 0; i < MAX_PEERS; i++) {
 		if (P[i].state == P_CONNECTING && t - P[i].up_at > CONNECT_TIMEOUT) { drop(i); continue; }
 		if (P[i].state == P_UP &&
-			((P[i].rxn && P[i].rx_at && t - P[i].rx_at > RX_TIMEOUT) ||
+			((P[i].rxn && !buffered(&P[i]) && P[i].rx_at &&
+              now_ns() >= P[i].read_after && t - P[i].rx_at > RX_TIMEOUT) ||
 			 (!P[i].hello && P[i].up_at && t - P[i].up_at > 10)))
 			drop(i);
 	}
@@ -1178,23 +1196,55 @@ void net_stop(void) {
     out_next = 0;
     fallback_at = 0;
     conn_ctr = 0;
+    work_after = accept_after = 0; next_peer = 0;
     memset(self_ip, 0, sizeof self_ip);
     self_port = 0;
 }
 
+/* Complete buffered frames must be serviced even when the kernel has no more
+ * bytes to report. Malformed headers count as ready so rejection cannot stall. */
+static int buffered(const peer_t *p) {
+    if (p->rxn < HDR) return 0;
+    uint16_t len = (uint16_t)(p->rx[5] | p->rx[6] << 8);
+    return len > MAXPAY || p->rxn >= HDR + len;
+}
+
+static int until_ms(uint64_t deadline, uint64_t now, int maximum) {
+    if (deadline <= now) return 0;
+    uint64_t ms = (deadline - now + 999999) / 1000000;
+    return ms < (uint64_t)maximum ? (int)ms : maximum;
+}
+
+int net_poll_timeout(int maximum) {
+    uint64_t now = now_ns();
+    if (now < work_after) return until_ms(work_after, now, maximum);
+    int wait = maximum;
+    if (now < accept_after) wait = until_ms(accept_after, now, wait);
+    for (int i = 0; i < MAX_PEERS; i++) {
+        if (P[i].state != P_UP) continue;
+        if (now < P[i].read_after || buffered(&P[i]))
+            wait = until_ms(P[i].read_after, now, wait);
+    }
+    return wait;
+}
+
 int net_pollfds(struct pollfd *pf, int max) {
     int n = 0;
-    pf[n].fd = lfd; pf[n].events = POLLIN; pmap[n++] = -1;
-    for (int i = 0; i < MAX_PEERS && n < max; i++) {
+    if (max <= 0) return 0;
+    uint64_t now = now_ns();
+    pf[n].fd = now >= work_after && now >= accept_after ? lfd : -1;
+    pf[n].events = POLLIN; pmap[n++] = -1;
+    for (int offset = 0; offset < MAX_PEERS && n < max; offset++) {
+        int i = (next_peer + offset) % MAX_PEERS;
         if (P[i].state == P_FREE) continue;
-        pf[n].fd = P[i].fd;
-        /* Application bytes queued before the handshake finishes are not
-         * sendable yet, so asking for POLLOUT on them spins the whole poll
-         * loop at 100%% for the length of a handshake. Ask only for what
-         * flush() would actually write. */
         int want_out = P[i].state == P_CONNECTING || P[i].hs_txn ||
                        (P[i].txn && P[i].auth_ready);
-        pf[n].events = (short)(POLLIN | (want_out ? POLLOUT : 0));
+        short events = now >= P[i].read_after ? POLLIN : 0;
+        if (want_out) events |= POLLOUT;
+        if (now < work_after) events = 0;
+        /* Negative fd suppresses HUP/ERR as well as readiness during a pause. */
+        pf[n].fd = events ? P[i].fd : -1;
+        pf[n].events = events;
         pmap[n++] = i;
     }
     return n;
@@ -1212,14 +1262,18 @@ static void gate_hint(int on_auth) {
             : "first frame was not HELLO");
 }
 
-static void readable(int i) {
+static void readable(int i, int receive) {
     peer_t *p = &P[i];
-    if (!p->rxn) p->rx_at = now_sec();
-    ssize_t r = recv(p->fd, p->rx + p->rxn, RXCAP - (size_t)p->rxn, 0);
-    if (r == 0 || (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) { drop(i); return; }
-    if (r < 0) return;
-    p->rxn += (int)r;
-    while (p->rxn >= HDR) {
+    uint64_t began = now_ns();
+    /* Drain complete buffered frames before another recv: EOF from a peer
+     * that half-closed its writer must not discard already received messages. */
+    if (receive && !buffered(p) && p->rxn < RXCAP) {
+        if (!p->rxn) p->rx_at = now_sec();
+        ssize_t r = recv(p->fd, p->rx + p->rxn, RXCAP - (size_t)p->rxn, 0);
+        if (r == 0 || (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) { drop(i); return; }
+        if (r > 0) p->rxn += (int)r;
+    }
+    for (int frames = 0; frames < READ_FRAMES && p->rxn >= HDR; frames++) {
         uint32_t m = (uint32_t)p->rx[0] | (uint32_t)p->rx[1] << 8 |
                      (uint32_t)p->rx[2] << 16 | (uint32_t)p->rx[3] << 24;
         uint16_t len = (uint16_t)(p->rx[5] | p->rx[6] << 8);
@@ -1254,44 +1308,67 @@ static void readable(int i) {
         if (P[i].state != P_UP) return;              /* dropped during callback */
         memmove(p->rx, p->rx + HDR + len, (size_t)(p->rxn - HDR - len));
         p->rxn -= HDR + len;
+        /* A completed frame resets the partial-frame timer. Our scheduling
+         * pause must not look like a peer withholding the rest of a frame. */
+        p->rx_at = p->rxn ? now_sec() : 0;
+        uint64_t ended = now_ns(), cost = ended - began;
+        if (cost < 100000) cost = 100000;
+        p->read_after = ended + cost * 4;  /* at most ~20% service per peer */
+        if (ended - began >= READ_SLICE_NS) break;
     }
     if (!p->rxn) p->rx_at = 0;
 }
 
 void net_process(const struct pollfd *pf, int n) {
+    uint64_t began = now_ns();
+    if (began < work_after) return;
+    int worked = 0;
+    /* Service existing peers before accepts can evict/reuse a mapped slot. */
     for (int k = 0; k < n; k++) {
-        if (!pf[k].revents) continue;
         int i = pmap[k];
-        if (i < 0) {
-            int fd;
-            struct sockaddr_storage remote;
-            socklen_t remote_len;
-            while (remote_len = sizeof remote,
-                   (fd = accept(lfd, (struct sockaddr *)&remote, &remote_len)) >= 0) {
-				uint8_t ip[16];
-				uint16_t port;
-				const uint8_t *ipp = sa_unpack((struct sockaddr *)&remote, ip, &port) ? NULL : ip;
-                nonblock(fd);
-                int pi = alloc_peer(fd, P_UP, -1, 1, ipp);
-                if (pi < 0 || peer_up(pi)) { if (pi >= 0) drop(pi); else close(fd); }
-            }
-            continue;
-        }
-        if (P[i].state == P_FREE) continue;
+        if (i < 0 || P[i].state == P_FREE || pf[k].fd != P[i].fd) continue;
+        if (now_ns() - began >= TURN_NS) break;
+        next_peer = (i + 1) % MAX_PEERS;
         if (P[i].state == P_CONNECTING) {
             int err = 0; socklen_t el = sizeof err;
             if (!(pf[k].revents & (POLLOUT | POLLERR | POLLHUP))) continue;
+            worked = 1;
             getsockopt(P[i].fd, SOL_SOCKET, SO_ERROR, &err, &el);
-			if (err) { drop(i); continue; }
-			P[i].state = P_UP;
-			P[i].up_at = now_sec();
-			if (peer_up(i)) drop(i);
+            if (err) { drop(i); continue; }
+            P[i].state = P_UP;
+            P[i].up_at = now_sec();
+            if (peer_up(i)) drop(i);
             continue;
         }
         if (pf[k].revents & (POLLERR | POLLHUP | POLLNVAL)) {
-            if (!(pf[k].revents & POLLIN)) { drop(i); continue; }
+            if (!(pf[k].revents & POLLIN) && !buffered(&P[i])) { drop(i); continue; }
         }
-        if (pf[k].revents & POLLOUT) flush(i);
-        if (P[i].state == P_UP && (pf[k].revents & POLLIN)) readable(i);
+        if (pf[k].revents & POLLOUT) { worked = 1; flush(i); }
+        if (P[i].state == P_UP && now_ns() >= P[i].read_after &&
+            ((pf[k].revents & POLLIN) || buffered(&P[i]))) {
+            worked = 1;
+            readable(i, (pf[k].revents & POLLIN) != 0);
+        }
     }
+    for (int k = 0; k < n; k++) {
+        if (pmap[k] >= 0 || !(pf[k].revents & POLLIN) || pf[k].fd != lfd ||
+            now_ns() < accept_after) continue;
+        /* Reserve this bounded batch even when existing peers used the whole
+         * slice, otherwise a flood could prevent any healthy newcomer joining. */
+        worked = 1;
+        accept_after = now_ns() + ACCEPT_PAUSE_NS;
+        for (int accepted = 0; accepted < ACCEPT_BATCH; accepted++) {
+            struct sockaddr_storage remote;
+            socklen_t remote_len = sizeof remote;
+            int fd = accept(lfd, (struct sockaddr *)&remote, &remote_len);
+            if (fd < 0) break;
+            uint8_t ip[16]; uint16_t port;
+            const uint8_t *ipp = sa_unpack((struct sockaddr *)&remote, ip, &port) ? NULL : ip;
+            nonblock(fd);
+            int pi = alloc_peer(fd, P_UP, -1, 1, ipp);
+            if (pi < 0 || peer_up(pi)) { if (pi >= 0) drop(pi); else close(fd); }
+        }
+    }
+    uint64_t ended = now_ns();
+    work_after = worked ? ended + (ended - began) : 0; /* ~50% aggregate service duty */
 }
