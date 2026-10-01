@@ -1,132 +1,132 @@
 {
-  "date": "2026-09-30",
+  "date": "2026-10-01",
   "scope": "Disposable localhost nodes only; no deployment or existing service changes",
   "ordinary_flood": {
     "network_legacy.h": {
-      "healthy_query_and_sync_cycles": 9,
-      "max_cycle_seconds": 0.5719,
-      "node_cpu_fraction_one_core": 0.2184,
-      "measurement_seconds": 4.1213,
-      "connection_churn": 440,
+      "healthy_query_and_sync_cycles": 5,
+      "max_cycle_seconds": 1.4401,
+      "node_cpu_fraction_one_core": 0.1759,
+      "measurement_seconds": 4.5481,
+      "connection_churn": 443,
       "attackers": [
         {
-          "connections": 19,
-          "sent": 189504
+          "connections": 14,
+          "sent": 130000
         },
         {
-          "connections": 18,
-          "sent": 170000
+          "connections": 16,
+          "sent": 150000
         },
         {
-          "connections": 19,
-          "sent": 186510
+          "connections": 21,
+          "sent": 200000
         }
       ]
     },
     "network_testnet_v4.h": {
-      "healthy_query_and_sync_cycles": 7,
-      "max_cycle_seconds": 1.4873,
-      "node_cpu_fraction_one_core": 0.1823,
-      "measurement_seconds": 4.3873,
-      "connection_churn": 493,
-      "attackers": [
-        {
-          "connections": 18,
-          "sent": 170000
-        },
-        {
-          "connections": 18,
-          "sent": 170000
-        },
-        {
-          "connections": 23,
-          "sent": 220000
-        }
-      ]
-    },
-    "network_mainnet_v4.h": {
       "healthy_query_and_sync_cycles": 9,
-      "max_cycle_seconds": 0.5624,
-      "node_cpu_fraction_one_core": 0.1908,
-      "measurement_seconds": 4.1395,
-      "connection_churn": 418,
+      "max_cycle_seconds": 0.5943,
+      "node_cpu_fraction_one_core": 0.1718,
+      "measurement_seconds": 4.2489,
+      "connection_churn": 437,
       "attackers": [
         {
           "connections": 21,
           "sent": 200000
         },
         {
-          "connections": 23,
-          "sent": 220000
+          "connections": 19,
+          "sent": 180000
         },
         {
-          "connections": 27,
-          "sent": 260000
+          "connections": 15,
+          "sent": 140000
+        }
+      ]
+    },
+    "network_mainnet_v4.h": {
+      "healthy_query_and_sync_cycles": 7,
+      "max_cycle_seconds": 1.4569,
+      "node_cpu_fraction_one_core": 0.1698,
+      "measurement_seconds": 4.0644,
+      "connection_churn": 441,
+      "attackers": [
+        {
+          "connections": 18,
+          "sent": 170000
+        },
+        {
+          "connections": 19,
+          "sent": 180000
+        },
+        {
+          "connections": 17,
+          "sent": 160089
         }
       ]
     }
   },
   "sanitized_flood": {
     "network_legacy.h": {
-      "healthy_query_and_sync_cycles": 4,
-      "max_cycle_seconds": 2.6831,
-      "node_cpu_fraction_one_core": 0.3257,
-      "measurement_seconds": 4.3604,
-      "connection_churn": 444,
+      "healthy_query_and_sync_cycles": 7,
+      "max_cycle_seconds": 0.9587,
+      "node_cpu_fraction_one_core": 0.2748,
+      "measurement_seconds": 4.2936,
+      "connection_churn": 409,
       "attackers": [
         {
-          "connections": 11,
-          "sent": 107270
+          "connections": 21,
+          "sent": 200000
         },
         {
-          "connections": 17,
-          "sent": 160000
+          "connections": 18,
+          "sent": 170000
         },
         {
-          "connections": 14,
-          "sent": 138928
+          "connections": 21,
+          "sent": 200000
         }
       ]
     },
     "network_testnet_v4.h": {
-      "healthy_query_and_sync_cycles": 5,
-      "max_cycle_seconds": 1.5307,
-      "node_cpu_fraction_one_core": 0.2885,
-      "measurement_seconds": 4.5066,
-      "connection_churn": 455,
+      "healthy_query_and_sync_cycles": 8,
+      "max_cycle_seconds": 0.7786,
+      "node_cpu_fraction_one_core": 0.2662,
+      "measurement_seconds": 4.4708,
+      "connection_churn": 446,
       "attackers": [
         {
-          "connections": 14,
-          "sent": 131055
+          "connections": 20,
+          "sent": 190000
         },
         {
-          "connections": 7,
-          "sent": 60000
+          "connections": 15,
+          "sent": 140000
         },
         {
-          "connections": 10,
-          "sent": 98029
+          "connections": 16,
+          "sent": 150000
         }
       ]
     },
     "network_mainnet_v4.h": {
-      "healthy_query_and_sync_cycles": 7,
-      "max_cycle_seconds": 0.881,
-      "node_cpu_fraction_one_core": 0.2868,
-      "measurement_seconds": 4.4282,
-      "connection_churn": 429,
+      "healthy_query_and_sync_cycles": 6,
+      "max_cycle_seconds": 1.4504,
+      "node_cpu_fraction_one_core": 0.2798,
+      "measurement_seconds": 4.5028,
+      "connection_churn": 431,
       "attackers": [
         {
-          "connections": 10,
-          "sent": 90000
+          "connections": 24,
+          "sent": 230000
         },
         {
-          "connections": 16,
-          "sent": 154017
+          "connections": 22,
+          "sent": 211817
         },
         {
           "connections": 12,
-          "sent": 113693
+          "sent": 110000
         }
       ]
     }
