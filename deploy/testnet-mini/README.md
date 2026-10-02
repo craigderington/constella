@@ -33,9 +33,9 @@ explorer is its stored history including side branches, not canonical height.
 
 The retained mini source still uses the old full-path membership scan during
 side-claim recovery. That scan is nested inside a traversal of stored history;
-the local source already contains the constant-time membership fix. Both
-versions also scan canonical history when checking spent science claims, and
-the local worker-result reader has no per-turn bound. These are confirmed
+the local source already contained the constant-time membership fix. At the
+incident baseline, both versions also scanned canonical history when checking
+spent science claims, and the worker-result reader had no per-turn bound. These are confirmed
 code paths consistent with delayed job refresh and accumulated sibling work;
 their individual contribution to this incident has not yet been profiled.
 Saved header timestamps show gradual difficulty reduction after the other
@@ -48,6 +48,56 @@ First validate a candidate against the saved history, bounded worker-output
 handling and side-claim recovery cost, then run a controlled mining canary.
 Craig alone operates the cloud instance. Generated evidence stays in the
 ignored local archive rather than Git.
+
+## Tested candidate — 2026-10-02 UTC
+
+Commits `3ebb778` and `e90f48b` prepare the compatible v3 repair. Worker readers
+consume at most 32 records per turn, yield immediately after a newly accepted
+tip, and discard local results whose parent is no longer the tip. Peer forks
+still pass through normal validation. Side-claim recovery rejects expired
+epochs before duplicate lookup and searches at most one 256-share epoch for
+spent claims. Payout arithmetic, proof validity and difficulty rules are unchanged.
+The per-turn record cap does not preempt one expensive validation call; full
+ledger replay and history retention remain separate scaling work.
+
+The new regression fails on both worker scheduling and recovery traversal
+before the fix and passes afterward. `make test` now includes it. Host and
+amd64/ARM Docker suites passed all 757 existing checks, new queue/recovery
+regressions, persistence, peer budgets, validator integration and Python
+cross-checks. The new regressions also passed ASAN/UBSAN (leak detection disabled
+for process-lifetime chain state). Image tests have external networking disabled.
+That exposed an additional seed-persistence bug: immediate `ENETUNREACH` lost a
+configured endpoint before it could enter `new`; endpoints now remain untried
+until authenticated, even when the initial route is unavailable.
+
+Candidate images (not deployed to the connected testnet):
+
+- `constella:burst-fix-amd64-20261002`: 165,712-byte binary.
+- `constella:burst-fix-arm64-20261002`: 181,984-byte binary, below 196,608 bytes.
+  Mini image ID: `sha256:1a9785495bb69df1644aa9d2b361e0bba6bf3bd44b22b303dda9769e0ed7eb01`.
+
+The local offline probe freshly validated all 306,218 saved records without
+repair, reproducing the exact 71,360 tip, 894 blocks, six transactions, six
+accounts and science totals reported by the independent explorer. Local proof
+replay took 2,262 seconds; the subsequent full ledger/recovery rebuild took
+0.227 seconds. These are measurements on this host, not capacity guarantees.
+
+An isolated ARM container used a copy of the same public history, the mini's
+real temperature publisher, two workers, 25% duty, one CPU, 512 MiB and
+`--network none`. After a 352-second validated startup it mined for 181 seconds:
+351 appended records were all consecutive parent/child extensions, with zero
+appended siblings or local rejections. It crossed both 71,425 and 71,681 science
+epoch boundaries; difficulty reached 352 after touching the 64 minimum. The
+entire original file prefix was preserved, no spending key was created, no
+OOM/restart occurred, and shutdown exited 0 in 0.12 seconds. The disposable
+container was removed; source, public history and logs remain under
+`/Users/cd/constella-release-gate/candidates/burst-fix-20261002`.
+
+The connected mini still uses its previous image at DUTY=0; Nixos is still
+validation-only. Next is a monitored rollout of this candidate to the existing
+mini, followed by connected tip/ledger and sustained-load checks before adding
+miners. The three-minute isolated canary does not establish overnight stability
+or 90-day capacity. No production command or Git push was performed.
 
 On 2026-10-01, Craig authorized adding `3.150.62.26:7043` as an explicit
 outbound bootstrap peer. The original LAN peers remain configured. Only node6
