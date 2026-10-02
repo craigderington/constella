@@ -6,6 +6,10 @@ Host `nixos` is x86_64, four logical CPUs, 31 GiB RAM and 843 GiB free root
 disk at provisioning. Clock synchronization was confirmed. Existing unrelated
 containers were left unchanged.
 
+Current mode: mining enabled, two workers, **75% duty cap**, one-CPU container
+quota and 1 GiB memory limit. Craig requested the increase from 25% on
+2026-10-02. The duty cap does not override the aggregate one-CPU quota.
+
 Deployment: `/home/cd/constella-homelab/compose.yml` on nixos.
 Project: `constella-gate-nixos`; container: `constella-gate-nixos-node7-1`;
 data volume: `constella-gate-nixos_node7`. No host ports are published.
@@ -49,7 +53,7 @@ This includes commits `3ebb778` and `e90f48b`; see the mini README for the full
 regression, saved-history replay and isolated ARM canary results. This is the
 compatible v3 repair, not the opt-in v4 protocol candidate.
 
-The checked-in configuration enables mining with two workers and 25% duty.
+The first repaired-image restart enabled mining with two workers and 25% duty.
 The existing one-CPU quota, 1 GiB memory limit and real thermal protection are
 retained. The mini stays paused while this first connected miner is observed.
 The old container stopped cleanly with exit 0, no OOM, and the replacement
@@ -88,7 +92,38 @@ ledger check, three shares behind that stats snapshot. Science paid 31,675 plus
 315 escrow equals the 914-block science allocation. The Explorer's `known`
 count and canonical height had both increased by 444 from the paused checkpoint.
 
-To roll back this node to the previous validation-only configuration on nixos:
+The overnight capture through 11:20 UTC contained 7,699 consecutive new records
+through height 79,059, with the original history unchanged and zero new siblings.
+All 1,009 captured status samples reported zero orphans; no local rejections or
+fatal errors were logged. Nixos had no restart/OOM, temperature was 52–53 C,
+and RSS was approximately 59 MiB. The repaired mini kept pace as a validator.
+
+## Requested 75% duty cap, 2026-10-02
+
+Craig requested 75% mining duty after the overnight run. The prior 25% Compose
+file is saved as `incident-20261002-restart/compose.duty25.yml`. The miner stopped
+cleanly (exit 0, no OOM) and restarted at 11:49:17 UTC, with the same image,
+wallet and data volume, one CPU and 1 GiB memory. The setting is read at startup;
+changing it requires a restart and full validated chain replay.
+
+All 226,877 saved records loaded to height 79,480 at 12:21:28 UTC: replay took
+1,931 seconds. Mining then resumed at the requested 75%. At 12:38:59 it reported
+height 79,819, two peers, zero orphans, 58 C and no restarts/OOM or local errors.
+Docker measured approximately one CPU and 59 MiB RAM. The mini's later sample
+was at 79,822, consistent with continued propagation; these separate samples
+are not an exact-tip independent ledger check. Thermal target remains 82 C,
+cap 88 C, with battery and sensor safety intact.
+
+To return to the verified 25% configuration on nixos, retaining all data:
+
+```sh
+cd /home/cd/constella-homelab
+docker compose -p constella-gate-nixos -f compose.yml stop -t 60 node7
+cp incident-20261002-restart/compose.duty25.yml compose.yml
+docker compose -p constella-gate-nixos -f compose.yml up -d --no-deps --no-build --pull never node7
+```
+
+To disable mining by restoring the previous validation-only configuration on nixos:
 
 ```sh
 cd /home/cd/constella-homelab
