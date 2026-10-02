@@ -78,8 +78,10 @@ uint64_t share_work(unsigned bits) {
     return (b * b * b * b) >> 16;
 }
 
-void share_root(uint8_t root[32], const tx_t *txs, int ntx, const sci_t *sci, int nsci) {
-    if (!ntx && !nsci) { memset(root, 0, 32); return; }
+int share_root(uint8_t root[32], const tx_t *txs, int ntx, const sci_t *sci, int nsci) {
+    if (!root || ntx < 0 || ntx > SHARE_MAX_TX || nsci < 0 || nsci > SHARE_MAX_SCI ||
+        (ntx && !txs) || (nsci && !sci)) return -1;
+    if (!ntx && !nsci) { memset(root, 0, 32); return 0; }
     uint8_t buf[8 + SHARE_MAX_TX * TX_SIZE + 8 + SHARE_MAX_SCI * SCI_SIZE];
     size_t o = 0;
     memcpy(buf + o, "CSTL-TXR", 8); o += 8;
@@ -87,4 +89,5 @@ void share_root(uint8_t root[32], const tx_t *txs, int ntx, const sci_t *sci, in
     memcpy(buf + o, "CSTL-SCI", 8); o += 8;
     for (int i = 0; i < nsci; i++) { sci_ser(buf + o, &sci[i]); o += SCI_SIZE; }
     blake2b(root, 32, buf, o);
+    return 0;
 }

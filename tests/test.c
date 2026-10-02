@@ -678,21 +678,52 @@ static void t_share_root(void) {
     share_root(again, &t, 1, &c, 1);
     CHECK(!memcmp(rb, again, 32));           /* deterministic */
 
-    /* Domain separation, for real. 3*TX_SIZE == 38*SCI_SIZE == 456, so the
-     * same 456 bytes can be presented as three txs or as thirty-eight claims.
-     * Untagged, both preimages are byte-identical and collide; the tags make
-     * the split unambiguous, so the roots must differ. Deleting either tag
-     * from share_root() makes this CHECK fail, which is the point. */
+    /* Pin both domain tags using an independently calculated hashlib vector.
+     * Thirty-eight claims used to test a synthetic equal-byte split here;
+     * that exceeds the protocol limit and must now fail at the API boundary. */
     uint8_t flat[456];
     for (int i = 0; i < 456; i++) flat[i] = (uint8_t)(i * 7 + 3);
-    tx_t ftx[3];
-    sci_t fsci[38];
-    for (int i = 0; i < 3; i++)  tx_deser(&ftx[i], flat + i * TX_SIZE);
-    for (int i = 0; i < 38; i++) sci_deser(&fsci[i], flat + i * SCI_SIZE);
-    uint8_t as_tx[32], as_sci[32];
-    share_root(as_tx,  ftx, 3, NULL, 0);
-    share_root(as_sci, NULL, 0, fsci, 38);
-    CHECK(memcmp(as_tx, as_sci, 32));
+    tx_t ftx[SHARE_MAX_TX] = {0};
+    sci_t fsci[SHARE_MAX_SCI] = {0};
+    for (int i = 0; i < 3; i++) tx_deser(&ftx[i], flat + i * TX_SIZE);
+    char root_hex[65];
+    CHECK(share_root(again, ftx, 3, NULL, 0) == 0);
+    hex_enc(root_hex, again, 32);
+    CHECK(!strcmp(root_hex, "ca54cb86c9064f1161edca44836cb4b77fef8122d57352133a68579fef075f70"));
+    CHECK(share_root(again, ftx, SHARE_MAX_TX, fsci, SHARE_MAX_SCI) == 0);
+    memcpy(rb, again, 32);
+    CHECK(share_root(again, ftx, -1, fsci, 0) == -1);
+    CHECK(share_root(again, ftx, SHARE_MAX_TX + 1, fsci, 0) == -1);
+    CHECK(share_root(again, ftx, 0, fsci, -1) == -1);
+    CHECK(share_root(again, ftx, 0, fsci, SHARE_MAX_SCI + 1) == -1);
+    CHECK(share_root(again, NULL, 1, fsci, 0) == -1);
+    CHECK(share_root(again, ftx, 0, NULL, 1) == -1);
+    CHECK(share_root(NULL, NULL, 0, NULL, 0) == -1);
+    CHECK(!memcmp(rb, again, 32)); /* an error is never the empty commitment */
+
+    uint8_t msg[SHARE_MSG_MAX + 1], saved[sizeof msg];
+    memset(msg, 0xa5, sizeof msg); memcpy(saved, msg, sizeof msg);
+    share_t shdr = {0}, parsed;
+    CHECK(share_msg(msg, SHARE_MSG_MAX - 1, &shdr, ftx, SHARE_MAX_TX, fsci, SHARE_MAX_SCI) == 0);
+    CHECK(share_msg(msg, sizeof msg, &shdr, ftx, SHARE_MAX_TX + 1, fsci, 0) == 0);
+    CHECK(share_msg(msg, sizeof msg, &shdr, ftx, -1, fsci, 0) == 0);
+    CHECK(share_msg(msg, sizeof msg, &shdr, ftx, 0, fsci, SHARE_MAX_SCI + 1) == 0);
+    CHECK(share_msg(msg, sizeof msg, &shdr, ftx, 0, fsci, -1) == 0);
+    CHECK(share_msg(msg, sizeof msg, &shdr, NULL, 1, fsci, 0) == 0);
+    CHECK(share_msg(msg, sizeof msg, &shdr, ftx, 0, NULL, 1) == 0);
+    CHECK(share_msg(msg, sizeof msg, NULL, ftx, 0, fsci, 0) == 0);
+    CHECK(share_msg(NULL, sizeof msg, &shdr, ftx, 0, fsci, 0) == 0);
+    CHECK(chain_msg(-1, msg, sizeof msg) == 0);
+    CHECK(chain_msg(chain_count(), msg, sizeof msg) == 0);
+    CHECK(!memcmp(msg, saved, sizeof msg));
+    size_t len = share_msg(msg, SHARE_MSG_MAX, &shdr, ftx, SHARE_MAX_TX, fsci, SHARE_MAX_SCI);
+    CHECK(len == SHARE_MSG_MAX && msg[SHARE_MSG_MAX] == 0xa5);
+    tx_t parsed_tx[SHARE_MAX_TX]; sci_t parsed_sci[SHARE_MAX_SCI];
+    int ntx, nsci;
+    CHECK(chain_parse_msg(msg, len, &parsed, parsed_tx, &ntx, parsed_sci, &nsci) == 0);
+    CHECK(ntx == SHARE_MAX_TX && nsci == SHARE_MAX_SCI);
+    CHECK(!memcmp(parsed_tx, ftx, sizeof ftx) && !memcmp(parsed_sci, fsci, sizeof fsci));
+
 }
 
 static void t_pow_commits_to_root(void) {
@@ -924,7 +955,7 @@ static void t_sci_msg(void) {
     sci_t c[2] = {{.k = 950, .g = 776}, {.k = 1726, .g = 400}};
     uint8_t msg[SHARE_MSG_MAX];
     share_root(s.tx_root, NULL, 0, c, 2);
-    size_t len = share_msg(msg, &s, NULL, 0, c, 2);
+    size_t len = share_msg(msg, sizeof msg, &s, NULL, 0, c, 2);
     CHECK(len == SHARE_SIZE + 2 + 2 + 2 * SCI_SIZE);
 
     share_t back; tx_t txs[SHARE_MAX_TX]; sci_t sc[SHARE_MAX_SCI];
@@ -949,7 +980,7 @@ static void t_sci_msg(void) {
     /* a share with neither list still round-trips and roots to zero */
     share_t e = {0};
     e.version = SHARE_VERSION;
-    size_t el = share_msg(msg, &e, NULL, 0, NULL, 0);
+    size_t el = share_msg(msg, sizeof msg, &e, NULL, 0, NULL, 0);
     CHECK(el == SHARE_SIZE + 2 + 2);
     CHECK(chain_parse_msg(msg, el, &back, txs, &ntx, sc, &nsci) == 0 && ntx == 0 && nsci == 0);
 }
@@ -1087,7 +1118,7 @@ static void t_chain_recovery(void) {
         bad.bits = GENESIS_BITS;
         share_id(bad.prev, &g);
         uint8_t msg[SHARE_MSG_MAX];
-        size_t len = share_msg(msg, &bad, NULL, 0, NULL, 0);
+        size_t len = share_msg(msg, sizeof msg, &bad, NULL, 0, NULL, 0);
         uint8_t lh[2] = {(uint8_t)len, (uint8_t)(len >> 8)};
         CHECK(write(fd, lh, sizeof lh) == (ssize_t)sizeof lh);
         CHECK(write(fd, msg, len) == (ssize_t)len);
@@ -1109,10 +1140,10 @@ static void t_chain_recovery(void) {
     CHECK(mine_valid_share(&o, NULL));
     uint8_t miss[32], invalid[SHARE_MSG_MAX], valid[SHARE_MSG_MAX];
     tx_t junk = {0};
-    size_t ilen = share_msg(invalid, &o, &junk, 1, NULL, 0);
+    size_t ilen = share_msg(invalid, sizeof invalid, &o, &junk, 1, NULL, 0);
     CHECK(chain_submit(invalid, ilen, miss, 0) == CH_INVALID);
     CHECK(chain_orphans() == 0);
-    size_t vlen = share_msg(valid, &o, NULL, 0, NULL, 0);
+    size_t vlen = share_msg(valid, sizeof valid, &o, NULL, 0, NULL, 0);
     CHECK(chain_submit(valid, vlen, miss, 0) == CH_ORPHAN);
     CHECK(chain_orphans() == 1);
     CHECK(chain_submit(invalid, ilen, miss, 0) == CH_ORPHAN); /* same header id: deduped */

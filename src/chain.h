@@ -29,8 +29,9 @@ typedef void (*accept_fn)(int idx, int is_tip);
 
 int            chain_init(const char *datadir, accept_fn cb);
 int            chain_submit(const uint8_t *msg, size_t len, uint8_t missing[32], int64_t now);
-size_t         chain_msg(int idx, uint8_t *out);          /* out: SHARE_MSG_MAX */
-size_t         share_msg(uint8_t *out, const share_t *s, const tx_t *txs, int ntx,
+/* Return encoded length, or 0 without writing on invalid input/short capacity. */
+size_t         chain_msg(int idx, uint8_t *out, size_t cap);
+size_t         share_msg(uint8_t *out, size_t cap, const share_t *s, const tx_t *txs, int ntx,
                          const sci_t *sci, int nsci);
 /* 0 on success. Exported so the unit tests can reach the framing rules. */
 int            chain_parse_msg(const uint8_t *msg, size_t len, share_t *s, tx_t *txs, int *ntx,

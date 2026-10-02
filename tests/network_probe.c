@@ -64,7 +64,7 @@ static int mine(void) {
     s.version = SHARE_VERSION; s.bits = GENESIS_BITS; s.time = GENESIS_TIME + 1;
     s.height = 1; s.rsv = NETWORK_MARKER; s.miner[0] = 1; share_id(s.prev, &g);
     if (mine_header(&s)) return 1;
-    uint8_t raw[SHARE_MSG_MAX]; size_t n = share_msg(raw, &s, NULL, 0, NULL, 0);
+    uint8_t raw[SHARE_MSG_MAX]; size_t n = share_msg(raw, sizeof raw, &s, NULL, 0, NULL, 0);
     return fwrite(raw, 1, n, stdout) != n;
 }
 
@@ -78,7 +78,7 @@ static int fork_fixture(void) {
         s.time += s.height * SHARE_SPACING; s.miner[0] = i == 29 ? 2 : 1;
         memcpy(s.prev, i == 29 ? genesis : previous, 32);
         if (mine_header(&s)) return 1;
-        uint8_t raw[SHARE_MSG_MAX]; size_t n = share_msg(raw, &s, NULL, 0, NULL, 0);
+        uint8_t raw[SHARE_MSG_MAX]; size_t n = share_msg(raw, sizeof raw, &s, NULL, 0, NULL, 0);
         uint8_t length[2] = {(uint8_t)n, (uint8_t)(n >> 8)};
         if (fwrite(length, 1, 2, stdout) != 2 || fwrite(raw, 1, n, stdout) != n) return 1;
         share_id(previous, &s);
