@@ -5,6 +5,9 @@
 #define MP_MAX 1024
 
 static tx_t P[MP_MAX];
+/* IDs are immutable after admission; do not rehash the entire pool for each
+ * untrusted transaction. A linear comparison remains bounded by MP_MAX. */
+static uint8_t ids[MP_MAX][32];
 static int np;
 
 static void pending(const uint8_t addr[32], uint64_t *cnt, uint64_t *spend) {
@@ -20,18 +23,22 @@ static void pending(const uint8_t addr[32], uint64_t *cnt, uint64_t *spend) {
 }
 
 static int add(const tx_t *t, ledger_t *L, int check_sig) {
-    uint8_t id[32], o[32];
+    if (!t->amount || t->nonce == UINT64_MAX || t->fee > UINT64_MAX - t->amount)
+        return MP_BADSTATE;
+    uint8_t id[32];
     tx_id(id, t);
-    for (int i = 0; i < np; i++) { tx_id(o, &P[i]); if (!memcmp(o, id, 32)) return MP_DUP; }
-    if (check_sig && tx_check_sig(t)) return MP_BADSIG;
+    for (int i = 0; i < np; i++) if (!memcmp(ids[i], id, 32)) return MP_DUP;
+    /* Preserve duplicate replies even at capacity, but spend no signature
+     * work on full pools, unfunded senders, nonce gaps or overspends. */
     if (np >= MP_MAX) return MP_FULL;
     const acct_t *a = ledger_acct(L, t->from, 0);
+    if (!a) return MP_BADSTATE;
     uint64_t cnt, spend;
     pending(t->from, &cnt, &spend);
-    if (!a || t->amount == 0 || t->nonce == UINT64_MAX ||
-        t->fee > UINT64_MAX - t->amount) return MP_BADSTATE;
     if (cnt > UINT64_MAX - a->nonce || t->nonce != a->nonce + cnt) return MP_BADSTATE;
     if (a->amt < spend || a->amt - spend < t->amount + t->fee) return MP_BADSTATE;
+    if (check_sig && tx_check_sig(t)) return MP_BADSIG;
+    memcpy(ids[np], id, sizeof id);
     P[np++] = *t;
     return MP_ADDED;
 }
