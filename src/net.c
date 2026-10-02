@@ -731,6 +731,10 @@ static void dial(int s) {
     uint16_t port = 0;
     int known = sa_unpack(res->ai_addr, ip, &port) == 0;
     if (!outbound_slot_available(known ? ip : NULL, port)) { freeaddrinfo(res); return; }
+    /* Remember the configured endpoint even when connect fails immediately
+     * (for example ENETUNREACH during startup). It remains untried until an
+     * authenticated handshake, independently of route availability. */
+    int remembered = known && addr_add(ip, port, (uint32_t)now_sec());
     int fd = socket(res->ai_family, SOCK_STREAM, 0);
     if (fd < 0) { freeaddrinfo(res); return; }
     nonblock(fd);
@@ -752,7 +756,7 @@ static void dial(int s) {
      * a seed that completes two SEPARATE handshakes earns `tried` standing
      * like any other peer. */
     if (known) {
-        if (addr_add(ip, port, (uint32_t)now_sec())) {
+        if (remembered) {
             addr_t sa;
             memset(&sa, 0, sizeof sa);
             memcpy(sa.ip, ip, 16);
