@@ -2,7 +2,7 @@
 name: constella-gate-nixos
 services:
   node7:
-    image: constella:lightsail-testnet-20261001
+    image: constella:burst-fix-amd64-20261002
     pull_policy: never
     restart: unless-stopped
     stop_grace_period: 60s
@@ -16,10 +16,10 @@ services:
     environment:
       CONSTELLA_DATA: /data
       CONSTELLA_PORT: '7043'
-      # Initial synchronization: enable only after matching the retained chain.
-      CONSTELLA_MINE: '0'
+      # Controlled restart after convergence and the competing-share canary.
+      CONSTELLA_MINE: '1'
       CONSTELLA_THREADS: '2'
-      CONSTELLA_DUTY: '50'
+      CONSTELLA_DUTY: '25'
       CONSTELLA_TEMP_MAX: '88'
       CONSTELLA_BATTERY_PAUSE: '1'
       # Explicit LAN bootstrap is allowed; private-address gossip stays filtered.
