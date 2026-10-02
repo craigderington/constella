@@ -1,0 +1,93 @@
+# Existing K3s on the homelab host. Synchronize before enabling mining.
+apiVersion: v1
+kind: Service
+metadata:
+  name: node8
+  namespace: constella-testnet
+spec:
+  clusterIP: None
+  selector:
+    app: constella-node8
+  ports:
+    - name: p2p
+      port: 7043
+      targetPort: p2p
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: node8
+  namespace: constella-testnet
+spec:
+  serviceName: node8
+  replicas: 1
+  revisionHistoryLimit: 2
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      app: constella-node8
+  template:
+    metadata:
+      labels:
+        app: constella-node8
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: wolf359
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: node
+          image: docker.io/library/constella:burst-fix-amd64-20261002
+          imagePullPolicy: Never
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - {name: CONSTELLA_DATA, value: /data}
+            - {name: CONSTELLA_PORT, value: '7043'}
+            - {name: CONSTELLA_MINE, value: '0'}
+            - {name: CONSTELLA_THREADS, value: '2'}
+            - {name: CONSTELLA_DUTY, value: '25'}
+            - {name: CONSTELLA_TEMP_MAX, value: '88'}
+            - {name: CONSTELLA_BATTERY_PAUSE, value: '1'}
+            - {name: CONSTELLA_PRIVATE_NET, value: '0'}
+            - {name: CONSTELLA_PEERS, value: '3.150.62.26:7043,192.168.1.123:17046'}
+          ports:
+            - {name: p2p, containerPort: 7043}
+          # Readiness means the P2P listener is open, not that sync is complete.
+          # No liveness deadline: validated replay can take tens of minutes.
+          readinessProbe:
+            tcpSocket:
+              port: p2p
+            periodSeconds: 60
+            timeoutSeconds: 5
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 20Gi
