@@ -14,7 +14,7 @@ static int usage(void) {
             "usage: constella                                   run a node (env config)\n"
             "       constella wallet new|addr [keyfile]\n"
             "       constella balance <host:port> [addr]\n"
-            "       constella send <host:port> <to> <amount> [fee]\n"
+            "       constella send <host:port> <to> <amount> [fee] [--max-fee amount] [--yes]\n"
             "       constella bench [bits] [secs] [threads]\n"
             "env:   CONSTELLA_PORT=7043 CONSTELLA_PEERS=host:port,.. CONSTELLA_DATA=" NETWORK_DATA_DIR "\n"
             "       CONSTELLA_MINE=0 validation/relay only (default: 1, mining enabled)\n"

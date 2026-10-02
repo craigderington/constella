@@ -1263,6 +1263,8 @@ static void t_signature_vector(void) {
 static const uint8_t cli_addr[32] = {0xab, 0xcd, 0x01, 0x02};
 static uint8_t cli_asked[32];
 static int cli_got_tx;
+static uint64_t cli_next = 4;
+static tx_t cli_last_tx;
 
 static void cli_on_msg(int peer, uint8_t type, const uint8_t *p, uint16_t len) {
     if (type == MSG_GETACCT && len == 32) {
@@ -1270,11 +1272,14 @@ static void cli_on_msg(int peer, uint8_t type, const uint8_t *p, uint16_t len) {
         uint8_t out[28] = {0};
         uint64_t amt = 125000000ULL;             /* 1.25 coins */
         for (int i = 0; i < 8; i++) out[i] = (uint8_t)(amt >> 8 * i);
-        out[8] = 3; out[16] = 4; out[24] = 7;    /* nonce, next nonce, height */
+        out[8] = 3; out[24] = 7;    /* nonce, height */
+        for (int i = 0; i < 8; i++) out[16 + i] = (uint8_t)(cli_next >> 8 * i);
         net_send(peer, MSG_ACCT, out, sizeof out);
     } else if (type == MSG_TX && len == TX_SIZE) {
         uint8_t r = 0;                           /* accepted */
         cli_got_tx = 1;
+        tx_deser(&cli_last_tx, p);
+        CHECK(tx_check_sig(&cli_last_tx) == 0);
         net_send(peer, MSG_TXRES, &r, 1);
     }
 }
@@ -1296,14 +1301,44 @@ static int cli_probe(const wallet_t *node_id, const char *sub, char *out, size_t
     char hp[64], ah[65];
     snprintf(hp, sizeof hp, "127.0.0.1:%u", port);
     hex_enc(ah, cli_addr, 32);
+    int master = -1, slave = -1;
+    if (!strcmp(sub, "send-confirm") || !strcmp(sub, "send-cancel")) {
+        master = posix_openpt(O_RDWR | O_NOCTTY);
+        if (master < 0 || grantpt(master) || unlockpt(master) ||
+            (slave = open(ptsname(master), O_RDWR | O_NOCTTY)) < 0) {
+            if (master >= 0) close(master);
+            close(pfd[0]); close(pfd[1]); net_stop(); return -1;
+        }
+    }
     pid_t pid = fork();
     if (pid == 0) {
-        dup2(pfd[1], 1); close(pfd[0]); close(pfd[1]);
-        if (!strcmp(sub, "send"))
-            execl("./constella", "constella", "send", hp, ah, "1.5", "0.002", (char *)NULL);
-        else
-            execl("./constella", "constella", "balance", hp, ah, (char *)NULL);
+        dup2(pfd[1], 1); dup2(pfd[1], 2); close(pfd[0]); close(pfd[1]);
+        int input = slave >= 0 ? slave : open("/dev/null", O_RDONLY);
+        if (input >= 0) { dup2(input, STDIN_FILENO); close(input); }
+        if (master >= 0) close(master);
+        if (!strncmp(sub, "send", 4)) {
+            char *args[] = {"constella", "send", hp, ah, "1", "0.002", "--yes", NULL, NULL, NULL, NULL};
+            if (!strcmp(sub, "send-unconfirmed") || slave >= 0) args[6] = NULL;
+            else if (!strcmp(sub, "send-fee")) args[5] = "50";
+            else if (!strcmp(sub, "send-overspend")) args[4] = "1.5";
+            else if (!strcmp(sub, "send-overflow")) args[4] = "184467440737.09551615";
+            else if (!strcmp(sub, "send-extra")) args[7] = "unexpected";
+            else if (!strcmp(sub, "send-duplicate")) args[7] = "--yes";
+            else if (!strcmp(sub, "send-missing-cap")) args[7] = "--max-fee";
+            else if (!strcmp(sub, "send-default")) { args[5] = "--yes"; args[6] = NULL; }
+            else if (!strcmp(sub, "send-cap") || !strcmp(sub, "send-low-cap")) {
+                args[4] = "0.1"; args[5] = "0.2";
+                args[7] = "--max-fee";
+                args[8] = !strcmp(sub, "send-cap") ? "0.2" : "0.1";
+            }
+            execv("./constella", args);
+        } else execl("./constella", "constella", "balance", hp, ah, (char *)NULL);
         _exit(127);
+    }
+    if (slave >= 0) {
+        close(slave);
+        const char *answer = !strcmp(sub, "send-confirm") ? "yes\n" : "no\n";
+        CHECK(write(master, answer, strlen(answer)) == (ssize_t)strlen(answer));
     }
     close(pfd[1]);
     size_t n = 0;
@@ -1325,6 +1360,7 @@ static int cli_probe(const wallet_t *node_id, const char *sub, char *out, size_t
     close(pfd[0]);
     if (!eof) kill(pid, SIGKILL);
     waitpid(pid, &status, 0);
+    if (master >= 0) close(master);
     net_stop();
     return eof && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
@@ -1338,7 +1374,7 @@ static void t_cli_socket(void) {
     wallet_from_seed(&n1, seed);
     for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(0xc7 - i);
     wallet_from_seed(&n2, seed);
-    char out[512];
+    char out[2048];
 
     CHECK(cli_probe(&n1, "balance", out, sizeof out) == 0);
     CHECK(strstr(out, want) != NULL);
@@ -1359,6 +1395,39 @@ static void t_cli_socket(void) {
     CHECK(strstr(out, "accepted  tx ") != NULL);
     CHECK(strstr(out, "nonce 4") != NULL);              /* it used the next nonce we served */
     CHECK(!memcmp(cli_asked, w.pk, 32));                /* asked about its own account */
+    CHECK(cli_last_tx.amount == COIN && cli_last_tx.fee == 200000);
+    CHECK(strstr(out, "Network: testnet (chain a8f4562e57e74f9d)") != NULL);
+    CHECK(strstr(out, "Amount: 1.00000000\nFee: 0.00200000\nTotal debit: 1.00200000") != NULL);
+    struct { const char *mode, *message; int status; } rejected[] = {
+        {"send-unconfirmed", "requires confirmation", 2},
+        {"send-fee", "fee exceeds safety limit", 2},
+        {"send-low-cap", "fee exceeds safety limit", 2},
+        {"send-extra", "usage:", 2},
+        {"send-duplicate", "usage:", 2},
+        {"send-missing-cap", "usage:", 2},
+        {"send-overflow", "amount plus fee overflows", 2},
+        {"send-overspend", "insufficient balance", 1},
+        {"send-cancel", "cancelled; no transaction sent", 1},
+    };
+    for (size_t i = 0; i < sizeof rejected / sizeof rejected[0]; i++) {
+        cli_got_tx = 0;
+        CHECK(cli_probe(&n2, rejected[i].mode, out, sizeof out) == rejected[i].status);
+        CHECK(!cli_got_tx && strstr(out, rejected[i].message) != NULL);
+    }
+    cli_got_tx = 0;
+    CHECK(cli_probe(&n2, "send-confirm", out, sizeof out) == 0 && cli_got_tx);
+    CHECK(strstr(out, "Type yes to sign and send:") != NULL);
+    cli_got_tx = 0;
+    CHECK(cli_probe(&n2, "send-cap", out, sizeof out) == 0 && cli_got_tx);
+    CHECK(cli_last_tx.amount == COIN / 10 && cli_last_tx.fee == COIN / 5);
+    cli_got_tx = 0;
+    CHECK(cli_probe(&n2, "send-default", out, sizeof out) == 0 && cli_got_tx);
+    CHECK(cli_last_tx.fee == COIN / 1000);
+    cli_next = UINT64_MAX; cli_got_tx = 0;
+    CHECK(cli_probe(&n2, "send", out, sizeof out) == 1 && !cli_got_tx);
+    cli_next = 2;
+    CHECK(cli_probe(&n2, "send", out, sizeof out) == 1 && !cli_got_tx);
+    cli_next = 4;
     unsetenv("CONSTELLA_KEY");
     memset(&w, 0, sizeof w);
     unlink(kf);

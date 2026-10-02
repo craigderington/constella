@@ -24,7 +24,19 @@ block lands, P2Pool-style, instead of racing for blocks.
     constella wallet new                   # ~/.constella/wallet.key (or $CONSTELLA_KEY)
     constella wallet addr
     constella balance 127.0.0.1:7043 [addr]
-    constella send 127.0.0.1:7043 <to-addr> 1.5 [fee=0.001]
+    constella send 127.0.0.1:7043 <to-addr> 1.5
+
+Sending displays the network, recipient, amount, fee and total debit before
+signing and asks for confirmation. The default fee is 0.001 coins; an optional
+positional fee follows the amount. Automated sends require an explicit
+`--yes`. Fees above the smaller of one coin or the transfer amount require
+`--max-fee <amount>`; `--yes` does not bypass this limit. These are wallet
+safeguards, not changes to consensus transaction rules.
+
+Wallet and node identity files must be regular files owned by the process user,
+with no group or other access (normally mode 0600). Symlinks and files with
+trailing content are rejected. Back up existing keys before any permission or
+ownership migration; creating a wallet never replaces an existing key.
 
 | env | default | |
 |---|---|---|
