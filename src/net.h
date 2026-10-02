@@ -73,10 +73,11 @@ void net_set_self(const uint8_t ip[16], uint16_t port);
  * mines; it just advertises nothing. net_parse_advertise validates the
  * string alone - empty/oversized, missing port, non-numeric or
  * out-of-range port - so that half is unit-testable without a live
- * resolver. net_advertise does the parse and then the (untestable)
- * getaddrinfo resolution, recording the result via net_set_self for direct
- * gossip replies without inserting our own address in the peer tables. Both
- * return 0 on success, -1 otherwise; a failure is never fatal to the node. */
+ * resolver. net_advertise installs numeric addresses immediately and queues
+ * names for bounded asynchronous resolution. Results feed net_set_self for
+ * direct gossip without inserting our address in the peer tables. A zero
+ * return means installed/queued; -1 means invalid input. Lookup failure is
+ * nonfatal and retries with backoff while the node continues serving peers. */
 #define NET_ADVERTISE_HOST_MAX 128
 int net_parse_advertise(const char *s, char *host, size_t hostcap, uint16_t *port);
 int net_advertise(const char *hostport);

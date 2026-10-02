@@ -1,3 +1,4 @@
+#include "resolve.h"
 /* Unit tests + stdin modes used by crosscheck.py. */
 #include "addr.h"
 #include "blake2b.h"
@@ -2598,6 +2599,7 @@ static void t_net_advertise_parse(void) {
 }
 
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "--resolve-seed")) return resolve_main(argc, argv);
     if (sieve_init()) return 1;
     char line[1024];
     if (argc > 1 && !strcmp(argv[1], "--prp")) {          /* hex per line -> 0/1 */
