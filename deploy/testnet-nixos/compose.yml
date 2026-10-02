@@ -19,7 +19,7 @@ services:
       # Controlled restart after convergence and the competing-share canary.
       CONSTELLA_MINE: '1'
       CONSTELLA_THREADS: '2'
-      CONSTELLA_DUTY: '25'
+      CONSTELLA_DUTY: '75'
       CONSTELLA_TEMP_MAX: '88'
       CONSTELLA_BATTERY_PAUSE: '1'
       # Explicit LAN bootstrap is allowed; private-address gossip stays filtered.
