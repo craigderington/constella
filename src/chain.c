@@ -83,8 +83,12 @@ unsigned chain_next_bits(int parent) {
     return (unsigned)b;
 }
 
-size_t share_msg(uint8_t *out, const share_t *s, const tx_t *txs, int ntx,
+size_t share_msg(uint8_t *out, size_t cap, const share_t *s, const tx_t *txs, int ntx,
                  const sci_t *sci, int nsci) {
+    if (!out || !s || ntx < 0 || ntx > SHARE_MAX_TX || nsci < 0 || nsci > SHARE_MAX_SCI ||
+        (ntx && !txs) || (nsci && !sci)) return 0;
+    size_t need = SHARE_SIZE + 4 + (size_t)ntx * TX_SIZE + (size_t)nsci * SCI_SIZE;
+    if (cap < need) return 0;
     share_ser(out, s);
     size_t o = SHARE_SIZE;
     out[o] = (uint8_t)ntx; out[o + 1] = (uint8_t)(ntx >> 8); o += 2;
@@ -94,8 +98,9 @@ size_t share_msg(uint8_t *out, const share_t *s, const tx_t *txs, int ntx,
     return o;
 }
 
-size_t chain_msg(int idx, uint8_t *out) {
-    return share_msg(out, &E[idx].s, E[idx].txs, E[idx].ntx, E[idx].sci, E[idx].nsci);
+size_t chain_msg(int idx, uint8_t *out, size_t cap) {
+    if (idx < 0 || idx >= nE) return 0;
+    return share_msg(out, cap, &E[idx].s, E[idx].txs, E[idx].ntx, E[idx].sci, E[idx].nsci);
 }
 
 /* The anchor is the ancestor of this share at its epoch height — a strict
@@ -123,7 +128,7 @@ void chain_epoch_anchor(int par, uint32_t height, uint8_t out[32]) {
 static int payload_root_check(const share_t *s, const tx_t *txs, int ntx,
                               const sci_t *sci, int nsci) {
     uint8_t root[32];
-    share_root(root, txs, ntx, sci, nsci);
+    if (share_root(root, txs, ntx, sci, nsci)) return -1;
     return memcmp(root, s->tx_root, 32) ? -1 : 0;
 }
 

@@ -190,7 +190,11 @@ static void update_job(void) {
      * explicit zero -- it mirrors Task 5's nsci==0 gating for ntx/txs. */
     tm->nsci = nscipool < SHARE_MAX_SCI ? nscipool : SHARE_MAX_SCI;
     memcpy(tm->sci, scipool, (size_t)tm->nsci * sizeof *tm->sci);
-    share_root(tm->root, tm->txs, tm->ntx, tm->sci, tm->nsci);
+    if (share_root(tm->root, tm->txs, tm->ntx, tm->sci, tm->nsci)) {
+        log_msg("fatal: invalid mining payload");
+        failed = 1; running = 0;
+        return;
+    }
     share_t s = {0};
     s.version = SHARE_VERSION;
     s.rsv = NETWORK_MARKER;
@@ -229,8 +233,8 @@ static void on_accept(int idx, int is_tip) {
     int recent = (int64_t)e->s.time + 600 >= now_sec();
     if (recent) {
         uint8_t msg[SHARE_MSG_MAX];
-        size_t len = chain_msg(idx, msg);
-        net_broadcast(cur_src, MSG_SHARE, msg, (uint16_t)len);
+        size_t len = chain_msg(idx, msg, sizeof msg);
+        if (len) net_broadcast(cur_src, MSG_SHARE, msg, (uint16_t)len);
     }
     if (!recent) return;
     char m[9], id[9];
@@ -326,8 +330,8 @@ static void serve_chain(int peer, const uint8_t *p, uint16_t len) {
     }
     uint8_t msg[SHARE_MSG_MAX];
     for (int h = start; h < n && h < start + SYNC_BATCH; h++) {
-        size_t l = chain_msg(path[h], msg);
-        net_send(peer, MSG_SHARE, msg, (uint16_t)l);
+        size_t l = chain_msg(path[h], msg, sizeof msg);
+        if (l) net_send(peer, MSG_SHARE, msg, (uint16_t)l);
     }
     free(path);
     send_hello(peer);
@@ -364,8 +368,8 @@ static void on_msg(int peer, uint8_t type, const uint8_t *p, uint16_t len) {
         int i = chain_find(p);
         if (i > 0) {
             uint8_t msg[SHARE_MSG_MAX];
-            size_t l = chain_msg(i, msg);
-            net_send(peer, MSG_SHARE, msg, (uint16_t)l);
+            size_t l = chain_msg(i, msg, sizeof msg);
+            if (l) net_send(peer, MSG_SHARE, msg, (uint16_t)l);
         }
     } else if (type == MSG_GETCHAIN && len % 32 == 0 && len) {
         serve_chain(peer, p, len);
@@ -411,7 +415,12 @@ static void drain_found(int fd) {
         if (memcmp(s.prev, chain_entry(chain_tip())->id, 32)) continue;
         for (int i = 0; i < TMPL_RING; i++) {
             if (memcmp(T[i].root, s.tx_root, 32)) continue;
-            size_t l = share_msg(msg, &s, T[i].txs, T[i].ntx, T[i].sci, T[i].nsci);
+            size_t l = share_msg(msg, sizeof msg, &s, T[i].txs, T[i].ntx, T[i].sci, T[i].nsci);
+            if (!l) {
+                log_msg("fatal: invalid mined payload");
+                failed = 1; running = 0;
+                return;
+            }
             int r = submit_share(msg, l, miss);
             if (r == CH_INVALID)
                 log_msg("mined share rejected: h=%u bits=%u txs=%d sci=%d",
