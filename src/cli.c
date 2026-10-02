@@ -105,19 +105,60 @@ int cli_balance(int argc, char **argv) {
 
 int cli_send(int argc, char **argv) {
     static const char *res[] = {"accepted", "duplicate", "bad signature", "rejected (balance/nonce)", "mempool full"};
-    if (argc < 5) { fprintf(stderr, "usage: constella send <host:port> <to> <amount> [fee]\n"); return 2; }
+    const char *usage = "usage: constella send <host:port> <to> <amount> [fee] [--max-fee amount] [--yes]\n";
+    if (argc < 5) { fputs(usage, stderr); return 2; }
     tx_t t = {0};
     wallet_t w;
     if (hex_dec(t.to, 32, argv[3])) { fprintf(stderr, "bad address\n"); return 2; }
     if (parse_amount(&t.amount, argv[4]) || !t.amount) { fprintf(stderr, "bad amount\n"); return 2; }
-    if (parse_amount(&t.fee, argc > 5 ? argv[5] : "0.001")) { fprintf(stderr, "bad fee\n"); return 2; }
+    int arg = 5, yes = 0, capped = 0;
+    const char *fee = arg < argc && strncmp(argv[arg], "--", 2) ? argv[arg++] : "0.001";
+    if (parse_amount(&t.fee, fee)) { fprintf(stderr, "bad fee\n"); return 2; }
+    uint64_t max_fee = t.amount < COIN ? t.amount : COIN;
+    for (; arg < argc; arg++) {
+        if (!strcmp(argv[arg], "--yes") && !yes) yes = 1;
+        else if (!strcmp(argv[arg], "--max-fee") && !capped && arg + 1 < argc) {
+            if (parse_amount(&max_fee, argv[++arg])) { fprintf(stderr, "bad maximum fee\n"); return 2; }
+            capped = 1;
+        } else { fputs(usage, stderr); return 2; }
+    }
+    if (t.fee > UINT64_MAX - t.amount) { fprintf(stderr, "amount plus fee overflows\n"); return 2; }
+    if (t.fee > max_fee) {
+        char limit[32]; fmt_amount(limit, max_fee);
+        fprintf(stderr, "fee exceeds safety limit %s; set --max-fee explicitly to raise it\n", limit);
+        return 2;
+    }
+    uint8_t tag[8]; char chain[17], to[65], amount[32], fees[32], total[32];
+    tx_chain_id(tag); hex_enc(chain, tag, sizeof tag); hex_enc(to, t.to, 32);
+    fmt_amount(amount, t.amount); fmt_amount(fees, t.fee); fmt_amount(total, t.amount + t.fee);
+    fprintf(stderr, "Network: %s (chain %s)\nTo: %s\nAmount: %s\nFee: %s\nTotal debit: %s\n",
+            BLOCK_K == 5 ? "testnet" : "mainnet", chain, to, amount, fees, total);
+    if (!yes && !isatty(STDIN_FILENO)) {
+        fprintf(stderr, "send requires confirmation; use --yes for an intentional noninteractive transfer\n");
+        return 2;
+    }
     if (wallet_load(&w, keypath(NULL), 0)) { fprintf(stderr, "no wallet (try: wallet new)\n"); return 1; }
     memcpy(t.from, w.pk, 32);
 
     net_client_t c;
     acct_info a;
     if (query(&c, argv[2], t.from, &a)) { crypto_wipe(&w, sizeof w); unreachable(argv[2]); return 1; }
+    if (a.next == UINT64_MAX || a.next < a.nonce || a.amt < t.amount + t.fee) {
+        fprintf(stderr, "node reports insufficient balance or an unusable nonce\n");
+        crypto_wipe(&w, sizeof w); net_client_close(&c); return 1;
+    }
     t.nonce = a.next;
+    char from[65]; hex_enc(from, t.from, 32);
+    fprintf(stderr, "From: %s\nNonce: %llu (node height %u)\n", from,
+            (unsigned long long)t.nonce, a.height);
+    if (!yes) {
+        char answer[16];
+        fputs("Type yes to sign and send: ", stderr); fflush(stderr);
+        if (!fgets(answer, sizeof answer, stdin) || strcmp(answer, "yes\n")) {
+            fprintf(stderr, "cancelled; no transaction sent\n");
+            crypto_wipe(&w, sizeof w); net_client_close(&c); return 1;
+        }
+    }
     tx_sign(&t, w.sk);
     crypto_wipe(&w, sizeof w);
 
