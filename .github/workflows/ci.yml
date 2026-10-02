@@ -29,6 +29,22 @@ jobs:
       - name: Enforce node size limit
         run: make size
 
+  sanitizers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run isolated C regressions with address and undefined-behavior checks
+        run: >-
+          make CC=clang
+          CFLAGS="-std=c11 -O1 -g -Wall -Wextra -D_GNU_SOURCE -pthread
+          -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
+          LDFLAGS="-pthread -fsanitize=address,undefined -lm"
+          test
+
   explorer:
     runs-on: ubuntu-latest
     services:

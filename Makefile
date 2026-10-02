@@ -5,8 +5,8 @@ endif
 OPT     ?= -Os
 CFLAGS  += -std=c11 $(OPT) -Wall -Wextra -D_GNU_SOURCE -pthread \
            -flto -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables \
-           -fno-stack-protector
-LDFLAGS += -static -flto -pthread -Wl,--gc-sections -s -lm
+           -fstack-protector-strong -D_FORTIFY_SOURCE=2
+LDFLAGS += -static -flto -pthread -Wl,--gc-sections,-z,relro,-z,now,-z,noexecstack -s -lm
 SIZE_MAX_BYTES ?= 196608
 
 CORE := src/blake2b.c src/bn.c src/share.c src/science.c src/tx.c src/wallet.c src/sieve.c src/throttle.c \
