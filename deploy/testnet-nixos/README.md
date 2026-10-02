@@ -6,8 +6,8 @@ Host `nixos` is x86_64, four logical CPUs, 31 GiB RAM and 843 GiB free root
 disk at provisioning. Clock synchronization was confirmed. Existing unrelated
 containers were left unchanged.
 
-Current mode: mining enabled, two workers, **75% duty cap**, one-CPU container
-quota and 1 GiB memory limit. Craig requested the increase from 25% on
+Current mode: mining enabled, two workers, **100% duty cap**, one-CPU container
+quota and 1 GiB memory limit. Craig requested the increase from 75% on
 2026-10-02. The duty cap does not override the aggregate one-CPU quota.
 
 Deployment: `/home/cd/constella-homelab/compose.yml` on nixos.
@@ -136,6 +136,32 @@ docker compose -p constella-gate-nixos -f compose.yml logs --tail 30 node7
 Expected after replay: `mode: validation-only`, the retained chain tip and
 `duty=0%`. This retains all data, including shares accepted after the upgrade.
 Never restore the historical chain copy over the live volume for this rollback.
+
+## Requested 100% duty cap, 2026-10-02
+
+Craig subsequently requested 100%. The 75% configuration is saved remotely as
+`duty100-20261002/compose.duty75.yml`. The old container exited 0 without OOM;
+the replacement started at 13:25:31 UTC with the same image, wallet and volume.
+It validated 227,937 records to height 80,540 in 1,939 seconds, completing at
+13:57:50. At 14:06:54 it reported height 80,752, two peers, zero orphans,
+100% duty and 57 C, with no restarts/OOM. The one-CPU quota, two workers,
+1 GiB limit and real thermal/battery protections remain in force.
+
+Before enabling the Mini's second miner, both nodes returned identical balances
+and nonces for the Mini and Nixos addresses at height 80,650. After both miners
+were active, the independent Explorer reported `check=ok`, all seven accounts
+at height 80,761 (14:07:46 UTC), with its chain at 80,762 nine seconds later.
+Normal competing shares can occur with two miners; the earlier zero-sibling
+observations apply to the single-miner window only.
+
+To return to 75% while retaining the live wallet and chain:
+
+```sh
+cd /home/cd/constella-homelab
+docker compose -p constella-gate-nixos -f compose.yml stop -t 60 node7
+cp duty100-20261002/compose.duty75.yml compose.yml
+docker compose -p constella-gate-nixos -f compose.yml up -d --no-deps --no-build --pull never node7
+```
 
 ## Wallet and operation
 
