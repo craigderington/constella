@@ -1,4 +1,17 @@
-<title>Catasterism</title>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Catasterism — a search among primes</title>
+<meta name="description" content="Catasterism is an experimental cryptocurrency that searches for prime constellations and funds a second search for prime gaps. Explore the project and its live testnet.">
+<meta name="theme-color" content="#0E1A2B">
+<link rel="canonical" href="https://catasterism.xyz/">
+<meta property="og:title" content="Catasterism — a search among primes">
+<meta property="og:description" content="Small machines. Prime constellations. A live experimental testnet. Meet the project and explore the chain.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://catasterism.xyz/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cardo:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
@@ -12,7 +25,7 @@
   --chalk:#EDE8DC;
   --slate:#8FA0B5;
   --brass:#C9A227;
-  --brass-dim:#9A7D1E;
+  --brass-dim:#B39848;
   --verdigris:#5EA692;
   --struck:#1C3049;
 
@@ -30,9 +43,9 @@
     --ink-raise:#F7F3E8;
     --rule:#C8BB9C;
     --chalk:#1B2432;
-    --slate:#5A6678;
-    --brass:#8A6D12;
-    --brass-dim:#A98F3C;
+    --slate:#4D5968;
+    --brass:#755B0D;
+    --brass-dim:#766018;
     --verdigris:#2C6B59;
     --struck:#DCD3BC;
   }
@@ -43,9 +56,9 @@
   --ink-raise:#F7F3E8;
   --rule:#C8BB9C;
   --chalk:#1B2432;
-  --slate:#5A6678;
-  --brass:#8A6D12;
-  --brass-dim:#A98F3C;
+  --slate:#4D5968;
+  --brass:#755B0D;
+  --brass-dim:#766018;
   --verdigris:#2C6B59;
   --struck:#DCD3BC;
 }
@@ -74,7 +87,12 @@ em{font-style:italic}
 .mast{padding-block:clamp(28px,5vw,44px) 0;display:flex;justify-content:space-between;align-items:baseline;gap:20px;flex-wrap:wrap}
 .mark{font-family:var(--display);font-size:20px;letter-spacing:.06em}
 .mark span{color:var(--brass)}
-.mast nav{display:flex;gap:22px;font-size:14px;color:var(--slate)}
+.skip{position:absolute;left:20px;top:-100px;background:var(--ink);padding:10px;z-index:2}
+.skip:focus{top:10px}
+.hero-actions{display:flex;flex-wrap:wrap;align-items:center;gap:16px;margin-top:24px}
+.hero-actions a{display:inline-block}
+.testnet{font-family:var(--mono);font-size:12px;letter-spacing:.04em;color:var(--verdigris)}
+.mast nav{display:flex;flex-wrap:wrap;gap:10px 22px;font-size:14px;color:var(--slate)}
 .mast nav a{color:inherit;text-decoration:none;border-bottom:1px solid transparent;padding-bottom:2px}
 .mast nav a:hover{color:var(--chalk);border-bottom-color:var(--brass)}
 .mast nav a.live{color:var(--brass);display:inline-flex;align-items:center;gap:7px}
@@ -140,7 +158,7 @@ h3{font-size:22px;margin-bottom:8px}
   border:1px solid transparent;
   transition:background .18s ease,color .18s ease,border-color .18s ease;
 }
-.cell.struck{background:var(--struck);color:var(--rule);text-decoration:line-through}
+.cell.struck{background:var(--struck);color:var(--slate);text-decoration:line-through}
 .cell.survivor{background:var(--ink-deep);color:var(--brass);border-color:var(--brass-dim)}
 .cell.hit{background:var(--brass);color:var(--ink-deep);border-color:var(--brass)}
 .cell.seed{background:var(--verdigris);color:var(--ink-deep);border-color:var(--verdigris)}
@@ -205,13 +223,16 @@ footer p{max-width:62ch}
 .foot-links a{text-decoration:none;border-bottom:1px solid var(--rule);padding-bottom:3px}
 .foot-links a:hover{border-bottom-color:var(--brass)}
 .sig{font-family:var(--display);font-style:italic;color:var(--brass-dim);font-size:16px}
+@media(max-width:520px){.spec div{flex-direction:column;gap:3px}.spec dd{text-align:left;overflow-wrap:anywhere}}
 </style>
-
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
 <div class="wrap">
 
   <header class="mast">
     <div class="mark">catasterism<span>.</span></div>
-    <nav>
+    <nav aria-label="Main navigation">
       <a href="#eratosthenes">Eratosthenes</a>
       <a href="#sieve">The sieve</a>
       <a href="#pattern">The pattern</a>
@@ -222,6 +243,7 @@ footer p{max-width:62ch}
     </nav>
   </header>
 
+  <main id="main">
   <div class="hero">
     <p class="greek">καταστερισμός — a placing among the stars</p>
     <h1>The sieve that finds<br>them is <span class="it">his</span> too.</h1>
@@ -230,13 +252,18 @@ footer p{max-width:62ch}
       <strong>his sieve</strong> on machines that would otherwise be idle, looking for
       <strong>constellations made of primes</strong> — and pays for the search in the
       coin it mines.</p>
+    <p class="testnet">LIVE TESTNET · EXPERIMENTAL · TEST COINS HAVE NO MONETARY VALUE</p>
+    <div class="hero-actions">
+      <a class="btn" href="https://explorer.catasterism.xyz/">Explore the live chain ↗</a>
+      <a href="https://github.com/craigderington/constella">Read the source</a>
+    </div>
 
     <div class="plate">
       <svg viewBox="0 0 760 200" role="img" aria-label="The prime sextuplet pattern: six points at offsets 0, 4, 6, 10, 12 and 16, with gaps of 4, 2, 4, 2 and 4 between them.">
         <defs>
           <radialGradient id="glow">
-            <stop offset="0" stop-color="#C9A227" stop-opacity=".55"/>
-            <stop offset="1" stop-color="#C9A227" stop-opacity="0"/>
+            <stop offset="0" stop-color="var(--brass)" stop-opacity=".55"/>
+            <stop offset="1" stop-color="var(--brass)" stop-opacity="0"/>
           </radialGradient>
         </defs>
 
@@ -244,14 +271,14 @@ footer p{max-width:62ch}
         <line x1="60" y1="96" x2="700" y2="96" stroke="#9A7D1E" stroke-width="1" stroke-dasharray="2 4"/>
 
         <!-- gap braces above -->
-        <g fill="#8FA0B5" font-family="IBM Plex Mono, monospace" font-size="12" text-anchor="middle">
+        <g fill="var(--slate)" font-family="IBM Plex Mono, monospace" font-size="12" text-anchor="middle">
           <text x="140" y="58">4</text>
           <text x="260" y="58">2</text>
           <text x="340" y="58">4</text>
           <text x="460" y="58">2</text>
           <text x="580" y="58">4</text>
         </g>
-        <g stroke="#274563" stroke-width="1">
+        <g stroke="var(--rule)" stroke-width="1">
           <path d="M60 70 L60 78 M220 70 L220 78 M60 74 L220 74" fill="none"/>
           <path d="M220 70 L220 78 M300 70 L300 78 M220 74 L300 74" fill="none"/>
           <path d="M300 70 L300 78 M460 70 L460 78 M300 74 L460 74" fill="none"/>
@@ -267,16 +294,16 @@ footer p{max-width:62ch}
           <circle cx="460" cy="96" r="22" fill="url(#glow)"/>
           <circle cx="540" cy="96" r="22" fill="url(#glow)"/>
           <circle cx="700" cy="96" r="26" fill="url(#glow)"/>
-          <circle cx="60"  cy="96" r="6"   fill="#EDE8DC"/>
-          <circle cx="220" cy="96" r="4.5" fill="#EDE8DC"/>
-          <circle cx="300" cy="96" r="4.5" fill="#EDE8DC"/>
-          <circle cx="460" cy="96" r="4.5" fill="#EDE8DC"/>
-          <circle cx="540" cy="96" r="4.5" fill="#EDE8DC"/>
-          <circle cx="700" cy="96" r="6"   fill="#EDE8DC"/>
+          <circle cx="60"  cy="96" r="6"   fill="var(--chalk)"/>
+          <circle cx="220" cy="96" r="4.5" fill="var(--chalk)"/>
+          <circle cx="300" cy="96" r="4.5" fill="var(--chalk)"/>
+          <circle cx="460" cy="96" r="4.5" fill="var(--chalk)"/>
+          <circle cx="540" cy="96" r="4.5" fill="var(--chalk)"/>
+          <circle cx="700" cy="96" r="6"   fill="var(--chalk)"/>
         </g>
 
         <!-- offsets below -->
-        <g fill="#C9A227" font-family="IBM Plex Mono, monospace" font-size="13" text-anchor="middle">
+        <g fill="var(--brass)" font-family="IBM Plex Mono, monospace" font-size="13" text-anchor="middle">
           <text x="60"  y="132">p</text>
           <text x="220" y="132">p+4</text>
           <text x="300" y="132">p+6</text>
@@ -286,19 +313,19 @@ footer p{max-width:62ch}
         </g>
 
         <!-- share / block brackets -->
-        <g stroke="#274563" stroke-width="1" fill="none">
+        <g stroke="var(--rule)" stroke-width="1" fill="none">
           <path d="M60 152 L60 160 L460 160 L460 152"/>
           <path d="M60 172 L60 180 L700 180 L700 172"/>
         </g>
-        <g font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="#8FA0B5">
+        <g font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="var(--slate)">
           <text x="470" y="164">first four — a share</text>
-          <text x="710" y="184">all six — a block</text>
+          <text x="700" y="196" text-anchor="end">all six — the full pattern</text>
         </g>
       </svg>
 
       <p class="plate-cap">Six primes in fixed formation. The gaps never vary: <b>4, 2, 4, 2, 4</b>.
-        Find the first four and you have done enough work to claim a share; find all six and you
-        have found a block. The smallest is <span class="mono">7, 11, 13, 17, 19, 23</span> — and
+        The current testnet accepts the first four as a share and the first five as a block.
+        All six form the full sextuplet pattern. The smallest is <span class="mono">7, 11, 13, 17, 19, 23</span> — and
         it is the only one that does not obey the rule on the next plate.</p>
     </div>
   </div>
@@ -317,8 +344,8 @@ footer p{max-width:62ch}
         <h3>The Sieve</h3>
         <p class="gk">κόσκινον Ἐρατοσθένους</p>
         <p>Write the numbers out. Strike every multiple of two, then of three, then of five.
-          What is left has never been divided by anything. It is still the fastest way to find
-          small primes, because there is nothing to improve.</p>
+          Continue through the primes up to the square root of your limit. The unstruck numbers
+          greater than one are prime — a simple idea that still underlies modern sieves.</p>
         <p class="here"><b>Here:</b> a wheel built from 2·3·5·7 eliminates 77% of candidates
           before a single primality test runs.</p>
       </div>
@@ -327,7 +354,7 @@ footer p{max-width:62ch}
         <p class="gk">Καταστερισμοί</p>
         <p>A catalogue of the constellations and the myths that put them there — a
           <em>catasterism</em> is the act of placing a figure permanently into the sky.
-          The surviving text is likely a later epitome, but the work is his.</p>
+          The surviving work is traditionally attributed to Eratosthenes.</p>
         <p class="here"><b>Here:</b> the project's name, and its unit of work. Every accepted
           find is fixed in the chain the way a figure is fixed in the sky.</p>
       </div>
@@ -347,14 +374,16 @@ footer p{max-width:62ch}
     <h2>Run his sieve.</h2>
     <div class="col">
       <p>Below are the numbers 1 to 210. Strike the multiples of 2, 3, 5 and 7 and what survives
-        is not just a list of primes — it is the <em>wheel</em> this miner searches on. Every
-        prime sextuplet above 7 sits at one specific residue in it.</p>
+        shows the first stages of his sieve. Then remove the four small primes themselves and
+        include 1: the remaining 48 residues form a <em>wheel</em> for skipping multiples.
+        A wheel survivor can still be composite. Every prime sextuplet above 7 starts at
+        one specific residue in this wheel.</p>
     </div>
 
     <div class="plate">
       <div class="sieve-head">
         <div class="readout" id="readout" aria-live="polite">Press run. The strikes follow Eratosthenes' order: smallest surviving number first.</div>
-        <button class="btn" id="run">Run the sieve</button>
+        <button class="btn" id="sieve-run" type="button">Run the sieve</button>
       </div>
       <div class="grid" id="grid" role="img" aria-label="A grid of the numbers 1 to 210, used to demonstrate the Sieve of Eratosthenes."></div>
     </div>
@@ -377,75 +406,73 @@ footer p{max-width:62ch}
       </div>
       <div class="fact">
         <h3>Then it is just testing</h3>
-        <p>What survives the wheel gets a Fermat test. About
-          <span class="num">42 million</span> candidates a second on six cores at 448 bits —
-          and almost all of them fail at the first member.</p>
+        <p>Candidates pass through a larger sieve and then a base-2 Fermat probable-prime test.
+          Most fail before forming a constellation. Throughput depends on the processor,
+          current difficulty and available thermal headroom.</p>
       </div>
       <div class="fact">
         <h3>Work is proof, not promise</h3>
-        <p>A share is a found quadruplet. Nobody has to be trusted: the number either has four
-          primes in formation or it does not, and anyone can check in milliseconds.</p>
+        <p>A share carries a candidate quadruplet. Each node checks it against the protocol's
+          probable-prime tests, work and linkage rules. These tests are not a mathematical
+          certificate of primality.</p>
       </div>
       <div class="fact">
         <h3>It runs on the machine you have</h3>
-        <p>One static binary, under a megabyte of memory, at idle scheduling priority — the
-          next section is the whole budget.</p>
+        <p>A small static binary with mining workers at idle scheduling priority. Memory and
+          disk use grow with chain history; validation-only nodes can run without mining.</p>
       </div>
     </div>
   </section>
 
   <section class="rule-top" id="cost">
     <p class="kicker">Idle means idle</p>
-    <h2>The entire cost<br>of running a node.</h2>
+    <h2>A small program.<br>A growing chain.</h2>
     <div class="col">
-      <p>"Spare capacity" is easy to claim and rarely true — most of it arrives as a runtime,
-        a daemon, a gigabyte of resident memory and a fan that never stops. These are measured
-        figures from a node on a laptop, not targets.</p>
+      <p>The executable is small; running a network still takes resources. These are current
+        testnet measurements and controls, not fixed limits on future storage, memory or
+        electricity use.</p>
     </div>
 
     <div class="meter">
       <div class="m">
-        <div class="mv">141 KB</div>
+        <div class="mv">162–178 KiB</div>
         <div class="mk">the whole binary</div>
         <p>Statically linked against <b>musl</b> and stripped. <span class="mono">ldd</span>
           reports “not a dynamic executable” — there is no libc to install, no runtime, no
-          interpreter. It is one file, and a build gate fails if it grows past 150 KB.</p>
+          interpreter. It is one file, and a build gate fails if it grows past 192 KiB. These are the tested x86 and ARM builds.</p>
       </div>
       <div class="m">
-        <div class="mv">916 KB</div>
+        <div class="mv">~59 MiB</div>
         <div class="mk">resident memory</div>
-        <p>A running node with two mining threads, peaking at 1.5 MB. The sieve works in a
-          32 KB bitmap per worker; nothing else is large enough to matter.</p>
+        <p>Observed container memory on the Nixos testnet miner with two workers, on 2 October
+          2026. Chain history, peers and replay affect usage. Budget disk and RAM separately
+          for the Explorer and its database.</p>
       </div>
       <div class="m">
         <div class="mv">SCHED_IDLE</div>
         <div class="mk">and nice 19</div>
-        <p>Workers run at the kernel's lowest scheduling class. Anything else that wants the
-          CPU takes it immediately — the miner is not competing with your machine, it is
-          consuming what is left after everything else has finished.</p>
+        <p>Mining workers request Linux's idle scheduling class and lowest nice priority.
+          Duty settings and container CPU limits bound their work; mining still consumes
+          electricity and produces heat.</p>
       </div>
       <div class="m">
         <div class="mv">82&#8201;°C</div>
         <div class="mk">held, not hoped for</div>
-        <p>A controller samples the die at 10 Hz, medians the noise out, and drives duty cycle
-          against a target. It gives back throughput rather than heat, and stops entirely if
-          something else is already cooking the chip.</p>
+        <p>The default thermal target is 82 °C, with configurable limits. The controller reduces
+          mining duty as the chip warms and pauses if its sensor becomes unavailable.
+          Hosts without a trustworthy sensor can validate and relay with mining disabled.</p>
       </div>
     </div>
 
-    <p class="plate-cap" style="margin-top:26px">One detail for the people who will enjoy it:
-      musl deliberately stubs the <span class="mono">sched_setscheduler</span> wrapper, so the
-      throttle reaches for the raw syscall instead. That is the kind of thing you find out
-      when you refuse to link against anything.</p>
+
   </section>
 
   <section class="rule-top" id="science">
     <p class="kicker">Thirty for the chain, seventy for the question</p>
-    <h2>Most of the reward<br>never goes to mining.</h2>
+    <h2>Two searches.<br>One reward budget.</h2>
     <div class="col">
-      <p>Proof-of-work normally burns everything it earns on the proof. Here the proof is the
-        smaller half of the job. The rest funds a second search whose results are useful whether
-        or not anyone ever trades the coin.</p>
+      <p>Each testnet block allocates 30% of its reward to chain security and 70% to a
+        separate prime-gap search. The same node can contribute to both lanes.</p>
     </div>
 
     <div class="lanes">
@@ -459,70 +486,55 @@ footer p{max-width:62ch}
         <div class="pct">70%</div>
         <h3>The science lane</h3>
         <p>Funds a search for <em>prime gaps</em> — long stretches of consecutive composite
-          numbers, the emptiest reaches between primes. A claim is self-certifying: it names a
-          gap, and any node can verify it with a bounded number of tests rather than repeating
-          the search.</p>
-        <p>Claims are weighted by difficulty, not by length. A gap is exponentially harder to
-          find as it grows, so the reward grows the same way — a merit-4 find earns hundreds of
-          times a merit-2 one, not twice.</p>
+          numbers, the emptiest reaches between primes. A claim names a gap that nodes check under the protocol's probable-prime and
+          composite-testing rules, with a bounded verification cost. This is not a
+          certified prime-gap record.</p>
+        <p>Within the fixed search region size, payout weight increases exponentially with
+          gap length. Accepted claims in the payout window share the released reward.</p>
       </div>
     </div>
 
     <div class="escrow">
-      <svg viewBox="0 0 700 190" role="img" aria-label="The science escrow rises from zero and settles at 315 coins by about block 214, from which point it pays out 35 coins per block — exactly what flows into it.">
-        <g stroke="#274563" stroke-width="1">
+      <svg viewBox="0 0 700 190" role="img" aria-label="Illustrative science escrow: with eligible claims at every block, the retained balance approaches 315 test coins and payouts approach 35 per block.">
+        <g stroke="var(--rule)" stroke-width="1">
           <line x1="52" y1="150" x2="672" y2="150"/>
           <line x1="52" y1="26" x2="52" y2="150"/>
         </g>
-        <line x1="52" y1="52" x2="672" y2="52" stroke="#5EA692" stroke-width="1" stroke-dasharray="3 5"/>
+        <line x1="52" y1="52" x2="672" y2="52" stroke="var(--verdigris)" stroke-width="1" stroke-dasharray="3 5"/>
         <path d="M52 150 C 140 92, 210 62, 300 55 C 400 50, 520 52, 672 52"
-              fill="none" stroke="#5EA692" stroke-width="2"/>
-        <g fill="#8FA0B5" font-family="IBM Plex Mono, monospace" font-size="11">
+              fill="none" stroke="var(--verdigris)" stroke-width="2"/>
+        <g fill="var(--slate)" font-family="IBM Plex Mono, monospace" font-size="11">
           <text x="44" y="56" text-anchor="end">315</text>
           <text x="44" y="154" text-anchor="end">0</text>
           <text x="52" y="170">block 1</text>
-          <text x="300" y="170" text-anchor="middle">block 214</text>
+          <text x="300" y="170" text-anchor="middle">later blocks</text>
           <text x="672" y="170" text-anchor="end">onward</text>
         </g>
-        <g fill="#5EA692" font-family="IBM Plex Sans, sans-serif" font-size="12.5">
-          <text x="316" y="42">settles — then pays out exactly what comes in</text>
+        <g fill="var(--verdigris)" font-family="IBM Plex Sans, sans-serif" font-size="12.5">
+          <text x="316" y="42">with eligible claims at every block</text>
         </g>
-        <circle cx="300" cy="55" r="3.5" fill="#5EA692"/>
+        <circle cx="300" cy="55" r="3.5" fill="var(--verdigris)"/>
       </svg>
-      <p class="plate-cap">The escrow is a reservoir, not a hoard. Each block adds 35 coins and
-        releases a tenth of the balance, so it climbs to <b>315 coins</b> and stops. From there
-        it pays out <b>35 a block</b> — precisely its own inflow — to whoever is finding gaps.
-        It cannot drain, and it cannot run away.</p>
+      <p class="plate-cap">Each block adds <b>35 test coins</b> to the science escrow. When eligible claims
+        exist, a tenth of its balance is released. With claims at every block, the retained
+        balance approaches <b>315</b> and the payout approaches <b>35 per block</b>.
+        Without eligible claims, funds accumulate until a later payout.</p>
     </div>
   </section>
 
   <section class="rule-top" id="run">
     <h2>Run a node.</h2>
     <div class="col">
-      <p>One binary, no daemon to configure, no wallet service to register with. It creates a
-        key on first run and starts searching.</p>
+      <p>The project is in an extended testnet campaign. Start with the source and setup
+        instructions; mining needs a real temperature sensor, while a validation-only node
+        can follow the chain without one. Test coins have no monetary value.</p>
+      <p><a href="https://github.com/craigderington/constella#readme">Source and node setup on GitHub ↗</a></p>
+      <p>You can inspect the live chain before installing anything. The Explorer serves
+        HTML to a browser and a text dashboard to a terminal:</p>
     </div>
 
-    <div class="col">
-      <p>You can look at the live chain before installing anything. The explorer serves the
-        same page two ways — HTML to a browser, plain text to a terminal:</p>
-    </div>
-
-    <pre><span class="c"># the live network, right now</span>
-curl explorer.catasterism.xyz</pre>
-
-    <div class="col">
-      <p>Then run your own:</p>
-    </div>
-
-    <pre><span class="c"># build and start a node</span>
-docker compose up --build -d
-
-<span class="c"># watch it work</span>
-docker compose logs -f node1
-
-<span class="c"># your own explorer, same dashboard</span>
-curl 127.0.0.1:3071</pre>
+    <pre tabindex="0" aria-label="Terminal command to inspect the testnet"><span class="c"># inspect the live testnet</span>
+curl -fsS https://explorer.catasterism.xyz/</pre>
 
     <div class="col">
       <p>The <a href="https://explorer.catasterism.xyz">explorer</a> is a separate Go
@@ -533,23 +545,24 @@ curl 127.0.0.1:3071</pre>
 
     <dl class="spec">
       <div><dt>Constellation</dt><dd>p, p+4, p+6, p+10, p+12, p+16</dd></div>
-      <div><dt>Share / block</dt><dd>quadruplet / sextuplet</dd></div>
-      <div><dt>Share spacing</dt><dd>4 s</dd></div>
+      <div><dt>Share / block</dt><dd>quadruplet / quintuplet (testnet)</dd></div>
+      <div><dt>Share spacing</dt><dd>4 s target</dd></div>
       <div><dt>Payout</dt><dd>PPLNS over 256 shares</dd></div>
       <div><dt>Reward split</dt><dd>30% chain · 70% science</dd></div>
-      <div><dt>Node binary</dt><dd>141 KB, static, musl</dd></div>
-      <div><dt>Resident memory</dt><dd>~1 MB</dd></div>
-      <div><dt>P2P · explorer · database</dt><dd>7043 · 3071 · 5439</dd></div>
+      <div><dt>Node binary</dt><dd>162–178 KiB, static, musl</dd></div>
+      <div><dt>Resident memory</dt><dd>grows with chain history</dd></div>
+      <div><dt>Network</dt><dd>testnet · a8f4562e57e74f9d</dd></div>
     </dl>
   </section>
 
+  </main>
   <footer>
     <div class="foot-top">
       <p>Catasterism is experimental software on a test network. Coins have no value, the
-        parameters will change, and the chain has been reset before and will be again.</p>
+        parameters may change, and the chain may be reset during testing.</p>
       <div class="foot-links">
         <a href="https://explorer.catasterism.xyz">Chain explorer</a>
-        <a href="#run">Run a node</a>
+        <a href="https://github.com/craigderington/constella">Source code</a>
         <a href="#sieve">The sieve</a>
       </div>
     </div>
@@ -562,7 +575,7 @@ curl 127.0.0.1:3071</pre>
   var N = 210, PRIMES = [2,3,5,7];
   var grid = document.getElementById('grid');
   var readout = document.getElementById('readout');
-  var btn = document.getElementById('run');
+  var btn = document.getElementById('sieve-run');
   var cells = [], running = false;
   var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -614,6 +627,12 @@ curl 127.0.0.1:3071</pre>
 
     for (var i = 0; i < PRIMES.length; i++) await strike(PRIMES[i]);
 
+    // Convert the partial prime sieve into a wheel: 1 is coprime to 210;
+    // 2, 3, 5 and 7 are not. Composite residues such as 121 may survive.
+    say('Now form the wheel: include 1, and remove 2, 3, 5 and 7 themselves.');
+    await wait(700);
+    at(1).className = 'cell survivor';
+    for (var j = 0; j < PRIMES.length; j++) at(PRIMES[j]).className = 'cell struck';
     var survivors = [];
     for (var n = 1; n <= N; n++){
       if (!at(n).classList.contains('struck')){
@@ -626,7 +645,7 @@ curl 127.0.0.1:3071</pre>
     var c97 = at(97);
     c97.className = 'cell seed';
     say('<b>' + survivors.length + ' of 210 survive.</b> Those are the residues coprime to ' +
-        '2·3·5·7, and they are the only places a sextuplet can begin. ' +
+        '2·3·5·7. Some are composite; this is a wheel, not a list of primes. ' +
         'This miner searches exactly one of them: <span class="em">97</span>.');
 
     btn.disabled = false; btn.textContent = 'Run it again';
@@ -637,15 +656,18 @@ curl 127.0.0.1:3071</pre>
 
   /* show the finished state at rest, so the page is never a blank grid */
   (function seedRest(){
-    at(1).className = 'cell struck';
     for (var i = 0; i < PRIMES.length; i++){
       var p = PRIMES[i];
-      for (var m = p * 2; m <= N; m += p) at(m).className = 'cell struck';
+      for (var m = p; m <= N; m += p) at(m).className = 'cell struck';
     }
     for (var n = 1; n <= N; n++){
       if (!at(n).classList.contains('struck')) at(n).className = 'cell survivor';
     }
     at(97).className = 'cell seed';
+    say('48 wheel residues survive. Press run to see how the sieve becomes the wheel.');
   })();
 })();
 </script>
+
+</body>
+</html>
