@@ -18,3 +18,4 @@ bench_ledger
 constella-*-v4
 constella-data-*
 test_peer_budget
+test_node_work

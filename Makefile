@@ -53,10 +53,16 @@ test_peer_budget: $(CORE) tests/test_peer_budget.c src/*.h
 peer-test: test_peer_budget
 	./test_peer_budget
 
+test_node_work: $(CORE) src/node.c tests/test_node_work.c src/*.h
+	$(CC) $(CFLAGS) -Isrc -o $@ $(CORE) tests/test_node_work.c $(LDFLAGS)
+
+node-work-test: test_node_work
+	./test_node_work
+
 validator-test: constella
 	python3 -B tests/test_validator.py
 
-test: unit gate-test storage-test peer-test validator-test
+test: unit gate-test storage-test peer-test node-work-test validator-test
 	python3 tests/crosscheck.py ./test_constella
 
 size: constella
@@ -93,6 +99,6 @@ candidate-build: constella-testnet-v4 constella-mainnet-v4
 
 clean:
 	rm -f constella test_constella thermal_sim constella-explorer gate_snapshot test_chain_storage bench_ledger test_peer_budget \
-	  constella-testnet-v4 constella-mainnet-v4 constella-explorer-testnet-v4 constella-explorer-mainnet-v4
+	  constella-testnet-v4 constella-mainnet-v4 constella-explorer-testnet-v4 constella-explorer-mainnet-v4 test_node_work
 
-.PHONY: all fast unit test size explorer explorer-test gate-test storage-test clean protocol-test candidate-build peer-test validator-test
+.PHONY: all fast unit test size explorer explorer-test gate-test storage-test clean protocol-test candidate-build peer-test node-work-test validator-test

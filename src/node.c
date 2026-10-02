@@ -24,6 +24,9 @@
 typedef struct { uint8_t root[32]; int ntx; tx_t txs[SHARE_MAX_TX]; int nsci; sci_t sci[SHARE_MAX_SCI]; } tmpl_t;
 
 #define SCI_POOL 16
+/* Bound local work just as peer input is bounded. A ready worker pipe must
+ * leave time for job refresh, peer service and shutdown in every loop turn. */
+#define WORKER_BATCH 32
 
 /* Shared with worker threads and written by the signal handler. */
 _Static_assert(ATOMIC_INT_LOCK_FREE == 2, "shutdown flag must be signal-safe");
@@ -74,9 +77,12 @@ static void refresh_sci_region(int tip) {
 }
 
 static int sci_main_has(const int *path, int n, uint32_t epoch, uint64_t k) {
-    for (int i = 1; i < n; i++) {
-        const entry_t *e = chain_entry(path[i]);
-        if (sci_epoch(e->height) != epoch || memcmp(e->s.miner, payout, 32)) continue;
+    /* Epoch is the anchor height: its shares are epoch+1 .. epoch+SCI_EPOCH.
+     * Widen before addition so a high epoch cannot wrap into old history. */
+    uint64_t end = (uint64_t)epoch + SCI_EPOCH;
+    for (uint64_t h = (uint64_t)epoch + 1; h < (uint64_t)n && h <= end; h++) {
+        const entry_t *e = chain_entry(path[h]);
+        if (memcmp(e->s.miner, payout, 32)) continue;
         for (int c = 0; c < e->nsci; c++) if (e->sci[c].k == k) return 1;
     }
     return 0;
@@ -116,10 +122,13 @@ static void recover_side_claims(const int *path, int n, int total) {
     sci_region(&active_base, sci_anchor_cur, payout);
     for (int i = 1; i < total && nscipool < SCI_POOL; i++) if (!chain_path_has(path, n, i)) {
         const entry_t *e = chain_entry(i);
-        if (e->height == 0 || memcmp(e->s.miner, payout, 32)) continue;
+        /* Expired claims cannot be recovered. Reject them before looking
+         * for canonical duplicates, rather than rescanning history for each. */
+        if (e->height == 0 || sci_epoch(e->height) != active_epoch ||
+            memcmp(e->s.miner, payout, 32)) continue;
         for (int c = 0; c < e->nsci && nscipool < SCI_POOL; c++) {
-            if (sci_main_has(path, n, active_epoch, e->sci[c].k) ||
-                sci_pool_has(e->sci[c].k) ||
+            if (sci_pool_has(e->sci[c].k) ||
+                sci_main_has(path, n, active_epoch, e->sci[c].k) ||
                 !sci_claim_recoverable(e->height, active_epoch, &active_base, &e->sci[c]))
                 continue;
             scipool[nscipool++] = e->sci[c];
@@ -391,10 +400,15 @@ void node_sync_receive_vector(int peer, const uint8_t *msg, uint16_t len) {
 
 static void drain_found(int fd) {
     uint8_t raw[SHARE_SIZE], msg[SHARE_MSG_MAX], miss[32];
-    while (read(fd, raw, SHARE_SIZE) == SHARE_SIZE) {
+    for (int batch = 0; batch < WORKER_BATCH && running; batch++) {
+        if (read(fd, raw, SHARE_SIZE) != SHARE_SIZE) break;
         share_t s;
         share_deser(&s, raw);
         found++;
+        /* Workers may fill the pipe while the main loop rebuilds state.
+         * Do not publish their obsolete same-parent siblings. This is local
+         * mining policy only; peer shares still take the full fork validator. */
+        if (memcmp(s.prev, chain_entry(chain_tip())->id, 32)) continue;
         for (int i = 0; i < TMPL_RING; i++) {
             if (memcmp(T[i].root, s.tx_root, 32)) continue;
             size_t l = share_msg(msg, &s, T[i].txs, T[i].ntx, T[i].sci, T[i].nsci);
@@ -402,6 +416,9 @@ static void drain_found(int fd) {
             if (r == CH_INVALID)
                 log_msg("mined share rejected: h=%u bits=%u txs=%d sci=%d",
                         s.height, s.bits, T[i].ntx, T[i].nsci);
+            /* Refresh the template in the main loop before consuming more
+             * results, even if other workers keep the pipe readable. */
+            if (r == CH_TIP || r == CH_ERROR) return;
             break;
         }
     }
@@ -414,7 +431,8 @@ static void drain_sci(int fd) {
     uint8_t raw[SCI_SIZE];
     bn base;
     sci_region(&base, sci_anchor_cur, payout);
-    while (read(fd, raw, SCI_SIZE) == SCI_SIZE) {
+    for (int batch = 0; batch < WORKER_BATCH && running; batch++) {
+        if (read(fd, raw, SCI_SIZE) != SCI_SIZE) break;
         sci_t c;
         sci_deser(&c, raw);
         int dup = 0;

@@ -16,6 +16,7 @@ web_session.txt
 *.key
 peers.dat
 test_peer_budget
+test_node_work
 
 # Local agent guidance, documentation and tests.
 /AGENTS.md
