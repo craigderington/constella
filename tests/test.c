@@ -1216,9 +1216,10 @@ static void cli_on_conn(int peer) {
 
 /* Returns the CLI's exit status with its stdout in `out`; -1 if it never ran. */
 static int cli_probe(const wallet_t *node_id, const char *sub, char *out, size_t cap) {
+    /* A NULL seed list bootstraps against public DNS, even in a test. */
     uint16_t port = 0;
     for (uint16_t t = 17943; t < 17983 && !port; t++)
-        if (!net_init(t, NULL, node_id, cli_on_msg, cli_on_conn)) port = t;
+        if (!net_init(t, "127.0.0.1:1", node_id, cli_on_msg, cli_on_conn)) port = t;
     if (!port) return -1;
     int pfd[2];
     if (pipe(pfd)) { net_stop(); return -1; }
@@ -1444,7 +1445,7 @@ static void t_handshake_live(void) {
 
     uint16_t port = 0;
     for (uint16_t t = 17993; t < 18033 && !port; t++)
-        if (!net_init(t, NULL, &nid, cli_on_msg, cli_on_conn)) port = t;
+        if (!net_init(t, "127.0.0.1:1", &nid, cli_on_msg, cli_on_conn)) port = t;
     CHECK(port != 0);
     if (!port) return;
 
@@ -1763,8 +1764,8 @@ static int node_start_stop_config(const char *dir, uint16_t port,
         setenv("CONSTELLA_DATA", dir, 1);
         setenv("CONSTELLA_PORT", pbuf, 1);
         setenv("CONSTELLA_THREADS", "1", 1);
-        if (peers) setenv("CONSTELLA_PEERS", peers, 1);
-        else unsetenv("CONSTELLA_PEERS");
+        /* Lifecycle tests never bootstrap against the public testnet. */
+        setenv("CONSTELLA_PEERS", peers ? peers : "127.0.0.1:1", 1);
         if (advertise) setenv("CONSTELLA_ADVERTISE", advertise, 1);
         else unsetenv("CONSTELLA_ADVERTISE");
         unsetenv("CONSTELLA_KEY");
@@ -1835,10 +1836,9 @@ static void t_addr_seeds_enter_tables(void) {
     char dir[] = "/tmp/constella-seed-XXXXXX";
     if (!mkdtemp(dir)) { CHECK(0); return; }
 
-    /* 198.51.100.7 is TEST-NET-2: routable as far as addr_is_routable is
-     * concerned (so it is not filtered) but with no route here, so connect
-     * goes to EINPROGRESS and never completes. Exactly the shape of a real
-     * unreachable seed. */
+    /* 198.51.100.7 is TEST-NET-2: accepted by addr_is_routable, but never a
+     * live seed. Both asynchronous failure (EINPROGRESS) and an immediate
+     * ENETUNREACH in the network-isolated image build must retain it as new. */
     CHECK(node_start_stop_env(dir, 18221, "198.51.100.7:7043", NULL) == 0);
     CHECK(addr_load(dir) == 0);
     CHECK(addr_count(0) == 1);                 /* the seed reached `new` */
@@ -2163,7 +2163,7 @@ static void t_addr_gossip_guards(void) {
 
     uint16_t port = 0;
     for (uint16_t t = 18093; t < 18133 && !port; t++)
-        if (!net_init(t, NULL, &nid, cli_on_msg, cli_on_conn)) port = t;
+        if (!net_init(t, "127.0.0.1:1", &nid, cli_on_msg, cli_on_conn)) port = t;
     CHECK(port != 0);
     if (!port) return;
 

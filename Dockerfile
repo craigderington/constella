@@ -8,7 +8,8 @@ COPY src ./src
 COPY tests ./tests
 # ARM images target 4 KiB-page Linux guests (including mini's Colima VM).
 # GNU ld's default 64 KiB segment alignment otherwise wastes the size budget.
-RUN if [ "$TARGETARCH" = "arm64" ]; then export LDFLAGS="-Wl,-z,max-page-size=4096"; fi; \
+# Tests use disposable loopback peers; builds must never contact a live seed.
+RUN --network=none if [ "$TARGETARCH" = "arm64" ]; then export LDFLAGS="-Wl,-z,max-page-size=4096"; fi; \
     make CC=cc test && make CC=cc size
 
 FROM scratch
