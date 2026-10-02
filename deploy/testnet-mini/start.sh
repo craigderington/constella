@@ -12,4 +12,4 @@ base=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
   fi
 '
 docker --context colima-constella-gate compose --env-file "$base/mini.env" \
-  -p constella-gate-mini -f "$base/deploy/testnet-mini/compose.yml" up -d --no-deps node6
+  -p constella-gate-mini -f "$base/deploy/testnet-mini/compose.yml" up -d --no-deps --no-build --pull never node6

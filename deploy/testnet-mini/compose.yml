@@ -1,16 +1,16 @@
 # Fresh sixth testnet node on the ARM Mac mini. No explorer/database services.
 services:
   node6:
-    image: constella:pause-fix-arm-20260929
-    build:
-      context: ../..
+    image: constella:burst-fix-arm64-20261002
+    pull_policy: never
     restart: unless-stopped
+    stop_grace_period: 60s
     cpus: 1.0
     environment:
       CONSTELLA_PORT: "7043"
       CONSTELLA_THREADS: "2"
-      # Incident hold: keep relay/sync running; do not resume mining until
-      # competing-share growth and recovery cost pass a controlled canary.
+      # Keep this relay paused while the repaired nixos miner is observed.
+      CONSTELLA_MINE: "0"
       CONSTELLA_DUTY: "0"
       CONSTELLA_TEMP_MAX: "80"
       CONSTELLA_TEMP_FILE: /host-thermal/cpu_millidegrees
