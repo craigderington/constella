@@ -1,0 +1,67 @@
+# One updated ASUS miner; reuse node4's retained wallet and history.
+name: constella-gate-asus
+services:
+  temperature:
+    image: alpine:3.20
+    user: '1000:1000'
+    pull_policy: never
+    restart: unless-stopped
+    read_only: true
+    network_mode: none
+    cpus: 0.05
+    mem_limit: 16m
+    pids_limit: 16
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        while :; do
+          sensor=
+          for name in /sys/class/hwmon/hwmon*/name; do
+            if [ "$$(cat "$$name" 2>/dev/null)" = k10temp ]; then
+              sensor="$${name%/name}/temp1_input"; break
+            fi
+          done
+          if [ -n "$$sensor" ] && cat "$$sensor" > /thermal/cpu.new; then
+            mv /thermal/cpu.new /thermal/cpu_millidegrees
+          else
+            rm -f /thermal/cpu_millidegrees /thermal/cpu.new
+          fi
+          sleep 1
+        done
+    volumes: ['./thermal:/thermal']
+    logging: {driver: json-file, options: {max-size: 1m, max-file: '2'}}
+  node4:
+    image: constella:audit-hardening-amd64-20261002
+    pull_policy: never
+    restart: unless-stopped
+    stop_grace_period: 60s
+    cpus: 1.0
+    mem_limit: 1g
+    pids_limit: 64
+    read_only: true
+    tmpfs: ['/tmp:size=32m,mode=1777']
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      CONSTELLA_DATA: /data
+      CONSTELLA_PORT: '7043'
+      CONSTELLA_MINE: '1'
+      CONSTELLA_THREADS: '2'
+      CONSTELLA_DUTY: '25'
+      CONSTELLA_TEMP_MAX: '80'
+      CONSTELLA_TEMP_FILE: /thermal/mining_cpu_millidegrees
+      CONSTELLA_BATTERY_PAUSE: '1'
+      CONSTELLA_PRIVATE_NET: '0'
+      CONSTELLA_PEERS: '3.150.62.26:7043,192.168.1.123:17046'
+    volumes: ['node4:/data', './thermal:/thermal:ro']
+    networks: [p2p]
+    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+networks:
+  p2p: {}
+volumes:
+  node4:
+    external: true
+    name: constella-gate-asus_node4

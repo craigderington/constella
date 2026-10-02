@@ -1,0 +1,6 @@
+# Safe operating-mode fallback: retain the tested image, keys and chain.
+services:
+  node4:
+    environment:
+      CONSTELLA_MINE: '0'
+      CONSTELLA_DUTY: '0'
