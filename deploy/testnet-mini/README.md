@@ -6,14 +6,44 @@ Docker context: `colima-constella-gate`. Compose project: `constella-gate-mini`.
 Node: `constella-gate-mini-node6-1`, advertised as `192.168.1.123:17046`.
 No explorer or database is deployed on mini.
 
-## Current relay mode — 2026-10-02
+## Current mining mode — 2026-10-02
 
-Node6 now uses `constella:burst-fix-arm64-20261002` with explicit
-**`CONSTELLA_MINE=0`** and `CONSTELLA_DUTY=0`. Retain these settings across
-restarts. Nixos node7 is the first connected miner on the repair, initially at
-25% duty and increased to 75% at Craig's request after the overnight run;
-Wolf359 node8 is synchronizing in validation-only mode. Additional mining waits
-for connected ledger and sustained-operation checks.
+Node6 uses `constella:burst-fix-arm64-20261002` with `CONSTELLA_MINE=1`,
+**25% duty**, two workers, a one-CPU quota and real host temperature protection
+(cap 80 C, target 74 C). Craig authorized mining after the overnight relay run.
+Nixos node7 mines at 100% duty within its one-CPU quota; Wolf359 remains
+validation-only. Wallets, identities and persistent volumes are retained.
+
+The Mini stopped cleanly (exit 0, no OOM) and restarted at 13:34:54 UTC.
+It replayed 315,398 records to height 80,540 in 355 seconds. Mining was held
+at zero while Nixos replayed and the two synchronized: the configured real-sensor
+alias was deliberately absent, invoking the verified fail-closed sensor behavior.
+The host temperature publisher continued running throughout.
+
+At height 80,650, both nodes returned the same balances/nonces for both miner
+addresses. The Explorer independently reported all seven accounts matching at
+80,645. At 14:03:52 UTC, the operator-side hold was released by creating
+`thermal/mining_cpu_millidegrees -> cpu_millidegrees` within the mounted thermal
+directory. The alias reads the actual host sensor; it does not fabricate a
+reading. Missing/stale readings still pause work. This was a manual coordinated
+startup hold, not an automatic chain-convergence gate for future restarts.
+
+At 14:06:49 the Mini reported height 80,750, two peers, zero orphans, 25% duty,
+46 C and 88 finds. Nixos accepted its shares. Neither container restarted or
+OOMed. The Explorer's later check was `ok` for all seven accounts at 80,761
+(14:07:46 UTC); stats reached 80,762 with 23.6 shares/minute. Occasional competing
+shares are expected with two miners and do not alone indicate the former burst.
+
+To restore validation-only mode on the Mini, retaining all live data:
+
+```sh
+cd /Users/cd/constella-release-gate
+docker --context colima-constella-gate compose --env-file mini.env -p constella-gate-mini -f deploy/testnet-mini/compose.yml stop -t 60 node6
+cp mining-enable-20261002/compose.validation.yml deploy/testnet-mini/compose.yml
+docker --context colima-constella-gate compose --env-file mini.env -p constella-gate-mini -f deploy/testnet-mini/compose.yml up -d --no-deps --no-build --pull never node6
+```
+
+## Relay upgrade and overnight history
 
 On 2026-10-02 the older mini relay accepted Nixos's new shares but lagged by
 roughly 170 heights, with expensive recovery delaying its status loop. The
@@ -29,7 +59,7 @@ to height 71,687 in 354 seconds. By its first status at 03:15:11 it had caught u
 to 71,885, with three peers and zero orphans. Through the overnight run it kept
 receiving Nixos's shares, reaching 79,147 by 11:26:41 with zero orphans and no
 restart/OOM or local validation errors. At 12:39:11 it was at 79,822, shortly
-after the miner's 79,819 sample. It remains validation-only; no wallet was
+after the miner's 79,819 sample. At that checkpoint it was validation-only; no wallet was
 replaced or exported. Its P2P identity is still `3b11534ebec1b32b`.
 
 The startup service now requires the preloaded tested image (`--no-build`,
@@ -202,7 +232,7 @@ as millidegrees Celsius. The directory is mounted read-only into node6.
 fake reading. The C reader rejects missing, malformed, nonregular, future-dated
 or older-than-three-second files, including at startup. The existing controller
 sets duty to zero when its sampling window has no valid readings. Mini uses
-cap 80 C, target 74 C, two workers, max duty 50%, and a one-CPU container quota.
+cap 80 C, target 74 C, two workers, max duty 25%, and a one-CPU container quota.
 
 Live verification: suspending the publisher produced
 `duty=0% ... (sensor unavailable)` at 21:41:35 UTC while peer sync continued.

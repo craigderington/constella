@@ -9,11 +9,12 @@ services:
     environment:
       CONSTELLA_PORT: "7043"
       CONSTELLA_THREADS: "2"
-      # Keep this relay paused while the repaired nixos miner is observed.
-      CONSTELLA_MINE: "0"
-      CONSTELLA_DUTY: "0"
+      # Controlled second miner, enabled after its retained chain catches up.
+      CONSTELLA_MINE: "1"
+      CONSTELLA_DUTY: "25"
       CONSTELLA_TEMP_MAX: "80"
-      CONSTELLA_TEMP_FILE: /host-thermal/cpu_millidegrees
+      # Host symlink to the real sensor file; absent during coordinated catch-up.
+      CONSTELLA_TEMP_FILE: /host-thermal/mining_cpu_millidegrees
       CONSTELLA_BATTERY_PAUSE: "1"
       CONSTELLA_PRIVATE_NET: "1"
       CONSTELLA_TRACE_DISCOVERY: "1"
