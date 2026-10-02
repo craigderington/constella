@@ -6,6 +6,49 @@ Docker context: `colima-constella-gate`. Compose project: `constella-gate-mini`.
 Node: `constella-gate-mini-node6-1`, advertised as `192.168.1.123:17046`.
 No explorer or database is deployed on mini.
 
+## Current incident hold — 2026-10-01
+
+Node6 is running with **`CONSTELLA_DUTY=0`**. Retain this setting across
+restarts. The old image predates validation-only mode, so this is the verified
+worker pause rather than `CONSTELLA_MINE=0`. Nixos node7 remains validation-only;
+additional homelab miners are on hold.
+
+At 21:17 UTC the mini was stopped after excessive competing-share production.
+It required Docker's forced termination after the 60-second grace period
+(exit 137, not an OOM). Its public share file and logs were preserved under
+`/Users/cd/constella-release-gate/incident-20261001T211701Z`; keys and persistent
+volume were retained in place. The paused restart loaded all 306,218 records
+and reached height 71,360. Subsequent status showed zero candidate scans,
+zero newly found shares, zero orphans and no container restarts.
+
+Structural analysis of the saved file identifies 234,858 noncanonical records
+and full winning tip
+`3e1424d8f0e31ec8bc230ba48a3d921c1e9349adc94e01c9aab0c33886b3fc8c`.
+This analysis checks linkage and cumulative-work selection, not a fresh proof
+or signature replay. At 23:22 UTC Nixos matched the height/tip prefix; Craig's
+cloud explorer reported that full tip and `check=ok` for all six accounts at
+height 71,360. Its 894 blocks, 30,975 science-paid coins and 315 escrow coins
+also satisfy the 35-coins-per-block science allocation. `known=87532` in the
+explorer is its stored history including side branches, not canonical height.
+
+The retained mini source still uses the old full-path membership scan during
+side-claim recovery. That scan is nested inside a traversal of stored history;
+the local source already contains the constant-time membership fix. Both
+versions also scan canonical history when checking spent science claims, and
+the local worker-result reader has no per-turn bound. These are confirmed
+code paths consistent with delayed job refresh and accumulated sibling work;
+their individual contribution to this incident has not yet been profiled.
+Saved header timestamps show gradual difficulty reduction after the other
+miners stopped, followed by 115,378 records at the minimum 64-bit difficulty.
+Do not change the consensus difficulty rules to hide the processing problem.
+
+The earlier mining/connection results below are historical. Do not restore the
+pre-incident Compose file as a routine rollback: it would resume mining.
+First validate a candidate against the saved history, bounded worker-output
+handling and side-claim recovery cost, then run a controlled mining canary.
+Craig alone operates the cloud instance. Generated evidence stays in the
+ignored local archive rather than Git.
+
 On 2026-10-01, Craig authorized adding `3.150.62.26:7043` as an explicit
 outbound bootstrap peer. The original LAN peers remain configured. Only node6
 was recreated, using its existing image and `constella-gate-mini_node6` volume.

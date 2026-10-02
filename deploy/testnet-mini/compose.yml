@@ -9,7 +9,9 @@ services:
     environment:
       CONSTELLA_PORT: "7043"
       CONSTELLA_THREADS: "2"
-      CONSTELLA_DUTY: "50"
+      # Incident hold: keep relay/sync running; do not resume mining until
+      # competing-share growth and recovery cost pass a controlled canary.
+      CONSTELLA_DUTY: "0"
       CONSTELLA_TEMP_MAX: "80"
       CONSTELLA_TEMP_FILE: /host-thermal/cpu_millidegrees
       CONSTELLA_BATTERY_PAUSE: "1"
