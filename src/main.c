@@ -1,6 +1,7 @@
 /* constella: idle-compute node for a prime-constellation sharechain. */
 #include "cli.h"
 #include "node.h"
+#include "resolve.h"
 #include "params.h"
 #include "sieve.h"
 #include "util.h"
@@ -26,6 +27,7 @@ static int usage(void) {
 
 int main(int argc, char **argv) {
     const char *cmd = argc > 1 ? argv[1] : NULL;
+    if (cmd && !strcmp(cmd, "--resolve-seed")) return resolve_main(argc, argv);
     if (cmd && !strcmp(cmd, "wallet"))  return cli_wallet(argc, argv);
     if (cmd && !strcmp(cmd, "balance")) return cli_balance(argc, argv);
     if (cmd && !strcmp(cmd, "send"))    return cli_send(argc, argv);

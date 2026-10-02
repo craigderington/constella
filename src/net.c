@@ -1,5 +1,6 @@
 #include "net.h"
 #include "addr.h"
+#include "resolve.h"
 #include "params.h"
 #include "tx.h"
 #include "util.h"
@@ -102,10 +103,22 @@ typedef struct {
 
 static int buffered(const peer_t *p);
 
-typedef struct { char host[128], port[8]; int peer, fallback; int64_t next; } seed_t;
+typedef struct {
+    char host[128], port[8];
+    int peer, fallback, numeric;
+    int64_t next;
+    uint64_t refresh;
+    unsigned failures, cursor;
+    resolve_result addresses;
+} seed_t;
+#define DNS_CACHE_NS 300000000000ULL
+#define DNS_RETRY_MAX_NS 300000000000ULL
+/* The extra slot is asynchronous self-advertisement, never a seed dial. */
+static resolver dns = RESOLVER_INIT;
+static int dns_seed = -1, dns_turn;
 
 static peer_t P[MAX_PEERS];
-static seed_t S[MAX_SEEDS];
+static seed_t S[MAX_SEEDS + 1];
 static int nseeds, lfd = -1, pmap[MAX_PEERS + 1];
 static net_msg_fn cb_msg;
 static net_conn_fn cb_conn;
@@ -721,52 +734,79 @@ static void dial_addr(const addr_t *a) {
     peer_dial_begin(&P[i], a);
 }
 
+static void dns_failed(seed_t *s, uint64_t now) {
+    unsigned shift = s->failures < 6 ? s->failures++ : 6;
+    uint64_t delay = 5000000000ULL << shift;
+    if (delay > DNS_RETRY_MAX_NS) delay = DNS_RETRY_MAX_NS;
+    s->refresh = now + delay;
+    if (s->failures == 1 || trace_discovery)
+        log_msg("p2p: DNS lookup failed for %s; retry in %llu seconds", s->host,
+                (unsigned long long)(delay / 1000000000ULL));
+}
+
+static void resolve_seeds(void) {
+    uint64_t now = now_ns();
+    if (dns.pid) {
+        resolve_result result;
+        int r = resolve_poll(&dns, &result, now);
+        if (!r) return;
+        if (dns_seed >= 0) {
+            seed_t *s = &S[dns_seed];
+            if (r > 0) {
+                s->addresses = result; s->cursor = s->failures = 0;
+                s->next = 0;
+                s->refresh = now + DNS_CACHE_NS;
+                uint16_t port = (uint16_t)atoi(s->port);
+                if (dns_seed == MAX_SEEDS) net_set_self(result.ip[0], port);
+                else for (uint32_t k = 0; k < result.n; k++)
+                    addr_add(result.ip[k], port, (uint32_t)now_sec());
+            } else dns_failed(s, now);
+        }
+        dns_seed = -1;
+    }
+    /* One active helper, round-robin pending names, and bounded cached results.
+     * Numeric endpoints bypass libc entirely and cannot wait behind DNS. */
+    for (int k = 0; k <= nseeds; k++) {
+        int slot = (dns_turn + k) % (nseeds + 1);
+        int i = slot == nseeds ? MAX_SEEDS : slot;
+        seed_t *s = &S[i];
+        if (!s->host[0] || s->numeric || now < s->refresh ||
+            (s->fallback && now_sec() < fallback_at)) continue;
+        dns_turn = (slot + 1) % (nseeds + 1);
+        if (resolve_start(&dns, s->host, s->port, now)) dns_failed(s, now);
+        else dns_seed = i;
+        break;
+    }
+}
+
 static void dial(int s) {
-    struct addrinfo hints = {0}, *res;
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    S[s].next = now_sec() + 5;
-    if (getaddrinfo(S[s].host, S[s].port, &hints, &res)) return;
-    uint8_t ip[16];
-    uint16_t port = 0;
-    int known = sa_unpack(res->ai_addr, ip, &port) == 0;
-    if (!outbound_slot_available(known ? ip : NULL, port)) { freeaddrinfo(res); return; }
-    /* Remember the configured endpoint even when connect fails immediately
-     * (for example ENETUNREACH during startup). It remains untried until an
-     * authenticated handshake, independently of route availability. */
-    int remembered = known && addr_add(ip, port, (uint32_t)now_sec());
-    int fd = socket(res->ai_family, SOCK_STREAM, 0);
-    if (fd < 0) { freeaddrinfo(res); return; }
-    nonblock(fd);
-    int r = connect(fd, res->ai_addr, res->ai_addrlen);
-    freeaddrinfo(res);
-    if (r < 0 && errno != EINPROGRESS) { close(fd); return; }
-    int i = alloc_peer(fd, P_CONNECTING, s, 0, NULL);
-    if (i < 0) { close(fd); return; }
-    /* B1: a resolved seed enters `new` like any other learned address.
-     * Without this, `addr_add` has only two call sites - gossip ingest and
-     * self-advertise - so the tables have NO injection point for a node that
-     * has never spoken to anyone, and a fresh node with no configuration can
-     * never discover a peer. That is the spec's first Goal and the exact
-     * incident this work exists to fix.
-     *
-     * addr_add applies the routability filter, so an unroutable seed is
-     * refused here exactly as a gossiped one would be; when it is accepted we
-     * go through peer_dial_begin so the peer carries a real per-attempt id and
-     * a seed that completes two SEPARATE handshakes earns `tried` standing
-     * like any other peer. */
-    if (known) {
+    seed_t *seed = &S[s];
+    seed->next = now_sec() + 5;
+    uint16_t port = (uint16_t)atoi(seed->port);
+    for (uint32_t k = 0; k < seed->addresses.n; k++) {
+        const uint8_t *ip = seed->addresses.ip[seed->cursor++ % seed->addresses.n];
+        if ((port == self_port && !memcmp(ip, self_ip, 16)) ||
+            !outbound_slot_available(ip, port)) continue;
+        /* Keep eligible addresses even if this host currently has no route. */
+        int remembered = addr_add(ip, port, (uint32_t)now_sec());
+        struct sockaddr_storage ss;
+        socklen_t sl = sa_pack(&ss, ip, port);
+        int fd = socket(ss.ss_family, SOCK_STREAM, 0);
+        if (fd < 0) return;
+        nonblock(fd);
+        int r = connect(fd, (struct sockaddr *)&ss, sl);
+        if (r < 0 && errno != EINPROGRESS) { close(fd); continue; }
+        int i = alloc_peer(fd, P_CONNECTING, s, 0, NULL);
+        if (i < 0) { close(fd); return; }
         if (remembered) {
-            addr_t sa;
-            memset(&sa, 0, sizeof sa);
-            memcpy(sa.ip, ip, 16);
-            sa.port = port;
-            peer_dial_begin(&P[i], &sa);
+            addr_t a = {0}; memcpy(a.ip, ip, 16); a.port = port;
+            peer_dial_begin(&P[i], &a);
         } else {
             memcpy(P[i].dial_ip, ip, 16); P[i].dial_port = port; P[i].has_ip = 1;
         }
+        seed->peer = i;
+        return;
     }
-    S[s].peer = i;
 }
 
 /* Fills `out` with up to `max` candidates, each in a netgroup that is not
@@ -832,6 +872,7 @@ void net_tick(void) {
 	for (int i = 0; i < MAX_PEERS; i++)
 		outbound_ready += P[i].state == P_UP && !P[i].inbound && P[i].hello;
 	if (outbound_ready) fallback_at = t + SEED_FALLBACK_DELAY;
+    resolve_seeds();
 	for (int s = 0; s < nseeds; s++)
 		if (S[s].peer < 0 && t >= S[s].next &&
 		    (!S[s].fallback || t >= fallback_at))
@@ -839,19 +880,38 @@ void net_tick(void) {
     if (t >= out_next) { out_next = t + OUTBOUND_RETRY; fill_outbound(); }
 }
 
-/* One "host:port" (or bare "host", defaulting to 7043) into the seed table.
- * Shared by CONSTELLA_PEERS' csv tokens and by the DNS/hardcoded bootstrap
- * lists below - all three are the same seed_t mechanism, since dial()
- * already resolves a hostname through getaddrinfo and there is nothing
- * DNS-specific for a seed to do differently (Task 10 brief). */
+/* Parse explicit endpoints without invoking a resolver. Bracketed IPv6 is
+ * supported; an unbracketed IPv6 literal uses the default port. */
+static int seed_init(seed_t *s, const char *tok, int fallback) {
+    const char *host = tok, *port = "7043";
+    size_t len = strlen(tok);
+    if (*tok == '[') {
+        const char *end = strchr(tok, ']');
+        if (!end || (end[1] && end[1] != ':')) return -1;
+        host++; len = (size_t)(end - host);
+        if (end[1]) port = end + 2;
+    } else {
+        const char *c = strrchr(tok, ':');
+        if (c && c == strchr(tok, ':')) { len = (size_t)(c - tok); port = c + 1; }
+    }
+    if (!len || len >= sizeof s->host || !*port || strlen(port) >= sizeof s->port) return -1;
+    unsigned value = 0;
+    for (const char *c = port; *c; c++) {
+        if (*c < '0' || *c > '9') return -1;
+        value = value * 10 + (unsigned)(*c - '0');
+        if (value > 65535) return -1;
+    }
+    if (!value) return -1;
+    memset(s, 0, sizeof *s);
+    memcpy(s->host, host, len); strcpy(s->port, port);
+    s->peer = -1; s->fallback = fallback;
+    s->numeric = resolve_numeric(s->host, s->addresses.ip[0]);
+    s->addresses.n = s->numeric ? 1 : 0;
+    return 0;
+}
+
 static void add_seed(const char *tok, int fallback) {
-    if (nseeds >= MAX_SEEDS) return;
-    const char *c = strrchr(tok, ':');
-    seed_t *s = &S[nseeds];
-    snprintf(s->host, sizeof s->host, "%.*s", c ? (int)(c - tok) : (int)strlen(tok), tok);
-    snprintf(s->port, sizeof s->port, "%s", c ? c + 1 : "7043");
-    s->peer = -1; s->fallback = fallback; s->next = 0;
-    nseeds++;
+    if (nseeds < MAX_SEEDS && !seed_init(&S[nseeds], tok, fallback)) nseeds++;
 }
 
 /* Bootstrap order (design doc, "Bootstrap"): peers.dat, then DNS seeds, then
@@ -949,33 +1009,18 @@ int net_parse_advertise(const char *s, char *host, size_t hostcap, uint16_t *por
     return 0;
 }
 
-/* Resolves an already-validated host:port and records it as this node's own
- * address: net_set_self (so outbound selection never dials it, exactly as a
- * self-dial discovers it - see finish_auth) and addr_add (so it becomes
- * gossippable: the one way a peer's handle_getaddr reply can ever mention
- * us). This spends no extra wire message and so nothing from the
- * ADDR-rate-limiter budget - it only enriches what handle_getaddr was
- * already going to send. A resolution failure is reported to the caller but
- * is not fatal to the node; it only means this node advertises nothing. */
+/* Numeric self-addresses install immediately; names use the same asynchronous
+ * resolver, bounded cache and backoff as seeds. Gossip reads self_ip directly;
+ * the self-address never consumes a learned-address-table slot. */
 int net_advertise(const char *hostport) {
     char host[NET_ADVERTISE_HOST_MAX];
     uint16_t port;
     if (net_parse_advertise(hostport, host, sizeof host, &port)) return -1;
-    char portbuf[8];
-    snprintf(portbuf, sizeof portbuf, "%u", port);
-    struct addrinfo hints = {0}, *res;
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host, portbuf, &hints, &res)) return -1;
-    uint8_t ip[16];
-    uint16_t rport;
-    int ok = sa_unpack(res->ai_addr, ip, &rport) == 0;
-    freeaddrinfo(res);
-    if (!ok) return -1;
-    net_set_self(ip, port);
-    /* B2: deliberately NOT addr_add(). A self entry wastes a persisted table
-     * slot and burns outbound selection effort after an advertise change.
-     * handle_getaddr gossips our address directly from self_ip instead. */
+    if (dns_seed == MAX_SEEDS) { resolve_cancel(&dns); dns_seed = -1; }
+    if (seed_init(&S[MAX_SEEDS], hostport, 0)) return -1;
+    memset(self_ip, 0, sizeof self_ip); self_port = 0;
+    if (S[MAX_SEEDS].numeric) net_set_self(S[MAX_SEEDS].addresses.ip[0], port);
+    /* Names are queued for the same bounded resolver as bootstrap peers. */
     return 0;
 }
 
@@ -1194,6 +1239,10 @@ int net_seal_vector(uint8_t *out, const uint8_t key[32], uint64_t seq,
 
 /* tests host a listener in-process and need a clean slate between runs. */
 void net_stop(void) {
+    resolve_cancel(&dns);
+    if (dns.pid) resolve_poll(&dns, NULL, now_ns());
+    dns_seed = -1; dns_turn = 0;
+    memset(&S[MAX_SEEDS], 0, sizeof S[MAX_SEEDS]);
     for (int i = 0; i < MAX_PEERS; i++) drop(i);
     if (lfd >= 0) close(lfd);
     lfd = -1; nseeds = 0; n_inbound = 0;
@@ -1222,7 +1271,7 @@ static int until_ms(uint64_t deadline, uint64_t now, int maximum) {
 int net_poll_timeout(int maximum) {
     uint64_t now = now_ns();
     if (now < work_after) return until_ms(work_after, now, maximum);
-    int wait = maximum;
+    int wait = dns.pid && maximum > 50 ? 50 : maximum;
     if (now < accept_after) wait = until_ms(accept_after, now, wait);
     for (int i = 0; i < MAX_PEERS; i++) {
         if (P[i].state != P_UP) continue;

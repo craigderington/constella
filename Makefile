@@ -10,7 +10,7 @@ LDFLAGS += -static -flto -pthread -Wl,--gc-sections,-z,relro,-z,now,-z,noexecsta
 SIZE_MAX_BYTES ?= 196608
 
 CORE := src/blake2b.c src/bn.c src/share.c src/science.c src/tx.c src/wallet.c src/sieve.c src/throttle.c \
-        src/miner.c src/chain.c src/ledger.c src/mempool.c src/net.c src/util.c src/addr.c src/vendor/monocypher.c
+        src/miner.c src/chain.c src/ledger.c src/mempool.c src/resolve.c src/net.c src/util.c src/addr.c src/vendor/monocypher.c
 APP  := src/node.c src/cli.c src/main.c
 
 all: constella
@@ -48,7 +48,7 @@ unit: constella test_constella thermal_sim
 	./thermal_sim
 
 test_peer_budget: $(CORE) tests/test_peer_budget.c src/*.h
-	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/net.c,$(CORE)) tests/test_peer_budget.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/net.c src/resolve.c,$(CORE)) tests/test_peer_budget.c $(LDFLAGS)
 
 peer-test: test_peer_budget
 	./test_peer_budget

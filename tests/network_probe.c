@@ -1,3 +1,4 @@
+#include "resolve.h"
 /* Disposable protocol lab. The clock model calls the real retarget/template
  * code on synthetic ancestry; it does not claim to mine a live attack. */
 #define accept chain_accept
@@ -175,6 +176,7 @@ static int flood(const char *host, const char *mode) {
 }
 
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "--resolve-seed")) return resolve_main(argc, argv);
     if (argc == 4 && !strcmp(argv[1], "sync-fixture")) return sync_fixture(argv[2], argv[3]);
     if (argc == 4 && !strcmp(argv[1], "flood")) return flood(argv[2], argv[3]);
     if (argc == 2 && !strcmp(argv[1], "info")) return info();

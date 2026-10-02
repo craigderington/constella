@@ -588,7 +588,7 @@ int node_run(void) {
     const char *adv = getenv("CONSTELLA_ADVERTISE");
     if (adv && *adv) {
         if (net_advertise(adv)) log_msg("advertise: could not resolve %s; not advertising", adv);
-        else log_msg("advertise: %s", adv);
+        else log_msg("advertise: configured %s (names resolve asynchronously)", adv);
     }
     if (mining_enabled && miner_start(threads, pfd[1], spfd[1], &running)) {
         log_msg("fatal: cannot start miner workers");
@@ -641,6 +641,7 @@ int node_run(void) {
      * secret on every restart would relearn `tried` from nothing each time,
      * which is the same eclipse exposure a fresh node has, every boot. */
     addr_save(data);
+    net_stop();
     return failed ? 1 : 0;
 }
 
