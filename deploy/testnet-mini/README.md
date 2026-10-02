@@ -6,12 +6,37 @@ Docker context: `colima-constella-gate`. Compose project: `constella-gate-mini`.
 Node: `constella-gate-mini-node6-1`, advertised as `192.168.1.123:17046`.
 No explorer or database is deployed on mini.
 
-## Current incident hold — 2026-10-01
+## Current relay mode — 2026-10-02
 
-Node6 is running with **`CONSTELLA_DUTY=0`**. Retain this setting across
-restarts. The old image predates validation-only mode, so this is the verified
-worker pause rather than `CONSTELLA_MINE=0`. Nixos node7 remains validation-only;
-additional homelab miners are on hold.
+Node6 now uses `constella:burst-fix-arm64-20261002` with explicit
+**`CONSTELLA_MINE=0`** and `CONSTELLA_DUTY=0`. Retain these settings across
+restarts. Nixos node7 is the first connected miner on the repair, initially at
+25% duty and increased to 75% at Craig's request after the overnight run;
+Wolf359 node8 is synchronizing in validation-only mode. Additional mining waits
+for connected ledger and sustained-operation checks.
+
+On 2026-10-02 the older mini relay accepted Nixos's new shares but lagged by
+roughly 170 heights, with expensive recovery delaying its status loop. The
+tested ARM image was already present from the isolated canary. Its predecessor
+stopped cleanly (exit 0, no OOM), and node6 was replaced at 03:08:47 UTC with the
+same `constella-gate-mini_node6` volume and thermal-file mount. Startup explicitly
+reported validation-only mode. Its previous paused configuration, startup
+script and public history are retained in
+`/Users/cd/constella-release-gate/incident-20261002-relay/`.
+
+The new relay completed proof replay at 03:14:41 UTC: 306,545 records loaded
+to height 71,687 in 354 seconds. By its first status at 03:15:11 it had caught up
+to 71,885, with three peers and zero orphans. Through the overnight run it kept
+receiving Nixos's shares, reaching 79,147 by 11:26:41 with zero orphans and no
+restart/OOM or local validation errors. At 12:39:11 it was at 79,822, shortly
+after the miner's 79,819 sample. It remains validation-only; no wallet was
+replaced or exported. Its P2P identity is still `3b11534ebec1b32b`.
+
+The startup service now requires the preloaded tested image (`--no-build`,
+`--pull never`). The operational Compose profile no longer has a build stanza,
+so retained older source on this host cannot silently rebuild that release tag.
+
+## Incident history — 2026-10-01
 
 At 21:17 UTC the mini was stopped after excessive competing-share production.
 It required Docker's forced termination after the 60-second grace period
@@ -70,7 +95,7 @@ That exposed an additional seed-persistence bug: immediate `ENETUNREACH` lost a
 configured endpoint before it could enter `new`; endpoints now remain untried
 until authenticated, even when the initial route is unavailable.
 
-Candidate images (not deployed to the connected testnet):
+Tested images (subsequently deployed to the homelab on 2026-10-02):
 
 - `constella:burst-fix-amd64-20261002`: 165,712-byte binary.
 - `constella:burst-fix-arm64-20261002`: 181,984-byte binary, below 196,608 bytes.
@@ -93,11 +118,14 @@ OOM/restart occurred, and shutdown exited 0 in 0.12 seconds. The disposable
 container was removed; source, public history and logs remain under
 `/Users/cd/constella-release-gate/candidates/burst-fix-20261002`.
 
-The connected mini still uses its previous image at DUTY=0; Nixos is still
-validation-only. Next is a monitored rollout of this candidate to the existing
-mini, followed by connected tip/ledger and sustained-load checks before adding
-miners. The three-minute isolated canary does not establish overnight stability
-or 90-day capacity. No production command or Git push was performed.
+Craig prioritized Nixos for the first connected mining restart; it began at
+02:56:09 UTC after fully validating its retained history. The first captured
+236 appended records are all consecutive extensions without siblings. See
+`../testnet-nixos/README.md`. The mini was then upgraded as a validation-only
+relay as described above. Connected ledger and sustained-load checks remain
+necessary before adding miners. The three-minute isolated canary does not
+establish overnight stability or 90-day capacity. No production command or Git
+push was performed.
 
 On 2026-10-01, Craig authorized adding `3.150.62.26:7043` as an explicit
 outbound bootstrap peer. The original LAN peers remain configured. Only node6
@@ -119,7 +147,7 @@ Never copy those private keys into evidence. Node6's public payout address:
 
 ## Build and services
 
-Current image: **`constella:pause-fix-arm-20260929`**, deployed for BUG-041.
+Previous image: **`constella:pause-fix-arm-20260929`**, deployed for BUG-041.
 It passed 732/732 native ARM checks and the size gate at 177,856 bytes.
 Binary SHA-256: `3a88937dcbe21a455a1527df6af5d331e38573d88a7e65601a33312012e94d93`.
 The live real-sensor canary confirmed zero candidate scans and unchanged
