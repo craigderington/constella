@@ -1370,18 +1370,91 @@ static void t_wallet_durable_create(void) {
     if (!mkdtemp(dir)) { CHECK(0); return; }
     snprintf(path, sizeof path, "%s/wallet.key", dir);
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
-    wallet_t a, b;
-    CHECK(wallet_load(&a, path, 1) == 1);
+    wallet_t a, b, zero = {0};
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    CHECK(fd >= 0);
+    if (fd >= 0) { CHECK(write(fd, "stale", 5) == 5); close(fd); }
+    CHECK(wallet_load(&a, path, 1) == 1); /* stale candidate cannot block creation */
     struct stat st;
     CHECK(!stat(path, &st) && st.st_size == 65 && (st.st_mode & 0777) == 0600);
-    CHECK(access(tmp, F_OK) != 0);
+    CHECK(!stat(tmp, &st) && st.st_size == 5); /* never delete somebody else's candidate */
     CHECK(wallet_load(&b, path, 0) == 0);
     CHECK(!memcmp(a.pk, b.pk, 32));
     CHECK(wallet_load(&b, path, 1) == 0); /* create never replaces an existing key */
-    crypto_wipe(&a, sizeof a);
-    crypto_wipe(&b, sizeof b);
+    CHECK(chmod(path, 0644) == 0);
+    CHECK(wallet_load(&b, path, 1) == -1 && !memcmp(&b, &zero, sizeof b));
+    CHECK(chmod(path, 0660) == 0);
+    CHECK(wallet_load(&b, path, 0) == -1);
+    CHECK(chmod(path, 0400) == 0);
+    CHECK(wallet_load(&b, path, 0) == 0 && !memcmp(a.pk, b.pk, 32));
+    CHECK(chmod(path, 0600) == 0);
+    unlink(tmp);
+    CHECK(symlink(path, tmp) == 0);
+    CHECK(wallet_load(&b, tmp, 1) == -1 && !memcmp(&b, &zero, sizeof b));
+    unlink(tmp);
+    CHECK(mkfifo(tmp, 0600) == 0);
+    CHECK(wallet_load(&b, tmp, 1) == -1); /* must not block on a FIFO */
+    unlink(tmp);
+    CHECK(wallet_load(&b, dir, 1) == -1);
+    fd = open(path, O_WRONLY | O_APPEND);
+    CHECK(fd >= 0);
+    if (fd >= 0) { CHECK(write(fd, "extra", 5) == 5); close(fd); }
+    CHECK(wallet_load(&b, path, 1) == -1 && !memcmp(&b, &zero, sizeof b));
+    CHECK(!stat(path, &st) && st.st_size == 70); /* malformed existing key retained */
     unlink(path);
-    rmdir(dir);
+    const char *endings[] = {"", "\n", "\r\n", "\r", "\n\n"};
+    for (size_t i = 0; i < sizeof endings / sizeof endings[0]; i++) {
+        char encoded[68]; memset(encoded, '0', 64);
+        size_t len = strlen(endings[i]); memcpy(encoded + 64, endings[i], len);
+        fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        CHECK(fd >= 0);
+        if (fd >= 0) { CHECK(write(fd, encoded, 64 + len) == (ssize_t)(64 + len)); close(fd); }
+        CHECK(wallet_load(&b, path, 0) == (i < 3 ? 0 : -1));
+        unlink(path);
+    }
+
+    /* Concurrent creators all return the single published public key; exactly
+     * one reports creation. Only disposable test keys ever cross this pipe. */
+    int start[2], reports[2];
+    CHECK(pipe(start) == 0); CHECK(pipe(reports) == 0);
+    pid_t children[6];
+    for (int i = 0; i < 6; i++) {
+        children[i] = fork(); CHECK(children[i] >= 0);
+        if (!children[i]) {
+            close(start[1]); close(reports[0]);
+            char go;
+            if (read(start[0], &go, 1) != 1) _exit(2);
+            struct { int result; uint8_t pk[32]; } report;
+            wallet_t child;
+            report.result = wallet_load(&child, path, 1);
+            memcpy(report.pk, child.pk, 32); crypto_wipe(&child, sizeof child);
+            _exit(write(reports[1], &report, sizeof report) == sizeof report ? 0 : 3);
+        }
+    }
+    close(start[0]); close(reports[1]);
+    CHECK(write(start[1], "123456", 6) == 6); close(start[1]);
+    int created = 0;
+    uint8_t winner[32] = {0};
+    for (int i = 0; i < 6; i++) {
+        struct { int result; uint8_t pk[32]; } report = {0};
+        CHECK(read(reports[0], &report, sizeof report) == sizeof report);
+        CHECK(report.result == 0 || report.result == 1);
+        created += report.result == 1;
+        if (!i) memcpy(winner, report.pk, 32);
+        CHECK(!memcmp(winner, report.pk, 32));
+    }
+    close(reports[0]);
+    for (int i = 0; i < 6; i++) {
+        int status = 0;
+        CHECK(waitpid(children[i], &status, 0) == children[i]);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    }
+    CHECK(created == 1);
+    CHECK(wallet_load(&b, path, 0) == 0 && !memcmp(winner, b.pk, 32));
+    CHECK(!stat(path, &st) && (st.st_mode & 0777) == 0600);
+    crypto_wipe(&a, sizeof a); crypto_wipe(&b, sizeof b);
+    unlink(path);
+    CHECK(rmdir(dir) == 0); /* all unique candidates were removed */
 }
 
 /* Drive the real net.c listener over a real socket and watch it refuse a bad
