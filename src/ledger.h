@@ -1,6 +1,6 @@
 /* State is derived from the best chain, applying each share's transactions and,
- * at every block, a work-weighted PPLNS payout. Always a full replay from
- * genesis; see CLAUDE.md's backlog for the O(n)-per-share cost this implies. */
+ * at every block, a work-weighted PPLNS payout. Full replay remains the
+ * reference and restart/deep-reorg fallback; ledger_sync caches recent undo. */
 #ifndef LEDGER_H
 #define LEDGER_H
 #include <stdint.h>
@@ -8,6 +8,8 @@
 #include "params.h"
 
 typedef struct { uint8_t addr[32]; uint64_t amt, nonce; uint32_t shares; } acct_t;
+struct ledger_cache;
+struct ledger_undo;
 
 typedef struct {
     acct_t  *a;
@@ -20,6 +22,8 @@ typedef struct {
     uint32_t blocks;
     uint64_t sci_paid;
     uint32_t sci_claims;
+    struct ledger_cache *cache;
+    struct ledger_undo *record; /* non-NULL only while applying one share */
 } ledger_t;
 
 #define SCI_SEEN_MAX (SCI_EPOCH * SHARE_MAX_SCI)
@@ -57,5 +61,9 @@ uint64_t sci_release(uint64_t escrow);
 int      ledger_sci_pay(ledger_t *L, const uint8_t (*owners)[32], const uint64_t *w,
                         int cnt, const uint8_t finder[32]);
 int     ledger_build(ledger_t *L);               /* replay genesis..best tip */
+/* Apply only the changed suffix. Failure retains a complete, valid prefix;
+ * callers must stop serving until a successful retry. No cache is persisted. */
+int     ledger_sync(ledger_t *L);
+int     ledger_tip(const ledger_t *L);           /* -1 if not synchronized */
 void    ledger_free(ledger_t *L);
 #endif

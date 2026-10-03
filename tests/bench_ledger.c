@@ -14,8 +14,10 @@
 static entry_t *entries;
 static sci_t (*claims)[2];
 static int count;
+static uint64_t reads;
 
-const entry_t *chain_entry(int i) { return &entries[i]; }
+const entry_t *chain_entry(int i) { reads++; return &entries[i]; }
+int chain_tip(void) { return count - 1; }
 int chain_path(int **out) {
     int *path = malloc((size_t)count * sizeof *path);
     if (!path) return -1;
@@ -33,10 +35,10 @@ int main(int argc, char **argv) {
         return 2;
     }
     count = (int)n + 1;
-    entries = calloc((size_t)count, sizeof *entries);
-    claims = calloc((size_t)count, sizeof *claims);
+    entries = calloc((size_t)count + 1, sizeof *entries);
+    claims = calloc((size_t)count + 1, sizeof *claims);
     if (!entries || !claims) { free(entries); free(claims); return 1; }
-    for (int i = 1; i < count; i++) {
+    for (int i = 1; i <= count; i++) {
         entry_t *e = &entries[i];
         e->height = e->s.height = (uint32_t)i;
         e->parent = i - 1;
@@ -57,6 +59,13 @@ int main(int argc, char **argv) {
     printf("shares=%ld entry_claim_bytes=%zu ledger_seconds=%.6f max_rss_kb=%ld result=%d\n",
            n, (size_t)count * (sizeof *entries + sizeof *claims), seconds,
            usage.ru_maxrss, result);
+    ledger_free(&ledger);
+    if (result || ledger_sync(&ledger)) return 1;
+    count++; reads = 0; start = now_ns();
+    result = ledger_sync(&ledger);
+    seconds = (now_ns() - start) / 1e9;
+    printf("incremental_height=%d update_seconds=%.9f entry_reads=%llu result=%d\n",
+           count - 1, seconds, (unsigned long long)reads, result);
     ledger_free(&ledger); free(entries); free(claims);
     return result != 0;
 }
