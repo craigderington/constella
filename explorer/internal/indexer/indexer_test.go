@@ -7,10 +7,28 @@ import (
 	"os"
 	"testing"
 
+	"github.com/craig/constella/explorer/internal/consensus"
 	"github.com/craig/constella/explorer/internal/p2p"
 	"github.com/craig/constella/explorer/internal/proto"
 	"github.com/craig/constella/explorer/internal/store"
 )
+
+func TestFailedFlushKeepsPublishedLedger(t *testing.T) {
+	db, err := sql.Open("postgres", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	x := New(&store.Store{DB: db}, p2p.New("unused:7043"))
+	published := &consensus.Ledger{Blocks: 17}
+	x.ledger, x.dirty = published, true
+	x.flush(context.Background())
+	if x.ledger != published || !x.dirty {
+		t.Fatal("failed persistence published uncommitted accounting state")
+	}
+}
 
 func TestAccountCheckBatchRotatesPastFirstPage(t *testing.T) {
 	addrs := make([]proto.Hash, 130)

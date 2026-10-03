@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS txs (
 CREATE INDEX IF NOT EXISTS txs_from ON txs (from_addr);
 CREATE INDEX IF NOT EXISTS txs_to ON txs (to_addr);
 CREATE INDEX IF NOT EXISTS txs_id ON txs (id);
+CREATE INDEX IF NOT EXISTS txs_share ON txs (share_id);
 
 CREATE TABLE IF NOT EXISTS claims (
     uid       BYTEA PRIMARY KEY,           -- share id || idx
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS claims (
 );
 CREATE INDEX IF NOT EXISTS claims_miner ON claims (miner);
 CREATE INDEX IF NOT EXISTS claims_g ON claims (g DESC);
+CREATE INDEX IF NOT EXISTS claims_share ON claims (share_id);
 
 CREATE TABLE IF NOT EXISTS sci_payouts (
     block_id BYTEA NOT NULL,
