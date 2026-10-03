@@ -131,11 +131,7 @@ static void recover_side_claims(const int *path, int n, int total) {
 }
 
 static int rebuild_state(void) {
-    ledger_free(&L);
-    if (ledger_build(&L)) {
-        ledger_free(&L);
-        return -1;
-    }
+    if (ledger_sync(&L)) return -1;
 
     /* Re-offer transactions from side branches after a reorg. The mempool
      * filters duplicates and transactions invalid in the new ledger state. */

@@ -39,6 +39,12 @@ test_chain_storage: $(CORE) tests/test_chain_storage.c src/*.h
 storage-test: test_chain_storage
 	./test_chain_storage
 
+test_ledger_incremental: $(CORE) tests/test_ledger_incremental.c src/*.h
+	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/chain.c src/ledger.c,$(CORE)) tests/test_ledger_incremental.c $(LDFLAGS)
+
+ledger-test: test_ledger_incremental
+	./test_ledger_incremental
+
 # Optional synthetic scale probe; no proof validation, networking or database.
 bench_ledger: $(CORE) tests/bench_ledger.c src/*.h
 	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/chain.c,$(CORE)) tests/bench_ledger.c $(LDFLAGS)
@@ -62,7 +68,7 @@ node-work-test: test_node_work
 validator-test: constella
 	python3 -B tests/test_validator.py
 
-test: unit gate-test storage-test peer-test node-work-test validator-test
+test: unit gate-test storage-test ledger-test peer-test node-work-test validator-test
 	python3 tests/crosscheck.py ./test_constella
 
 size: constella
@@ -99,6 +105,6 @@ candidate-build: constella-testnet-v4 constella-mainnet-v4
 
 clean:
 	rm -f constella test_constella thermal_sim constella-explorer gate_snapshot test_chain_storage bench_ledger test_peer_budget \
-	  constella-testnet-v4 constella-mainnet-v4 constella-explorer-testnet-v4 constella-explorer-mainnet-v4 test_node_work
+	  constella-testnet-v4 constella-mainnet-v4 constella-explorer-testnet-v4 constella-explorer-mainnet-v4 test_node_work test_ledger_incremental
 
-.PHONY: all fast unit test size explorer explorer-test gate-test storage-test clean protocol-test candidate-build peer-test node-work-test validator-test
+.PHONY: all fast unit test size explorer explorer-test gate-test storage-test ledger-test clean protocol-test candidate-build peer-test node-work-test validator-test
