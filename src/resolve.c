@@ -83,7 +83,8 @@ int resolve_main(int argc, char **argv) {
     if (argc != 5) return 2;
     char *end;
     long parent = strtol(argv[4], &end, 10);
-    if (*end || parent <= 1 || prctl(PR_SET_PDEATHSIG, SIGKILL) || getppid() != parent) return 2;
+    /* The node is legitimately PID 1 in a container's PID namespace. */
+    if (*end || parent <= 0 || prctl(PR_SET_PDEATHSIG, SIGKILL) || getppid() != parent) return 2;
     long port = strtol(argv[3], &end, 10);
     if (*end || port < 1 || port > 65535 || !*argv[2] || strlen(argv[2]) >= 128) return 2;
     /* exec discards the parent's key material; close inherited chain locks,
