@@ -131,8 +131,23 @@ static void faults(void) {
         ledger_free(&l);
     }
 }
+static void mixed_branches(void) {
+    ledger_t l = {0}; assert(!ledger_sync(&l));
+    unsigned random = 0x12345678u;
+    for (int step = 0; step < 180; step++) {
+        random = random * 1664525u + 1013904223u;
+        int parent = step % 3 ? tip : (int)(random % (unsigned)total);
+        tip = append(parent);
+        assert(!ledger_sync(&l)); compare(&l, tip);
+        if (step % 11 == 0) {
+            tip = (int)((random >> 8) % (unsigned)total);
+            assert(!ledger_sync(&l)); compare(&l, tip);
+        }
+    }
+    ledger_free(&l);
+}
 int main(void) {
-    histories(); faults();
+    histories(); faults(); mixed_branches();
     puts("incremental ledger: full-replay equality, txs, epoch boundaries, shallow/deep reorgs and restart passed");
     return 0;
 }

@@ -303,6 +303,10 @@ static void undo_apply(ledger_t *L, const ledger_undo *u) {
     L->n = u->accounts;
     L->escrow = u->escrow; L->txs = u->txs; L->sci_paid = u->sci_paid;
     L->blocks = u->blocks; L->sci_claims = u->sci_claims;
+    L->cache->tip = u->parent;
+}
+
+static void restore_index(ledger_t *L) {
     /* New accounts are appended. Undo removes them and reconstructs the
      * ephemeral index without allocating, even on an allocation-fault path. */
     if (L->icap) memset(L->idx, 0xff, L->icap * sizeof *L->idx);
@@ -312,7 +316,6 @@ static void undo_apply(ledger_t *L, const ledger_undo *u) {
         while (L->idx[j] >= 0) j = (j + 1) & (L->icap - 1);
         L->idx[j] = i;
     }
-    L->cache->tip = u->parent;
 }
 
 static int apply_one(ledger_t *L, int idx) {
@@ -395,6 +398,7 @@ int ledger_sync(ledger_t *L) {
             ledger_undo *u = c->undo[slot];
             undo_apply(L, u); undo_free(u); c->undo[slot] = NULL;
         }
+        restore_index(L);
         restore_tail(c);
     }
     for (uint32_t n = 0; n < count; n++) {
@@ -407,7 +411,7 @@ int ledger_sync(ledger_t *L) {
         int result = apply_one(L, path[n]);
         L->record = NULL;
         if (result) {
-            undo_apply(L, u); undo_free(u); restore_tail(c); free(path); return -1;
+            undo_apply(L, u); undo_free(u); restore_index(L); restore_tail(c); free(path); return -1;
         }
         c->tip = path[n];
         unsigned slot = chain_entry(c->tip)->height % UNDO_KEEP;
