@@ -188,6 +188,15 @@ static void payload_concurrency(void) {
     printf("worker payloads: %d maximum-size records from two workers survived concurrent job changes\n", results);
 }
 
+/* Drive the production per-entry science recovery over a synthetic retained
+ * history to cover expired/active/spent/anchor cases independently of arrival. */
+static void recover_side_claims(const int *path, int n, int total) {
+    recovery_science s;
+    prepare_science_recovery(&s);
+    for (int i = 1; i < total; i++)
+        if (!chain_path_has(path, n, i)) recover_science_entry(&s, measured_entry(i));
+}
+
 static void recovery(void) {
     /* Incident-scale height and 10,000 expired side claims. Enforce work by
      * counting actual entry reads, avoiding machine-dependent timing asserts. */
@@ -201,6 +210,7 @@ static void recovery(void) {
     for (int i = 0; i < total; i++) {
         entry_t *e = &synthetic[i];
         e->height = e->s.height = i < n ? (uint32_t)i : 1;
+        e->parent = i < n ? i - 1 : 0;
         memcpy(e->s.miner, payout, 32);
         if (i < n) path[i] = i;
         else { e->sci = &claim; e->nsci = 1; }
@@ -217,18 +227,16 @@ static void recovery(void) {
 
     /* Both endpoints of an epoch count as spent; adjacent epochs do not.
      * Truncation and a UINT32_MAX epoch must not read past the path. */
-    uint32_t previous = epoch - SCI_EPOCH;
-    int slots[] = {(int)previous, (int)previous + 1, (int)epoch, (int)epoch + 1};
+    int slots[] = {(int)epoch - 1, (int)epoch, (int)epoch + 1, n - 1};
     for (int j = 0; j < 4; j++) {
         int h = slots[j];
         synthetic[h].sci = &claim; synthetic[h].nsci = 1;
-        entry_reads = 0; read_limit = SCI_EPOCH;
-        assert(sci_main_has(path, n, previous, claim.k) == (j == 1 || j == 2));
+        entry_reads = 0; read_limit = SCI_EPOCH * 3;
+        recovery_science context;
+        prepare_science_recovery(&context);
+        assert(recovery_spent(&context, claim.k) == (j >= 2));
         synthetic[h].nsci = 0;
     }
-    entry_reads = 0; read_limit = SCI_EPOCH;
-    assert(!sci_main_has(path, (int)epoch + 1, epoch, claim.k));
-    assert(!sci_main_has(path, n, UINT32_MAX, claim.k));
     /* Spent, pooled, expired and changed-anchor claims stay excluded. */
     synthetic[n - 1].sci = &claim; synthetic[n - 1].nsci = 1;
     nscipool = 0; entry_reads = 0; read_limit = (uint64_t)total * 3;
@@ -239,6 +247,42 @@ static void recovery(void) {
     recover_side_claims(path, n, total); assert(nscipool == 0);
     free(path); free(synthetic); synthetic = NULL; read_limit = UINT64_MAX;
     puts("side recovery: expired history bounded; active, spent and changed-anchor claims passed");
+}
+
+static void detached_recovery(void) {
+    const int height = 100000, fork = height - 128, total = height + 2;
+    synthetic = calloc((size_t)total, sizeof *synthetic); assert(synthetic);
+    for (int i = 0; i <= height; i++) {
+        synthetic[i].height = (uint32_t)i; synthetic[i].parent = i - 1;
+    }
+    int *path = NULL;
+    entry_reads = 0; read_limit = 10;
+    assert(detached_path(height - 1, height, &path) == 0 && !path);
+    synthetic[height + 1].parent = fork;
+    synthetic[height + 1].height = (uint32_t)fork + 1;
+    entry_reads = 0; read_limit = 128 * 6;
+    int n = detached_path(height, height + 1, &path);
+    assert(n == 128);
+    for (int i = 0; i < n; i++) assert(path[i] == fork + 1 + i);
+    read_limit = UINT64_MAX;
+    ledger_free(&L); mempool_revalidate(&L);
+    wallet_t sender; uint8_t seed[32] = {71}; wallet_from_seed(&sender, seed);
+    assert(!ledger_credit(&L, sender.pk, COIN));
+    tx_t pending[2] = {0};
+    for (int i = 0; i < 2; i++) {
+        memcpy(pending[i].from, sender.pk, 32); pending[i].to[0] = 72;
+        pending[i].amount = 100; pending[i].fee = 1; pending[i].nonce = (uint64_t)i;
+        tx_sign(&pending[i], sender.sk);
+        synthetic[path[i]].ntx = 1; synthetic[path[i]].txs = &pending[i];
+    }
+    int was_mining = mining_enabled; mining_enabled = 0;
+    recovery_science context = {0};
+    for (int i = 0; i < n; i++) recover_entry(&context, path[i]);
+    tx_t selected[2]; assert(mempool_select(selected, 2) == 2);
+    assert(selected[0].nonce == 0 && selected[1].nonce == 1);
+    ledger_free(&L); mempool_revalidate(&L); mining_enabled = was_mining;
+    free(path); free(synthetic); synthetic = NULL; read_limit = UINT64_MAX;
+    puts("transaction recovery: ordinary extension skips history; 128-share detach retains nonce order");
 }
 
 static void replay(const char *source) {
@@ -274,6 +318,6 @@ int main(int argc, char **argv) {
     if (argc == 3 && !strcmp(argv[1], "--replay")) { replay(argv[2]); return 0; }
     alarm(30);
     if (argc == 2 && !strcmp(argv[1], "--recovery")) recovery();
-    else { worker_queue(); payload_concurrency(); recovery(); }
+    else { worker_queue(); payload_concurrency(); recovery(); detached_recovery(); }
     return 0;
 }

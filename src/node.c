@@ -32,6 +32,7 @@ static int cur_src = -1, live, tip_dirty, job_dirty, failed;
 static int mining_enabled = 1;
 static uint64_t found;
 static ledger_t L;
+static int recovery_seen = 1, recovery_dirty;
 /* A repeated request is redundant only while neither end's state has changed.
  * Remembering just the remote tip used to suppress the HELLO that terminates
  * a full 500-share batch.  `chain_count` notices progress even when the batch
@@ -70,18 +71,6 @@ static void refresh_sci_region(int tip) {
     miner_set_sci(anchor, payout);
 }
 
-static int sci_main_has(const int *path, int n, uint32_t epoch, uint64_t k) {
-    /* Epoch is the anchor height: its shares are epoch+1 .. epoch+SCI_EPOCH.
-     * Widen before addition so a high epoch cannot wrap into old history. */
-    uint64_t end = (uint64_t)epoch + SCI_EPOCH;
-    for (uint64_t h = (uint64_t)epoch + 1; h < (uint64_t)n && h <= end; h++) {
-        const entry_t *e = chain_entry(path[h]);
-        if (memcmp(e->s.miner, payout, 32)) continue;
-        for (int c = 0; c < e->nsci; c++) if (e->sci[c].k == k) return 1;
-    }
-    return 0;
-}
-
 static int chain_path_has(const int *path, int n, int idx) {
     /* Every path entry is indexed by height. Scanning the whole path for
      * each stored share made side-claim recovery quadratic on every tip. */
@@ -107,50 +96,90 @@ int node_sci_recoverable_vector(uint32_t entry_height, uint32_t next_height,
     return sci_claim_recoverable(entry_height, sci_epoch(next_height), &base, &claim);
 }
 
-static void recover_side_claims(const int *path, int n, int total) {
-    if (!mining_enabled || !path || n < 1) return;
-    int tip = chain_tip();
-    refresh_sci_region(tip);
-    uint32_t active_epoch = sci_epoch_cur;
-    bn active_base;
-    sci_region(&active_base, sci_anchor_cur, payout);
-    for (int i = 1; i < total && nscipool < SCI_POOL; i++) if (!chain_path_has(path, n, i)) {
+typedef struct { bn base; uint64_t spent[SCI_SEEN_MAX]; int n; } recovery_science;
+
+static int recovery_spent(const recovery_science *s, uint64_t k) {
+    for (int i = 0; i < s->n; i++) if (s->spent[i] == k) return 1;
+    return 0;
+}
+
+static void prepare_science_recovery(recovery_science *s) {
+    s->n = 0;
+    if (!mining_enabled) return;
+    refresh_sci_region(chain_tip());
+    sci_region(&s->base, sci_anchor_cur, payout);
+    /* Only the active epoch can spend a claim in the next mining job. */
+    for (int i = chain_tip(); chain_entry(i)->height > sci_epoch_cur; i = chain_entry(i)->parent) {
         const entry_t *e = chain_entry(i);
-        /* Expired claims cannot be recovered. Reject them before looking
-         * for canonical duplicates, rather than rescanning history for each. */
-        if (e->height == 0 || sci_epoch(e->height) != active_epoch ||
-            memcmp(e->s.miner, payout, 32)) continue;
-        for (int c = 0; c < e->nsci && nscipool < SCI_POOL; c++) {
-            if (sci_pool_has(e->sci[c].k) ||
-                sci_main_has(path, n, active_epoch, e->sci[c].k) ||
-                !sci_claim_recoverable(e->height, active_epoch, &active_base, &e->sci[c]))
-                continue;
-            scipool[nscipool++] = e->sci[c];
-        }
+        if (!memcmp(e->s.miner, payout, 32))
+            for (int j = 0; j < e->nsci; j++) s->spent[s->n++] = e->sci[j].k;
+    }
+    for (int i = 0; i < nscipool;)
+        if (recovery_spent(s, scipool[i].k)) scipool[i] = scipool[--nscipool];
+        else i++;
+}
+
+static void recover_science_entry(const recovery_science *s, const entry_t *e) {
+    if (!mining_enabled || !e->height || sci_epoch(e->height) != sci_epoch_cur ||
+        memcmp(e->s.miner, payout, 32)) return;
+    for (int j = 0; j < e->nsci && nscipool < SCI_POOL; j++) {
+        if (sci_pool_has(e->sci[j].k) || recovery_spent(s, e->sci[j].k) ||
+            !sci_claim_recoverable(e->height, sci_epoch_cur, &s->base, &e->sci[j])) continue;
+        scipool[nscipool++] = e->sci[j];
     }
 }
 
-static int rebuild_state(void) {
-    if (ledger_sync(&L)) return -1;
-
-    /* Re-offer transactions from side branches after a reorg. The mempool
-     * filters duplicates and transactions invalid in the new ledger state. */
-    int *path = NULL, n = chain_path(&path), total = chain_count();
-    if (n > 0 && total > n) {
-        uint8_t *main = calloc((size_t)total, 1);
-        if (main) {
-            for (int i = 0; i < n; i++) main[path[i]] = 1;
-            for (int i = 1; i < total; i++) if (!main[i]) {
-                const entry_t *e = chain_entry(i);
-                for (int j = 0; j < e->ntx; j++) mempool_add(&e->txs[j], &L);
-            }
-            free(main);
-        }
+/* Only detached canonical shares require reconsideration on a reorg. Return
+ * them oldest first so dependent transaction nonces can re-enter in order.
+ * No depth cutoff: cost follows the changed suffix, not unrelated history. */
+static int detached_path(int old, int next, int **out) {
+    *out = NULL;
+    if (old < 0 || old == next) return 0;
+    int a = old, b = next;
+    while (a != b) {
+        if (chain_entry(a)->height >= chain_entry(b)->height) a = chain_entry(a)->parent;
+        else b = chain_entry(b)->parent;
     }
-    recover_side_claims(path, n, total);
-    free(path);
-    mempool_revalidate(&L);
+    int n = (int)(chain_entry(old)->height - chain_entry(a)->height);
+    if (!n) return 0;
+    int *path = malloc((size_t)n * sizeof *path);
+    if (!path) return -1;
+    for (int j = n - 1; j >= 0; j--) { path[j] = old; old = chain_entry(old)->parent; }
+    *out = path;
+    return n;
+}
+
+static void recover_entry(const recovery_science *s, int idx) {
+    const entry_t *e = chain_entry(idx);
+    for (int j = 0; j < e->ntx; j++)
+        if (mempool_add(&e->txs[j], &L) == MP_ADDED) job_dirty = 1;
+    int before = nscipool;
+    recover_science_entry(s, e);
+    if (nscipool != before) job_dirty = 1;
+}
+
+static int recover_changes(int old_tip) {
+    int *detached = NULL, n = detached_path(old_tip, chain_tip(), &detached);
+    if (n < 0) return -1;
+    recovery_science s;
+    prepare_science_recovery(&s);
+    for (int i = 0; i < n; i++) recover_entry(&s, detached[i]);
+    free(detached);
+    /* Arrival indices are parent-before-child. Initial startup visits retained
+     * history once; thereafter only newly connected shares enter this loop.
+     * Previously rejected transactions are retried on a new announcement or
+     * when their share detaches, not by repeatedly mining all old side data. */
+    int total = chain_count();
+    for (; recovery_seen < total; recovery_seen++) recover_entry(&s, recovery_seen);
+    recovery_dirty = 0;
     return 0;
+}
+
+static int rebuild_state(void) {
+    int old = ledger_tip(&L);
+    if (ledger_sync(&L)) return -1;
+    mempool_revalidate(&L);
+    return recover_changes(old);
 }
 
 /* Recover toward wall time using the existing 600-second parent allowance.
@@ -204,6 +233,7 @@ static void report_balance(void) {
 static void on_accept(int idx, int is_tip) {
     const entry_t *e = chain_entry(idx);
     if (is_tip) tip_dirty = 1;
+    recovery_dirty = 1;
     /* a claim of ours that just landed is spent: keeping it around would only
      * re-offer it in a later share, where the ledger's dedup refuses to pay
      * it twice and it would just waste share space. */
@@ -372,7 +402,8 @@ static void on_msg(int peer, uint8_t type, const uint8_t *p, uint16_t len) {
     } else if (type == MSG_GETACCT && len == 32) {
         uint8_t out[28];
         const acct_t *a = ledger_acct(&L, p, 0);
-        uint32_t h = chain_entry(chain_tip())->height;
+        int state_tip = ledger_tip(&L);
+        uint32_t h = state_tip >= 0 ? chain_entry(state_tip)->height : 0;
         put64(out, a ? a->amt : 0);
         put64(out + 8, a ? a->nonce : 0);
         put64(out + 16, mempool_next_nonce(&L, p));
@@ -591,6 +622,9 @@ int node_run(void) {
             if (L.blocks != last_blocks) { report_balance(); last_blocks = L.blocks; }
             tip_dirty = 0;
             job_dirty = 1;
+        }
+        if (recovery_dirty && recover_changes(-1)) {
+            log_msg("fatal: cannot recover changed shares"); failed = 1; running = 0; break;
         }
         if (job_dirty) { update_job(); job_dirty = 0; }
         int64_t t = now_sec();
