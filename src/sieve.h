@@ -18,6 +18,10 @@ typedef struct {
     int             n;
     uint32_t       *roots;            /* [nprimes][4]: k where member o is divisible by q */
     atomic_uint_fast64_t next_win;
+    /* Immutable owned wire payload for daemon mining. Reference lifetime is
+     * the same as the search job; results copy it before releasing the job. */
+    uint16_t        message_len;
+    uint8_t         message[SHARE_MSG_MAX];
 } job_t;
 
 typedef struct { uint64_t k; int tlen; uint64_t tests; } search_out;

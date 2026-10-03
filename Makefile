@@ -54,7 +54,7 @@ peer-test: test_peer_budget
 	./test_peer_budget
 
 test_node_work: $(CORE) src/node.c tests/test_node_work.c src/*.h
-	$(CC) $(CFLAGS) -Isrc -o $@ $(CORE) tests/test_node_work.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/miner.c,$(CORE)) tests/test_node_work.c $(LDFLAGS)
 
 node-work-test: test_node_work
 	./test_node_work
