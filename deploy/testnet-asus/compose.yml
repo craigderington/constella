@@ -34,7 +34,7 @@ services:
     volumes: ['./thermal:/thermal']
     logging: {driver: json-file, options: {max-size: 1m, max-file: '2'}}
   node4:
-    image: constella:audit-hardening-amd64-20261002
+    image: constella:dns-payload-amd64-20261002
     pull_policy: never
     restart: unless-stopped
     stop_grace_period: 60s
