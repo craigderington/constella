@@ -19,10 +19,6 @@
 #include <unistd.h>
 
 #define SYNC_BATCH 500
-#define TMPL_RING  4
-
-typedef struct { uint8_t root[32]; int ntx; tx_t txs[SHARE_MAX_TX]; int nsci; sci_t sci[SHARE_MAX_SCI]; } tmpl_t;
-
 #define SCI_POOL 16
 /* Bound local work just as peer input is bounded. A ready worker pipe must
  * leave time for job refresh, peer service and shutdown in every loop turn. */
@@ -36,8 +32,6 @@ static int cur_src = -1, live, tip_dirty, job_dirty, failed;
 static int mining_enabled = 1;
 static uint64_t found;
 static ledger_t L;
-static tmpl_t T[TMPL_RING];
-static int tnext;
 /* A repeated request is redundant only while neither end's state has changed.
  * Remembering just the remote tip used to suppress the HELLO that terminates
  * a full 500-share batch.  `chain_count` notices progress even when the batch
@@ -182,19 +176,9 @@ static void update_job(void) {
     int tip = chain_tip();
     const entry_t *t = chain_entry(tip);
     refresh_sci_region(tip);
-    tmpl_t *tm = &T[tnext];
-    tnext = (tnext + 1) % TMPL_RING;
-    tm->ntx = mempool_select(tm->txs, SHARE_MAX_TX);
-    /* tm->nsci bounds every read of tm->sci downstream (share_root here,
-     * drain_found's rebuild), so the unused tail of tm->sci never needs an
-     * explicit zero -- it mirrors Task 5's nsci==0 gating for ntx/txs. */
-    tm->nsci = nscipool < SHARE_MAX_SCI ? nscipool : SHARE_MAX_SCI;
-    memcpy(tm->sci, scipool, (size_t)tm->nsci * sizeof *tm->sci);
-    if (share_root(tm->root, tm->txs, tm->ntx, tm->sci, tm->nsci)) {
-        log_msg("fatal: invalid mining payload");
-        failed = 1; running = 0;
-        return;
-    }
+    tx_t txs[SHARE_MAX_TX];
+    int ntx = mempool_select(txs, SHARE_MAX_TX);
+    int nsci = nscipool < SHARE_MAX_SCI ? nscipool : SHARE_MAX_SCI;
     share_t s = {0};
     s.version = SHARE_VERSION;
     s.rsv = NETWORK_MARKER;
@@ -203,8 +187,11 @@ static void update_job(void) {
     s.time = next_share_time(t->s.time, now_sec());
     memcpy(s.miner, payout, 32);
     s.bits = (uint16_t)chain_next_bits(tip);
-    memcpy(s.tx_root, tm->root, 32);
-    miner_set_job(&s);
+    if (share_root(s.tx_root, txs, ntx, scipool, nsci) ||
+        miner_set_job(&s, txs, ntx, scipool, nsci)) {
+        log_msg("fatal: cannot construct mining job");
+        failed = 1; running = 0;
+    }
 }
 
 static void report_balance(void) {
@@ -403,33 +390,28 @@ void node_sync_receive_vector(int peer, const uint8_t *msg, uint16_t len) {
 }
 
 static void drain_found(int fd) {
-    uint8_t raw[SHARE_SIZE], msg[SHARE_MSG_MAX], miss[32];
+    miner_result result;
+    uint8_t miss[32];
     for (int batch = 0; batch < WORKER_BATCH && running; batch++) {
-        if (read(fd, raw, SHARE_SIZE) != SHARE_SIZE) break;
-        share_t s;
-        share_deser(&s, raw);
-        found++;
-        /* Workers may fill the pipe while the main loop rebuilds state.
-         * Do not publish their obsolete same-parent siblings. This is local
-         * mining policy only; peer shares still take the full fork validator. */
-        if (memcmp(s.prev, chain_entry(chain_tip())->id, 32)) continue;
-        for (int i = 0; i < TMPL_RING; i++) {
-            if (memcmp(T[i].root, s.tx_root, 32)) continue;
-            size_t l = share_msg(msg, sizeof msg, &s, T[i].txs, T[i].ntx, T[i].sci, T[i].nsci);
-            if (!l) {
-                log_msg("fatal: invalid mined payload");
-                failed = 1; running = 0;
-                return;
-            }
-            int r = submit_share(msg, l, miss);
-            if (r == CH_INVALID)
-                log_msg("mined share rejected: h=%u bits=%u txs=%d sci=%d",
-                        s.height, s.bits, T[i].ntx, T[i].nsci);
-            /* Refresh the template in the main loop before consuming more
-             * results, even if other workers keep the pipe readable. */
-            if (r == CH_TIP || r == CH_ERROR) return;
-            break;
+        if (read(fd, &result, sizeof result) != sizeof result) break;
+        if (result.len < SHARE_SIZE + 4 || result.len > SHARE_MSG_MAX) {
+            log_msg("fatal: invalid worker result length");
+            failed = 1; running = 0;
+            return;
         }
+        share_t s;
+        share_deser(&s, result.message);
+        found++;
+        /* Preserve the burst fix: obsolete same-parent work stays local.
+         * A queued result owns its payload even after arbitrarily many job
+         * refreshes; there is no template-cache lookup or borrowed pointer. */
+        if (memcmp(s.prev, chain_entry(chain_tip())->id, 32)) continue;
+        int r = submit_share(result.message, result.len, miss);
+        if (r == CH_INVALID)
+            log_msg("mined share rejected: h=%u bits=%u payload=%u bytes",
+                    s.height, s.bits, result.len);
+        /* Refresh the job before consuming more worker results. */
+        if (r == CH_TIP || r == CH_ERROR) return;
     }
 }
 
@@ -655,17 +637,17 @@ int bench_run(unsigned bits, int secs, int threads) {
     throttle_fixed(100);
     /* sci_fd -1: bench measures constellation throughput at exactly
      * `threads` workers, same as before this task -- no science lane. */
-    miner_start(threads, pfd[1], -1, &running);
+    if (miner_start(threads, pfd[1], -1, &running)) return 1;
     share_t s = {0};
     s.version = SHARE_VERSION; s.rsv = NETWORK_MARKER; s.bits = (uint16_t)bits; s.time = (uint64_t)now_sec();
-    miner_set_job(&s);
+    if (miner_set_job(&s, NULL, 0, NULL, 0)) { running = 0; miner_stop(); return 1; }
     uint64_t t0 = now_ns(), shares = 0, blocks = 0;
-    uint8_t raw[SHARE_SIZE];
+    miner_result result;
     while (running && now_ns() - t0 < (uint64_t)secs * 1000000000ULL) {
         usleep(50000);
-        while (read(pfd[0], raw, SHARE_SIZE) == SHARE_SIZE) {
+        while (read(pfd[0], &result, sizeof result) == sizeof result) {
             share_t f;
-            share_deser(&f, raw);
+            share_deser(&f, result.message);
             shares++;
             blocks += share_verify(&f, NULL) >= BLOCK_K;
         }

@@ -53,7 +53,7 @@ static void t_miner_zero_duty(void) {
         share_root(tmpl.tx_root, NULL, 0, NULL, 0);
         uint8_t anchor[32] = {0};
         throttle_fixed(0);
-        miner_set_job(&tmpl);
+        CHECK(miner_set_job(&tmpl, NULL, 0, NULL, 0) == 0);
         miner_set_sci(anchor, tmpl.miner);
         if (miner_start(2, p[1], s[1], &running)) _exit(1);
         usleep(1200000);
@@ -88,7 +88,7 @@ static void t_miner_zero_duty(void) {
         while (read(p[0], discard, sizeof discard) > 0) {}
         while (read(s[0], discard, sizeof discard) > 0) {}
         memset(tmpl.prev, 2, 32); anchor[0] = 3;
-        miner_set_job(&tmpl);
+        CHECK(miner_set_job(&tmpl, NULL, 0, NULL, 0) == 0);
         miner_set_sci(anchor, tmpl.miner);
         usleep(1200000);
         miner_progress_vector(&w, &sc);
@@ -105,14 +105,14 @@ static void t_miner_zero_duty(void) {
             sci_deser(&claim, raw); sci_region(&base, anchor, tmpl.miner);
             CHECK(sci_check(&base, &claim) == 0); /* current anchor after resume */
         }
-        uint8_t share_raw[SHARE_SIZE];
+        miner_result share_result;
         got = -1;
         deadline = now_ns() + 5000000000ULL;
-        while (now_ns() < deadline && (got = read(p[0], share_raw, sizeof share_raw)) < 0)
+        while (now_ns() < deadline && (got = read(p[0], &share_result, sizeof share_result)) < 0)
             usleep(10000);
-        CHECK(got == SHARE_SIZE);
-        if (got == SHARE_SIZE) {
-            share_t resumed; share_deser(&resumed, share_raw);
+        CHECK(got == sizeof share_result);
+        if (got == sizeof share_result) {
+            share_t resumed; share_deser(&resumed, share_result.message);
             CHECK(!memcmp(resumed.prev, tmpl.prev, 32));
         }
         throttle_fixed(0);
@@ -147,7 +147,7 @@ static void t_miner_backpressure(void) {
         share_root(tmpl.tx_root, NULL, 0, NULL, 0);
         uint8_t anchor[32] = {0};
         throttle_fixed(100);
-        miner_set_job(&tmpl); miner_set_sci(anchor, tmpl.miner);
+        CHECK(miner_set_job(&tmpl, NULL, 0, NULL, 0) == 0); miner_set_sci(anchor, tmpl.miner);
         if (miner_start(2, p[1], s[1], &active)) _exit(1);
         uint64_t deadline = now_ns() + 5000000000ULL;
         while ((!atomic_load(&miner_scanned) || !atomic_load(&miner_sci_found)) && now_ns() < deadline)

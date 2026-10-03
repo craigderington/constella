@@ -1,4 +1,5 @@
 #include "miner.h"
+#include "chain.h"
 #include "science.h"
 #include "sieve.h"
 #include "throttle.h"
@@ -21,7 +22,7 @@ static pthread_t *th;
 static int nth, outfd, scifd;
 static atomic_int *run;
 
-_Static_assert(SHARE_SIZE <= PIPE_BUF && SCI_SIZE <= PIPE_BUF,
+_Static_assert(sizeof(miner_result) <= PIPE_BUF && SCI_SIZE <= PIPE_BUF,
                "worker records must fit an atomic pipe write");
 
 /* The main loop may be replaying a large ledger with both pipes full.
@@ -45,6 +46,16 @@ static void emit_work(int fd, const uint8_t *raw, size_t len,
 static int nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL);
     return flags < 0 ? -1 : fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static void emit_found(const job_t *j, uint64_t k) {
+    miner_result result = {0};
+    result.len = j->message_len;
+    memcpy(result.message, j->message, result.len);
+    share_t s = j->tmpl;
+    s.k = k;
+    share_ser(result.message, &s);
+    emit_work(outfd, (const uint8_t *)&result, sizeof result, &gen, j->gen);
 }
 
 /* Science job: mu guards the inputs, sci_gen invalidates in-flight search -
@@ -94,13 +105,7 @@ static void *worker(void *arg) {
             int r = job_search(j, win, bm, &o, keep, &w);
             atomic_fetch_add(&miner_scanned, SIEVE_W);
             atomic_fetch_add(&miner_tests, o.tests);
-            if (r == 1) {
-                share_t s = j->tmpl;
-                uint8_t raw[SHARE_SIZE];
-                s.k = o.k;
-                share_ser(raw, &s);
-                emit_work(outfd, raw, SHARE_SIZE, &gen, j->gen);
-            }
+            if (r == 1) emit_found(j, o.k);
         }
         job_put(j);
     }
@@ -178,15 +183,24 @@ fail:
     return -1;
 }
 
-void miner_set_job(const share_t *tmpl) {
+int miner_set_job(const share_t *tmpl, const tx_t *txs, int ntx,
+                  const sci_t *sci, int nsci) {
+    uint8_t root[32], message[SHARE_MSG_MAX];
+    if (!tmpl || share_root(root, txs, ntx, sci, nsci) || memcmp(root, tmpl->tx_root, 32)) return -1;
+    size_t len = share_msg(message, sizeof message, tmpl, txs, ntx, sci, nsci);
+    if (!len) return -1;
     uint64_t g = atomic_load(&gen) + 1;
     job_t *j = job_new(tmpl, g);                 /* sieve setup outside the lock */
+    if (!j) return -1;
+    j->message_len = (uint16_t)len;
+    memcpy(j->message, message, len);
     pthread_mutex_lock(&mu);
     job_t *old = cur;
     cur = j;
     atomic_store(&gen, g);
     pthread_mutex_unlock(&mu);
     job_put(old);
+    return 0;
 }
 
 void miner_set_sci(const uint8_t anchor[32], const uint8_t payout[32]) {
