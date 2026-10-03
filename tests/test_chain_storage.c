@@ -3,7 +3,10 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 static int allocations, fail_at, injected;
 static int fail_alloc(void) {
@@ -12,11 +15,31 @@ static int fail_alloc(void) {
 }
 static void *fault_malloc(size_t n) { return fail_alloc() ? NULL : malloc(n); }
 static void *fault_realloc(void *p, size_t n) { return fail_alloc() ? NULL : realloc(p, n); }
+static int io_fault, writes;
+static size_t fault_fwrite(const void *p, size_t size, size_t n, FILE *f) {
+    writes++;
+    if (io_fault == 1 || (io_fault == 2 && writes == 2)) {
+        size_t written = 0;
+        if (io_fault == 2) { written = fwrite(p, size, n / 2, f); fflush(f); }
+        errno = ENOSPC; return written;
+    }
+    return fwrite(p, size, n, f);
+}
+static int fault_fflush(FILE *f) { if (io_fault == 3) { errno = ENOSPC; return EOF; } return fflush(f); }
+static int fault_fsync(int fd) { if (io_fault == 4) { errno = EIO; return -1; } return fsync(fd); }
 #define malloc fault_malloc
 #define realloc fault_realloc
+#define fwrite fault_fwrite
+#define fflush fault_fflush
+#define fsync fault_fsync
 #include "../src/chain.c"
 #undef malloc
 #undef realloc
+#undef fwrite
+#undef fflush
+#undef fsync
+
+static void forbidden_accept(int idx, int is_tip) { (void)idx; (void)is_tip; _exit(88); }
 
 static int wait_ok(pid_t pid) {
     int status;
@@ -96,8 +119,33 @@ int main(void) {
         _exit(0);
     }
     if (!wait_ok(pid)) { fprintf(stderr, "FAIL future-time/orphan revalidation\n"); failures++; }
+    /* Failed durability must never notify peers/miners. A short write can be
+     * repaired on restart, preserving every byte of the acknowledged prefix. */
+    size_t prefix = 2 + original[0] + ((size_t)original[1] << 8);
+    size_t next_len = original[prefix] | (size_t)original[prefix + 1] << 8;
+    for (int mode = 1; mode <= 4; mode++) {
+        FILE *copy = fopen(path, "wb");
+        if (!copy || fwrite(original, 1, prefix, copy) != prefix || fclose(copy)) return 1;
+        pid = fork();
+        if (!pid) {
+            struct rlimit limit = {0, 0}; setrlimit(RLIMIT_CORE, &limit);
+            if (chain_init(dir, forbidden_accept)) _exit(1);
+            io_fault = mode; writes = 0;
+            uint8_t missing[32];
+            chain_submit(original + prefix + 2, next_len, missing, 0);
+            _exit(1);
+        }
+        int status;
+        if (waitpid(pid, &status, 0) != pid || !WIFSIGNALED(status) || WTERMSIG(status) != SIGABRT) failures++;
+        copy = fopen(path, "rb");
+        if (!copy || fread(after, 1, prefix, copy) != prefix || memcmp(after, original, prefix)) return 1;
+        fclose(copy);
+        pid = fork();
+        if (!pid) _exit(chain_init(dir, NULL) != 0 || chain_count() != (mode == 4 ? 3 : 2));
+        if (!wait_ok(pid)) { fprintf(stderr, "FAIL disk-fault recovery mode %d\n", mode); failures++; }
+    }
     unlink(path); rmdir(dir);
-    printf("chain storage: %d allocation faults/replays, writer lock, future-time/orphan replay: %s\n",
+    printf("chain storage: %d allocation faults/replays, writer lock, future-time/orphan replay, ENOSPC/short-write/fsync recovery: %s\n",
            attempts, failures ? "FAIL" : "ok");
     return failures != 0;
 }
