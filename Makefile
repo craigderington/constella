@@ -40,7 +40,7 @@ storage-test: test_chain_storage
 	./test_chain_storage
 
 test_ledger_incremental: $(CORE) tests/test_ledger_incremental.c src/*.h
-	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/chain.c src/ledger.c,$(CORE)) tests/test_ledger_incremental.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/chain.c src/ledger.c src/miner.c,$(CORE)) tests/test_ledger_incremental.c $(LDFLAGS)
 
 ledger-test: test_ledger_incremental
 	./test_ledger_incremental
