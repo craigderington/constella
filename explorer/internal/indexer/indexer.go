@@ -127,7 +127,7 @@ func (x *Indexer) flush(ctx context.Context) {
 		return
 	}
 	path := x.chain.Path()
-	x.ledger = consensus.Build(path)
+	ledger := consensus.Build(path)
 	if len(x.pendingShares) > 0 {
 		if err := x.store.InsertShares(ctx, x.pendingShares); err != nil {
 			log.Printf("indexer: retry insert: %v", err)
@@ -140,20 +140,21 @@ func (x *Indexer) flush(ctx context.Context) {
 		"tip":        hex.EncodeToString(tip.ID[:]),
 		"height":     fmt.Sprint(tip.Height),
 		"bits":       fmt.Sprint(tip.Msg.Share.Bits),
-		"escrow":     fmt.Sprint(x.ledger.Escrow),
-		"sci_paid":   fmt.Sprint(x.ledger.SciPaid),
-		"sci_claims": fmt.Sprint(x.ledger.SciClaims),
-		"blocks":     fmt.Sprint(x.ledger.Blocks),
-		"txs":        fmt.Sprint(x.ledger.Txs),
+		"escrow":     fmt.Sprint(ledger.Escrow),
+		"sci_paid":   fmt.Sprint(ledger.SciPaid),
+		"sci_claims": fmt.Sprint(ledger.SciClaims),
+		"blocks":     fmt.Sprint(ledger.Blocks),
+		"txs":        fmt.Sprint(ledger.Txs),
 		"known":      fmt.Sprint(x.chain.Len() - 1),
 		"chain_id":   proto.ChainIDHex(),
 		"network":    proto.NetworkName(),
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	}
-	if err := x.store.ApplyState(ctx, path, x.ledger, meta); err != nil {
+	if err := x.store.ApplyState(ctx, path, ledger, meta); err != nil {
 		log.Printf("indexer: apply state: %v", err)
 		return
 	}
+	x.ledger = ledger
 	x.dirty = false
 }
 
@@ -173,7 +174,7 @@ func accountCheckBatch(addrs []proto.Hash, pos, limit int) ([]proto.Hash, int) {
 // bound it checks every account; above it, successive checks eventually cover
 // the whole sorted ledger instead of checking the same first 64 forever.
 func (x *Indexer) startCheck() {
-	if x.ledger == nil || len(x.pending) > 0 || !x.peer.Connected() {
+	if x.dirty || x.ledger == nil || len(x.pending) > 0 || !x.peer.Connected() {
 		return
 	}
 	addrs := make([]proto.Hash, 0, len(x.ledger.Accounts))

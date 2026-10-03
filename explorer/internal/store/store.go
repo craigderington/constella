@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/big"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -21,7 +22,11 @@ import (
 //go:embed schema.sql
 var schema string
 
-type Store struct{ DB *sql.DB }
+type Store struct {
+	DB      *sql.DB
+	stateMu sync.Mutex
+	state   *stateCache
+}
 
 const schemaVersion = 1
 
@@ -66,7 +71,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("unsupported explorer schema version %d", version)
 	}
-	return &Store{db}, nil
+	return &Store{DB: db}, nil
 }
 
 // LoadRaw returns stored share messages in arrival order.
@@ -114,8 +119,8 @@ func (s *Store) InsertShares(ctx context.Context, nodes []*consensus.Node) error
 			t := &n.Msg.Txs[i]
 			id := t.ID()
 			if _, err := tx.ExecContext(ctx, `INSERT INTO txs
-				(uid, id, share_id, idx, from_addr, to_addr, amount, fee, nonce)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (uid) DO NOTHING`,
+				(uid, id, share_id, idx, from_addr, to_addr, amount, fee, nonce, status)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'orphaned') ON CONFLICT (uid) DO NOTHING`,
 				uid(n.ID, i), id[:], n.ID[:], i, t.From[:], t.To[:],
 				u64(t.Amount), u64(t.Fee), u64(t.Nonce)); err != nil {
 				return err
@@ -139,14 +144,9 @@ func (s *Store) InsertShares(ctx context.Context, nodes []*consensus.Node) error
 	return tx.Commit()
 }
 
-// ApplyState replaces all derived tables with the ledger for the current best chain.
-func (s *Store) ApplyState(ctx context.Context, path []*consensus.Node, l *consensus.Ledger, meta map[string]string) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
+// applyFull reconciles disposable derived tables on startup or after another
+// writer/ambiguous commit invalidates the incremental cache.
+func applyFull(ctx context.Context, tx *sql.Tx, path []*consensus.Node, l *consensus.Ledger) error {
 	main := make(pq.ByteaArray, 0, len(path))
 	for _, n := range path[1:] {
 		main = append(main, n.ID[:])
@@ -176,8 +176,8 @@ func (s *Store) ApplyState(ctx context.Context, path []*consensus.Node, l *conse
 			payable = append(payable, uid(k.Share, k.Idx))
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE claims SET payable = (uid = ANY($1))
-		WHERE payable <> (uid = ANY($1))`, payable); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE claims SET payable = COALESCE(uid = ANY($1),false)
+		WHERE payable <> COALESCE(uid = ANY($1),false)`, payable); err != nil {
 		return err
 	}
 
@@ -232,10 +232,7 @@ func (s *Store) ApplyState(ctx context.Context, path []*consensus.Node, l *conse
 		return err
 	}
 
-	if err := setMeta(ctx, tx, meta); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return nil
 }
 
 type execer interface {
