@@ -1,11 +1,18 @@
 /* Exercise the actual encrypted socket parser and scheduler on disposable
  * sockets. Include net.c to inspect queue/budget state without shipping hooks. */
 #include <netdb.h>
+#include <unistd.h>
+static pid_t resolver_parent_override;
+static pid_t resolver_parent(void) {
+    return resolver_parent_override ? resolver_parent_override : getppid();
+}
 static int fake_lookup(const char *, const char *, const struct addrinfo *, struct addrinfo **);
 static void fake_free(struct addrinfo *);
 #define getaddrinfo fake_lookup
 #define freeaddrinfo fake_free
+#define getppid resolver_parent
 #include "../src/resolve.c"
+#undef getppid
 #undef getaddrinfo
 #undef freeaddrinfo
 #include "../src/net.c"
@@ -176,6 +183,32 @@ static void finish_dns(void) {
     while (dns.pid && now_ns() < deadline) { resolve_seeds(); usleep(1000); }
     assert(!dns.pid);
 }
+static void container_parent(void) {
+    /* A node is PID 1 in its normal scratch container. Exercise the complete
+     * helper entry point with that parent, including its socket response;
+     * zero and mismatched parents must still be rejected. */
+    for (int parent = 0; parent <= 2; parent++) {
+        int fd[2]; assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, fd));
+        pid_t child = fork(); assert(child >= 0);
+        if (!child) {
+            resolver_parent_override = 1;
+            assert(dup2(fd[1], STDOUT_FILENO) == STDOUT_FILENO);
+            char value[2] = {(char)('0' + parent), 0};
+            char *args[] = {"constella", "--resolve-seed", "multi.test", "7043", value, NULL};
+            _exit(resolve_main(5, args));
+        }
+        close(fd[1]);
+        resolve_result result;
+        ssize_t n = recv(fd[0], &result, sizeof result, 0);
+        close(fd[0]);
+        int status; assert(waitpid(child, &status, 0) == child && WIFEXITED(status));
+        if (parent == 1) {
+            assert(WEXITSTATUS(status) == 0 && n == sizeof result && result.n == RESOLVE_MAX);
+        } else {
+            assert(WEXITSTATUS(status) == 2 && n == 0);
+        }
+    }
+}
 static void dns_budget(void) {
     reset(); memset(S, 0, sizeof S); nseeds = 2;
     assert(!seed_init(&S[0], "stall.test:7043", 0));
@@ -263,7 +296,8 @@ static void dns_budget(void) {
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--resolve-seed")) return resolve_main(argc, argv);
     alarm(20);
-    fairness(); expensive_rotation(); partial_and_idle(); output_bound(); accept_bound(); dns_budget();
+    fairness(); expensive_rotation(); partial_and_idle(); output_bound(); accept_bound();
+    container_parent(); dns_budget();
     puts("peer budgets: encrypted fairness/order, expensive rotation, idle/partial frames, writes, slow readers, accepts: passed");
     return 0;
 }
