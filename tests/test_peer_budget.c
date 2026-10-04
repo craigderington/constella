@@ -139,6 +139,64 @@ static void accept_bound(void) {
     for (int i = 0; i < 4; i++) close(busy[i].fd);
     reset();
 }
+static void pending_cannot_evict(void) {
+    reset();
+    net_client_t healthy[MAX_INBOUND];
+    for (int i = 0; i < MAX_INBOUND; i++) {
+        healthy[i] = attach(i); P[i].inbound = 1; P[i].born = ++conn_ctr; n_inbound++;
+    }
+    lfd = socket(AF_INET, SOCK_STREAM, 0); assert(lfd >= 0); nonblock(lfd);
+    struct sockaddr_in addr = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    assert(!bind(lfd, (struct sockaddr *)&addr, sizeof addr) && !listen(lfd, 16));
+    socklen_t len = sizeof addr; assert(!getsockname(lfd, (struct sockaddr *)&addr, &len));
+    int clients[12];
+    for (int i = 0; i < 12; i++) {
+        clients[i] = socket(AF_INET, SOCK_STREAM, 0); assert(clients[i] >= 0);
+        assert(!connect(clients[i], (struct sockaddr *)&addr, sizeof addr));
+    }
+    for (int j = 0; j < 12; j++) turn();
+    assert(n_inbound == MAX_INBOUND + MAX_PENDING_INBOUND);
+    for (int i = 0; i < MAX_INBOUND; i++) {
+        assert(P[i].state == P_UP && P[i].auth_ready); send_request(&healthy[i], 0);
+    }
+    /* These are real accepted sockets. An out-of-order AUTH2 must fail the
+     * actual parser without taking a previously authenticated slot with it. */
+    uint8_t bad[HDR + 64] = {0}; put_hdr(bad, MSG_AUTH2, 64);
+    for (int i = 0; i < 4; i++) assert(send(clients[i], bad, sizeof bad, MSG_NOSIGNAL) == sizeof bad);
+    for (int j = 0; j < 12; j++) turn();
+    for (int i = 0; i < MAX_INBOUND; i++) {
+        assert(P[i].state == P_UP && P[i].auth_ready && seen[i] == 1); close(healthy[i].fd);
+    }
+    assert(n_inbound == MAX_INBOUND);
+    for (int i = 0; i < 12; i++) close(clients[i]);
+    reset();
+    puts("inbound: stalled and invalid real handshakes cannot evict authenticated peers");
+}
+
+static void wallet_deadlines(void) {
+    int listener = socket(AF_INET, SOCK_STREAM, 0); assert(listener >= 0);
+    struct sockaddr_in addr = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    assert(!bind(listener, (struct sockaddr *)&addr, sizeof addr) && !listen(listener, 4));
+    socklen_t len = sizeof addr; assert(!getsockname(listener, (struct sockaddr *)&addr, &len));
+    resolve_result addresses = {.n = 2};
+    assert(resolve_numeric("::1", addresses.ip[0]));
+    assert(resolve_numeric("127.0.0.1", addresses.ip[1]));
+    int fd = client_connect(&addresses, ntohs(addr.sin_port), now_ns() + 300000000ULL);
+    assert(fd >= 0); int accepted = accept(listener, NULL, NULL); assert(accepted >= 0);
+    /* A peer that drip-feeds bytes cannot restart the overall read deadline. */
+    uint8_t buf[2] = {0}; assert(write(accepted, "x", 1) == 1);
+    uint64_t began = now_ns();
+    assert(cxfer(fd, buf, 2, 0, began + 100000000ULL) == -1);
+    assert(now_ns() - began < 500000000ULL);
+    close(fd); close(accepted); close(listener);
+    wallet_t identity; uint8_t seed[32] = {91}; wallet_from_seed(&identity, seed);
+    net_client_t client; began = now_ns();
+    assert(net_client_open(&client, "stall.test:7043", &identity) == -1);
+    assert(now_ns() - began < RESOLVE_TIMEOUT_NS + 1000000000ULL);
+    assert(waitpid(-1, NULL, WNOHANG) == -1 && errno == ECHILD);
+    puts("wallet: later IPv4 answer succeeds, partial reads have a deadline, stalled DNS cancelled and reaped");
+}
+
 /* The helper re-execs this binary, then enters the real resolver code with
  * controlled libc responses. No test name reaches an external DNS server. */
 static int fake_lookup(const char *host, const char *port, const struct addrinfo *hints,
@@ -295,9 +353,9 @@ static void dns_budget(void) {
 }
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--resolve-seed")) return resolve_main(argc, argv);
-    alarm(20);
+    alarm(35);
     fairness(); expensive_rotation(); partial_and_idle(); output_bound(); accept_bound();
-    container_parent(); dns_budget();
+    pending_cannot_evict(); container_parent(); dns_budget(); wallet_deadlines();
     puts("peer budgets: encrypted fairness/order, expensive rotation, idle/partial frames, writes, slow readers, accepts: passed");
     return 0;
 }

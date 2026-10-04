@@ -20,6 +20,7 @@
 
 #define MAX_PEERS 32
 #define MAX_INBOUND 16
+#define MAX_PENDING_INBOUND 4
 #define MAX_SEEDS 16
 #define RXCAP     8192
 #define TXMAX     (4u << 20)
@@ -142,6 +143,14 @@ static void peer_handshake_done(const peer_t *p);
 static void drop(int i);
 
 static void nonblock(int fd) { fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK); }
+
+int net_send_ready(int i) {
+    return i >= 0 && i < MAX_PEERS && P[i].state == P_UP &&
+           P[i].auth_ready && P[i].hello && P[i].txn < WRITE_SLICE;
+}
+uint64_t net_peer_session(int i) {
+    return i >= 0 && i < MAX_PEERS && P[i].state != P_FREE ? P[i].born : 0;
+}
 
 static int reserve_tx(peer_t *p, size_t need) {
     if (need > TXMAX) return -1;
@@ -322,18 +331,16 @@ static int encrypt_pending(peer_t *p) {
  * an address-table dial has no seed index either, and inferring direction
  * from the seed would have filed every one of them as inbound - charging
  * them against MAX_INBOUND and hiding them from the outbound accounting. */
-static int inbound_victim(const uint8_t incoming_ip[16]) {
-	uint8_t incoming_group[8];
-	int have_incoming = incoming_ip != NULL;
-	if (have_incoming) addr_netgroup(incoming_ip, incoming_group);
+static int inbound_victim(const uint8_t incoming_group[8]) {
+	int have_incoming = incoming_group != NULL;
 	int newest = -1, duplicate = -1;
 	for (int i = 0; i < MAX_PEERS; i++) {
-		if (P[i].state == P_FREE || !P[i].inbound) continue;
+		if (P[i].state == P_FREE || !P[i].inbound || !P[i].auth_ready) continue;
 		if (newest < 0 || P[i].born > P[newest].born) newest = i;
 		int copies = 0;
 		if (P[i].has_netgroup) {
 			for (int j = 0; j < MAX_PEERS; j++)
-				if (P[j].state != P_FREE && P[j].inbound && P[j].has_netgroup &&
+				if (P[j].state != P_FREE && P[j].inbound && P[j].auth_ready && P[j].has_netgroup &&
 				    !memcmp(P[i].netgroup, P[j].netgroup, 8))
 					copies++;
 			if (have_incoming && !memcmp(P[i].netgroup, incoming_group, 8)) copies++;
@@ -346,11 +353,12 @@ static int inbound_victim(const uint8_t incoming_ip[16]) {
 
 static int alloc_peer(int fd, int state, int seed, int inbound,
                       const uint8_t inbound_ip[16]) {
-	if (inbound && n_inbound >= MAX_INBOUND) {
-		int victim = inbound_victim(inbound_ip);
-		if (victim < 0) return -1;
-		drop(victim);
-	}
+	/* Handshakes occupy a separate bounded allowance. Merely opening a
+	 * socket must never displace an authenticated connection. */
+	int pending = 0;
+	for (int i = 0; i < MAX_PEERS; i++)
+		pending += P[i].state != P_FREE && P[i].inbound && !P[i].auth_ready;
+	if (inbound && pending >= MAX_PENDING_INBOUND) return -1;
 	for (int i = 0; i < MAX_PEERS; i++) {
         if (P[i].state != P_FREE) continue;
         memset(&P[i], 0, sizeof P[i]);
@@ -374,6 +382,18 @@ static int alloc_peer(int fd, int state, int seed, int inbound,
         return i;
     }
     return -1;
+}
+
+static int promote_inbound(int i) {
+    if (!P[i].inbound) return 0;
+    int established = 0;
+    for (int j = 0; j < MAX_PEERS; j++)
+        established += P[j].state != P_FREE && P[j].inbound && P[j].auth_ready;
+    if (established < MAX_INBOUND) return 0;
+    int victim = inbound_victim(P[i].has_netgroup ? P[i].netgroup : NULL);
+    if (victim < 0) return -1;
+    drop(victim);
+    return 0;
 }
 
 static void drop(int i) {
@@ -598,6 +618,7 @@ static int finish_auth(int i, uint8_t type, const uint8_t *payload, uint16_t len
     hs_transcript(tr, p->peer_eph, p->eph_pk, p->peer_id, node_id.pk);
     if (signature_check(payload, p->peer_id, tr, sizeof tr)) return -1;
     if (hs_derive(p->txkey, p->rxkey, p->eph_sk, p->peer_eph, node_id.pk, p->peer_id)) return -1;
+    if (promote_inbound(i)) return -1;
     crypto_wipe(p->eph_sk, sizeof p->eph_sk);   /* forward secrecy starts here */
     p->hs_phase = 2;
     p->auth_ready = 1;
@@ -1031,33 +1052,43 @@ int net_advertise(const char *hostport) {
  * instead would mean an unauthenticated stranger could hold a slot for as
  * long as it liked, which is the thing the gate exists to stop. The caller
  * supplies the identity, so this touches none of the module's peer state.
- * Blocking I/O throughout - this runs for one round trip and then exits. */
+ * One monotonic deadline covers DNS, connect, handshake and the response. */
 
-static int cxfer(int fd, void *b, size_t n, int wr) {
+static int cxfer(int fd, void *b, size_t n, int wr, uint64_t deadline) {
     uint8_t *p = b;
+    if (!deadline) deadline = now_ns() + 10000000000ULL;
     while (n) {
-        ssize_t r = wr ? send(fd, p, n, MSG_NOSIGNAL) : recv(fd, p, n, 0);
+        uint64_t now = now_ns();
+        if (now >= deadline) return -1;
+        ssize_t r = wr ? send(fd, p, n, MSG_NOSIGNAL | MSG_DONTWAIT) : recv(fd, p, n, MSG_DONTWAIT);
+        if (r < 0 && errno == EINTR) continue;
+        if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            struct pollfd wait = {.fd = fd, .events = wr ? POLLOUT : POLLIN};
+            int ms = (int)((deadline - now + 999999) / 1000000);
+            if (poll(&wait, 1, ms) < 0 && errno != EINTR) return -1;
+            continue;
+        }
         if (r <= 0) return -1;
         p += (size_t)r; n -= (size_t)r;
     }
     return 0;
 }
 
-static int cframe_send(int fd, uint8_t type, const void *p, uint16_t len) {
+static int cframe_send(int fd, uint8_t type, const void *p, uint16_t len, uint64_t deadline) {
     uint8_t h[HDR];
     put_hdr(h, type, len);
-    if (cxfer(fd, h, HDR, 1)) return -1;
-    return len ? cxfer(fd, (void *)(uintptr_t)p, len, 1) : 0;
+    if (cxfer(fd, h, HDR, 1, deadline)) return -1;
+    return len ? cxfer(fd, (void *)(uintptr_t)p, len, 1, deadline) : 0;
 }
 
 /* One raw frame into hdr/buf (buf must hold MAXPAY); payload length, or -1. */
-static int cframe_recv(int fd, uint8_t *hdr, uint8_t *buf) {
-    if (cxfer(fd, hdr, HDR, 0)) return -1;
+static int cframe_recv(int fd, uint8_t *hdr, uint8_t *buf, uint64_t deadline) {
+    if (cxfer(fd, hdr, HDR, 0, deadline)) return -1;
     uint32_t m = (uint32_t)hdr[0] | (uint32_t)hdr[1] << 8 |
                  (uint32_t)hdr[2] << 16 | (uint32_t)hdr[3] << 24;
     uint16_t len = (uint16_t)(hdr[5] | hdr[6] << 8);
     if (m != NET_MAGIC || len > MAXPAY) return -1;
-    if (len && cxfer(fd, buf, len, 0)) return -1;
+    if (len && cxfer(fd, buf, len, 0, deadline)) return -1;
     return len;
 }
 
@@ -1068,15 +1099,16 @@ int net_client_send(net_client_t *c, uint8_t type, const void *pay, uint16_t len
     put_hdr(h, type, (uint16_t)(len + 16));
     make_nonce(nonce, c->txseq++);
     crypto_aead_lock(ct, ct + len, c->txkey, nonce, h, HDR, pay, len);
-    return cxfer(c->fd, h, HDR, 1) || cxfer(c->fd, ct, (size_t)len + 16, 1) ? -1 : 0;
+    return cxfer(c->fd, h, HDR, 1, c->deadline) || cxfer(c->fd, ct, (size_t)len + 16, 1, c->deadline) ? -1 : 0;
 }
 
 /* Read frames until one of `want` arrives; the node also gossips at us. */
 int net_client_wait(net_client_t *c, uint8_t want, uint8_t *out, uint16_t *len) {
     static uint8_t buf[MAXPAY];
     uint8_t hdr[HDR];
+    uint64_t deadline = c->deadline ? c->deadline : now_ns() + 10000000000ULL;
     for (int i = 0; i < 4096; i++) {
-        int n = cframe_recv(c->fd, hdr, buf);
+        int n = cframe_recv(c->fd, hdr, buf, deadline);
         if (n < 0) return -1;
         if (hdr[4] == MSG_AUTH || hdr[4] == MSG_AUTH2 || n < 16) return -1;
         uint8_t nonce[24];
@@ -1096,25 +1128,66 @@ void net_client_close(net_client_t *c) {
     c->fd = -1;
 }
 
+/* Attempt every bounded DNS answer concurrently. A black-holed first
+ * family cannot consume the deadline before a usable second address. */
+static int client_connect(const resolve_result *addresses, uint16_t port, uint64_t deadline) {
+    struct pollfd sockets[RESOLVE_MAX];
+    int n = 0, winner = -1;
+    for (uint32_t i = 0; i < addresses->n; i++) {
+        struct sockaddr_storage ss;
+        socklen_t len = sa_pack(&ss, addresses->ip[i], port);
+        int fd = socket(ss.ss_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        if (fd < 0) continue;
+        sockets[n++] = (struct pollfd){.fd = fd, .events = POLLOUT};
+        if (!connect(fd, (struct sockaddr *)&ss, len)) { winner = fd; break; }
+        if (errno != EINPROGRESS) { close(fd); sockets[--n].fd = -1; }
+    }
+    while (winner < 0 && now_ns() < deadline) {
+        int live = 0;
+        for (int i = 0; i < n; i++) live += sockets[i].fd >= 0;
+        if (!live) break;
+        uint64_t now = now_ns();
+        if (now >= deadline) break;
+        int ms = (int)((deadline - now + 999999) / 1000000);
+        if (poll(sockets, (nfds_t)n, ms) < 0 && errno != EINTR) break;
+        for (int i = 0; i < n; i++) if (sockets[i].fd >= 0 && sockets[i].revents) {
+            int error; socklen_t len = sizeof error;
+            if (!getsockopt(sockets[i].fd, SOL_SOCKET, SO_ERROR, &error, &len) && !error) {
+                winner = sockets[i].fd; break;
+            }
+            close(sockets[i].fd); sockets[i].fd = -1;
+        }
+    }
+    for (int i = 0; i < n; i++) if (sockets[i].fd >= 0 && sockets[i].fd != winner) close(sockets[i].fd);
+    if (winner >= 0) {
+        int flags = fcntl(winner, F_GETFL);
+        if (flags < 0 || fcntl(winner, F_SETFL, flags & ~O_NONBLOCK)) { close(winner); return -1; }
+        struct timeval timeout = {10, 0};
+        setsockopt(winner, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+        setsockopt(winner, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
+    }
+    return winner;
+}
+
 int net_client_open(net_client_t *c, const char *hostport, const wallet_t *id) {
     memset(c, 0, sizeof *c);
     c->fd = -1;
     if (!id) return -1;                    /* there is no unauthenticated mode */
-    char host[256];
-    snprintf(host, sizeof host, "%s", hostport);
-    char *sep = strrchr(host, ':');
-    const char *port = "7043";
-    if (sep) { *sep = 0; port = sep + 1; }
-    struct addrinfo hints = {0}, *res;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host, port, &hints, &res)) return -1;
-    int fd = socket(res->ai_family, SOCK_STREAM, 0);
-    if (fd >= 0 && connect(fd, res->ai_addr, res->ai_addrlen)) { close(fd); fd = -1; }
-    freeaddrinfo(res);
+    c->deadline = now_ns() + 10000000000ULL;
+    seed_t endpoint;
+    if (seed_init(&endpoint, hostport, 0)) return -1;
+    if (!endpoint.numeric) {
+        resolver lookup = RESOLVER_INIT;
+        if (resolve_start(&lookup, endpoint.host, endpoint.port, now_ns())) return -1;
+        int result;
+        do {
+            result = resolve_poll(&lookup, &endpoint.addresses, now_ns());
+            if (!result) poll(NULL, 0, 1);
+        } while (!result && now_ns() < c->deadline);
+        if (result != 1) { resolve_cancel(&lookup); resolve_poll(&lookup, NULL, now_ns()); return -1; }
+    }
+    int fd = client_connect(&endpoint.addresses, (uint16_t)strtoul(endpoint.port, NULL, 10), c->deadline);
     if (fd < 0) return -1;
-    struct timeval tv = {10, 0};       /* a wedged node must not wedge the wallet */
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
     c->fd = fd;
     {
         /* The same two phases as a gossip peer, in the same order and with the
@@ -1127,15 +1200,15 @@ int net_client_open(net_client_t *c, const char *hostport, const wallet_t *id) {
         crypto_x25519_public_key(eph_pk, eph_sk);
         memcpy(pay, eph_pk, 32);
         memcpy(pay + 32, id->pk, 32);
-        if (cframe_send(fd, MSG_AUTH, pay, sizeof pay)) goto fail;
-        if (cframe_recv(fd, hdr, buf) != 64 || hdr[4] != MSG_AUTH) goto fail;
+        if (cframe_send(fd, MSG_AUTH, pay, sizeof pay, c->deadline)) goto fail;
+        if (cframe_recv(fd, hdr, buf, c->deadline) != 64 || hdr[4] != MSG_AUTH) goto fail;
         memcpy(peer_eph, buf, 32);
         memcpy(peer_id, buf + 32, 32);
         if (!memcmp(peer_id, id->pk, 32)) goto fail;      /* see finish_auth */
         hs_transcript(tr, eph_pk, peer_eph, id->pk, peer_id);
         crypto_eddsa_sign(pay, id->sk, tr, sizeof tr);
-        if (cframe_send(fd, MSG_AUTH2, pay, sizeof pay)) goto fail;
-        if (cframe_recv(fd, hdr, buf) != 64 || hdr[4] != MSG_AUTH2) goto fail;
+        if (cframe_send(fd, MSG_AUTH2, pay, sizeof pay, c->deadline)) goto fail;
+        if (cframe_recv(fd, hdr, buf, c->deadline) != 64 || hdr[4] != MSG_AUTH2) goto fail;
         hs_transcript(tr, peer_eph, eph_pk, peer_id, id->pk);
         if (signature_check(buf, peer_id, tr, sizeof tr)) goto fail;
         if (hs_derive(c->txkey, c->rxkey, eph_sk, peer_eph, id->pk, peer_id)) goto fail;
@@ -1190,6 +1263,7 @@ int net_seed_count_vector(int fallback_only) {
 int net_inbound_add_vector(const uint8_t ip[16]) {
     int i = alloc_peer(-1, P_UP, -1, 1, ip);
     if (i < 0) return 0;
+    if (promote_inbound(i)) { drop(i); return 0; }
     P[i].auth_ready = 1;
     P[i].hello = 1;
     return 1;

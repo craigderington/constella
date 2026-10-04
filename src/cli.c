@@ -158,6 +158,8 @@ int cli_send(int argc, char **argv) {
             fprintf(stderr, "cancelled; no transaction sent\n");
             crypto_wipe(&w, sizeof w); net_client_close(&c); return 1;
         }
+        /* Human review time is outside the network-operation deadline. */
+        c.deadline = now_ns() + 10000000000ULL;
     }
     tx_sign(&t, w.sk);
     crypto_wipe(&w, sizeof w);

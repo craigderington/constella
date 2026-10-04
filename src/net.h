@@ -24,6 +24,10 @@ enum {
 };
 #define NET_HDR    7
 #define NET_MAXPAY 4096
+/* Bounded deferred services may enqueue only while the authenticated peer's
+ * output queue is below one write slice. False also means disconnected. */
+int net_send_ready(int peer);
+uint64_t net_peer_session(int peer); /* zero if disconnected, changes on reuse */
 
 /* Gossip. Wire layout of MSG_ADDR's payload: a little-endian u16 entry count,
  * then that many 22-byte entries { ip[16] v4-mapped | port u16 LE | seen u32
@@ -127,11 +131,11 @@ void net_stop(void);   /* close the listener and drop every peer */
 
 /* Short-lived request/response client (the wallet). It runs the same handshake
  * and HELLO a gossip peer does, because the node gates every connection on it.
- * Blocking, with a 10 s socket timeout. */
+ * One 10 s monotonic deadline covers resolution through the response. */
 typedef struct {
     int fd;
     uint8_t txkey[32], rxkey[32];
-    uint64_t txseq, rxseq;
+    uint64_t txseq, rxseq, deadline;
 } net_client_t;
 
 /* Test-only: the same AEAD framing, on a fixed key and fixed input, asserted
