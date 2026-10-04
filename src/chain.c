@@ -337,8 +337,10 @@ int chain_init(const char *dir, accept_fn cb) {
      * sharing a volume must not interpret each other's partial writes as
      * corruption or append interleaved records. Keep this inode locked for
      * the lifetime of db. A failed startup releases it without modifying data. */
-    int fd = open(path, O_RDWR | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    int fd = open(path, O_RDWR | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
     if (fd < 0) return -1;
+    struct stat st;
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode)) { close(fd); return -1; }
     if (flock(fd, LOCK_EX | LOCK_NB)) { close(fd); return -1; }
     FILE *f = fdopen(fd, "a+b");
     if (!f) { close(fd); return -1; }
@@ -364,16 +366,30 @@ int chain_init(const char *dir, accept_fn cb) {
             break;
         }
         size_t len = (size_t)(l[0] | l[1] << 8);
+        /* Inspect the version before applying this binary's size/validation
+         * rules. Future records may have a different length as well as new
+         * consensus rules. Never repair unfamiliar history in place. */
+        if (len >= 4) {
+            if (fread(msg, 1, 4, f) != 4) {
+                if (ferror(f)) local_error = 1; else damaged = 1;
+                break;
+            }
+            uint32_t version = (uint32_t)msg[0] | (uint32_t)msg[1] << 8 |
+                               (uint32_t)msg[2] << 16 | (uint32_t)msg[3] << 24;
+            if (version != SHARE_VERSION) {
+                log_msg("fatal: unsupported chain version; leaving original bytes intact");
+                local_error = 1; break;
+            }
+        }
         if (len < SHARE_SIZE + 4 || len > sizeof msg) { damaged = 1; break; }
-        if (fread(msg, 1, len, f) != len) {
+        if (fread(msg + 4, 1, len - 4, f) != len - 4) {
             if (ferror(f)) local_error = 1;
             else damaged = 1;
             break;
         }
         share_t header;
         share_deser(&header, msg);
-        if ((header.version == 3 || header.version == 4) &&
-            (header.version != SHARE_VERSION || (header.version == 4 && header.rsv != NETWORK_MARKER))) {
+        if (header.version >= 4 && header.rsv != NETWORK_MARKER) {
             log_msg("fatal: foreign-network history; leaving original bytes intact");
             local_error = 1; break;
         }

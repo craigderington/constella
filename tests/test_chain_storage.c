@@ -144,7 +144,39 @@ int main(void) {
         if (!pid) _exit(chain_init(dir, NULL) != 0 || chain_count() != (mode == 4 ? 3 : 2));
         if (!wait_ok(pid)) { fprintf(stderr, "FAIL disk-fault recovery mode %d\n", mode); failures++; }
     }
-    unlink(path); rmdir(dir);
+    /* Downgrades and unknown formats must fail without trimming even one
+     * byte, including an unfamiliar record after a valid prefix and a future
+     * record larger than today's maximum. */
+    for (int mode = 0; mode < 3; mode++) {
+        size_t off = mode == 1 ? prefix : 0;
+        memcpy(after, original, bytes);
+        after[off + 2] = 99;
+        if (mode == 2) { after[0] = 0xff; after[1] = 0xff; }
+        FILE *copy = fopen(path, "wb");
+        if (!copy || fwrite(after, 1, bytes, copy) != bytes || fclose(copy)) return 1;
+        pid = fork();
+        if (!pid) _exit(chain_init(dir, NULL) == 0);
+        if (!wait_ok(pid)) failures++;
+        unsigned char checked[8192];
+        copy = fopen(path, "rb");
+        if (!copy || fread(checked, 1, sizeof checked, copy) != bytes || memcmp(checked, after, bytes)) failures++;
+        if (copy) fclose(copy);
+    }
+    /* A chain path may not redirect repair into another file or block on a
+     * FIFO. Keep the target bytes intact and bound startup with an alarm. */
+    char target[160]; snprintf(target, sizeof target, "%s/target", dir);
+    if (rename(path, target) || symlink(target, path)) return 1;
+    pid = fork();
+    if (!pid) { alarm(2); _exit(chain_init(dir, NULL) == 0); }
+    if (!wait_ok(pid)) failures++;
+    struct stat st;
+    if (stat(target, &st) || st.st_size != (off_t)bytes) failures++;
+    unlink(path);
+    if (mkfifo(path, 0600)) return 1;
+    pid = fork();
+    if (!pid) { alarm(2); _exit(chain_init(dir, NULL) == 0); }
+    if (!wait_ok(pid)) failures++;
+    unlink(path); unlink(target); rmdir(dir);
     printf("chain storage: %d allocation faults/replays, writer lock, future-time/orphan replay, ENOSPC/short-write/fsync recovery: %s\n",
            attempts, failures ? "FAIL" : "ok");
     return failures != 0;
