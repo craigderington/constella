@@ -46,7 +46,7 @@ int  addr_bucket_of(const uint8_t ip[16], int tried);
  * addr_load discards ANY corrupt or foreign file wholesale - wrong magic,
  * wrong version, truncated, or a bad trailing checksum all fall back to a
  * freshly generated secret and empty tables, never a partially-trusted
- * prefix (see the chain loader's opposite, defective behaviour). It
+ * secret/table pair. It
  * generates and persists a fresh random secret when no file exists.
  * Returns 0 on success (which includes every discard-and-start-fresh path);
  * -1 on entropy, unsafe path or persistence failure. addr_save returns 0 only

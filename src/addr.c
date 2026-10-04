@@ -329,11 +329,9 @@ int addr_is_routable(const uint8_t ip[16]) {
  *
  * On ANY mismatch - wrong magic, wrong version, a size that cannot be a
  * valid record count, or a checksum that does not match - the whole file is
- * discarded: fresh secret, empty tables. This is the opposite of the chain
- * loader, which keeps a validated prefix and stops at the first bad record;
- * that is a known defect there and must not be repeated here, since a
- * partially-adopted secret plus a partially-restored table is exactly the
- * kind of inconsistent state an attacker who can flip one bit wants. */
+ * discarded: fresh secret, empty tables. Restore the secret and tables as
+ * one unit: adopting only part of either would leave inconsistent bucket
+ * placement. Read errors preserve the file and fail startup instead. */
 
 #define ADDR_REC_SIZE   23u
 #define ADDR_HDR_SIZE   33u

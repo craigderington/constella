@@ -666,10 +666,10 @@ int node_run(void) {
      * in which of a victim's buckets - the one thing the bucketing exists to
      * make impossible. addr_load generates and persists a random secret on
      * first run and restores it (with both tables) on every run after. It
-     * fails closed when there is no entropy, for the same reason the
-     * handshake does: a predictable secret is worse than no node at all. */
+     * fails closed on entropy, storage or unsafe-path errors so the node
+     * cannot silently lose its persisted discovery state. */
     if (addr_load(data)) {
-        log_msg("fatal: no entropy for the peer-table secret");
+        log_msg("fatal: cannot initialize peer table (entropy, storage or unsafe path)");
         return 1;
     }
 
