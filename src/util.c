@@ -5,6 +5,17 @@
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
+#include <errno.h>
+
+int parse_int(const char *s, int min, int max, int *out) {
+    if (!s || *s < '0' || *s > '9') return -1;
+    errno = 0;
+    char *end;
+    long value = strtol(s, &end, 10);
+    if (errno || *end || value < min || value > max) return -1;
+    *out = (int)value;
+    return 0;
+}
 
 void log_msg(const char *fmt, ...) {
     char ts[32];

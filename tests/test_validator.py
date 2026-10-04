@@ -129,6 +129,14 @@ def main():
                 assert (lab / str(index) / "shares.v3").read_bytes() == retained
                 assert (lab / str(index) / "node.key").read_bytes() == identity
                 assert not (lab / str(index) / "wallet.key").exists()
+            for name in ("CONSTELLA_PORT", "CONSTELLA_THREADS", "CONSTELLA_DUTY", "CONSTELLA_TEMP_MAX", "CONSTELLA_BATTERY_PAUSE"):
+                for value in ("", "12junk", "-1", "999999999999999999999999999999999", " 2"):
+                    result = subprocess.run([BINARY], env=env | {name: value, "CONSTELLA_DATA": str(lab / "bad-number")}, capture_output=True, timeout=4)
+                    assert result.returncode == 1 and b"invalid numeric configuration" in result.stderr
+                    assert not (lab / "bad-number").exists()
+            for value in ("64junk", "9999999999999999999999999999999", "-1"):
+                result = subprocess.run([BINARY, "bench", value], capture_output=True, timeout=4)
+                assert result.returncode == 2
             for value in ("", "false", "2", "-1", "1x"):
                 result = subprocess.run([BINARY], env=env | {"CONSTELLA_MINE": value,
                                         "CONSTELLA_DATA": str(lab / "bad-mode")}, capture_output=True, timeout=4)

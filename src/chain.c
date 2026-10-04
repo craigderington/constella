@@ -321,23 +321,21 @@ int chain_locator(uint8_t (*out)[32], int max) {
 int chain_init(const char *dir, accept_fn cb) {
     share_t g = {0};
     uint8_t gid[32], miss[32], msg[SHARE_MSG_MAX], l[2];
-    char path[512];
-    if (db || (mkdir(dir, 0755) && errno != EEXIST)) return -1;
+    if (db || (mkdir(dir, 0700) && errno != EEXIST)) return -1;
+    int directory = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (directory < 0) return -1;
     const char *files[] = {"shares.v3", "shares.testnet-v4", "shares.mainnet-v4", "shares.testnet-v5", "shares.mainnet-v5"};
     for (unsigned i = 0; i < sizeof files / sizeof *files; i++) {
         if (!strcmp(files[i], CHAIN_FILE)) continue;
-        if (snprintf(path, sizeof path, "%s/%s", dir, files[i]) >= (int)sizeof path) return -1;
-        if (!access(path, F_OK) || errno != ENOENT) {
+        struct stat foreign;
+        if (!fstatat(directory, files[i], &foreign, AT_SYMLINK_NOFOLLOW) || errno != ENOENT) {
             log_msg("fatal: data directory contains another network's chain");
-            return -1;
+            close(directory); return -1;
         }
     }
-    if (snprintf(path, sizeof path, "%s/%s", dir, CHAIN_FILE) >= (int)sizeof path) return -1;
-    /* Lock before replay or repair, not merely before appending. Two daemons
-     * sharing a volume must not interpret each other's partial writes as
-     * corruption or append interleaved records. Keep this inode locked for
-     * the lifetime of db. A failed startup releases it without modifying data. */
-    int fd = open(path, O_RDWR | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
+    /* Pin the trusted directory and inode before replay or repair. */
+    int fd = openat(directory, CHAIN_FILE, O_RDWR | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
+    close(directory);
     if (fd < 0) return -1;
     struct stat st;
     if (fstat(fd, &st) || !S_ISREG(st.st_mode)) { close(fd); return -1; }

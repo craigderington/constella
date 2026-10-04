@@ -1940,6 +1940,38 @@ static void t_addr_persist(void) {
     unlink(path);
 }
 
+extern int addr_stale_vector(uint32_t seen);
+static void t_addr_safety(void) {
+    char dir[] = "/tmp/constella-peer-safe-XXXXXX", path[160], target[160], oldtmp[160];
+    CHECK(mkdtemp(dir) != NULL);
+    snprintf(path, sizeof path, "%s/peers.dat", dir);
+    snprintf(target, sizeof target, "%s/target", dir);
+    snprintf(oldtmp, sizeof oldtmp, "%s/peers.dat.tmp", dir);
+    FILE *f = fopen(target, "wb"); CHECK(f != NULL);
+    if (f) { CHECK(fwrite("retain", 1, 6, f) == 6); fclose(f); }
+    CHECK(!symlink(target, oldtmp));
+    CHECK(addr_save(dir) == 0);
+    char bytes[8] = {0}; f = fopen(target, "rb"); CHECK(f != NULL);
+    if (f) { CHECK(fread(bytes, 1, sizeof bytes, f) == 6); fclose(f); }
+    CHECK(!memcmp(bytes, "retain", 6));
+    unlink(path); CHECK(!symlink(target, path));
+    CHECK(addr_load(dir) == -1); unlink(path);
+    CHECK(!mkfifo(path, 0600));
+    pid_t pid = fork();
+    if (!pid) { alarm(2); _exit(addr_load(dir) != -1); }
+    int status; CHECK(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && !WEXITSTATUS(status));
+    unlink(path); CHECK(!mkdir(path, 0700));
+    CHECK(addr_save(dir) == -1); /* rename failure must reach the caller */
+    rmdir(path);
+    CHECK(addr_load(target) == -1 && addr_save(target) == -1);
+    uint8_t ip[16]; mk4(ip, 8, 8, 8, 8); int count = addr_count(0) + addr_count(1);
+    CHECK(addr_add(ip, 0, (uint32_t)now_sec()) == 0 && addr_count(0) + addr_count(1) == count);
+    uint32_t current = (uint32_t)now_sec();
+    CHECK(!addr_stale_vector(current - 86400));
+    CHECK(addr_stale_vector(current - 60u * 86400u));
+    unlink(oldtmp); unlink(target); rmdir(dir);
+}
+
 /* Reads the 16-byte bucket secret straight out of peers.dat. The secret is
  * deliberately never exposed through addr.h - nothing but addr.c has any
  * business reading it - so the only honest way to assert on it is the file
@@ -2681,7 +2713,7 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "--mine")) { t_mine((unsigned)atoi(argv[2]), 1); return fails != 0; }
 
-    t_miner_zero_duty(); t_miner_backpressure(); t_host_temperature(); t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_ledger_index_collisions(); t_ledger_conservation(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_sync_fork_cursor(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_sci_pipe_region_switch(); t_tx(); t_mempool_capacity(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cold_payout_node(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
+    t_miner_zero_duty(); t_miner_backpressure(); t_host_temperature(); t_blake2b(); t_prp(); t_tuple(); t_dec(); t_pplns(); t_ledger_index_collisions(); t_ledger_conservation(); t_serial(); t_amount(); t_chain_id(); t_chain_request_batch_continuation(); t_sync_fork_cursor(); t_future_tip_does_not_stall_miner(); t_sci_recovery_uses_active_region(); t_sci_pipe_region_switch(); t_tx(); t_mempool_capacity(); t_share_root(); t_pow_commits_to_root(); t_sci_basics(); t_sci_region(); t_sci_check(); t_sci_search_throttle(); t_sci_msg(); t_sci_payout(); t_sci_dedup(); t_sci_seen_init(); t_chain_recovery(); t_transport_vector(); t_handshake_vector(); t_signature_vector(); t_handshake_live(); t_wallet_durable_create(); t_cold_payout_node(); t_cli_socket(); t_netgroup(); t_private_net_discovery(); t_addr_tables(); t_addr_persist(); t_addr_safety(); t_addr_node_lifecycle(); t_addr_seeds_enter_tables(); t_addr_advertise_keeps_bootstrap_open(); t_addr_msg(); t_addr_msg_vector(); t_addr_seen_clamp(); t_addr_gossip_guards(); t_net_outbound_diversity(); t_net_outbound_fills(); t_net_seed_outbound_diversity(); t_net_addr_promotion(); t_net_outbound_skips_self(); t_net_dead_table_keeps_seed_fallback(); t_net_inbound_eviction(); t_net_advertise_parse();
     t_mine(64, 0); t_mine(128, 0); t_mine(200, 0);
     printf("%d/%d checks passed\n", runs - fails, runs);
     return fails != 0;

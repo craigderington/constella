@@ -48,6 +48,10 @@ static uint8_t sci_anchor_cur[32];
 
 static void on_sig(int s) { (void)s; running = 0; }
 static const char *env(const char *k, const char *d) { const char *v = getenv(k); return v && *v ? v : d; }
+static int env_int(const char *key, const char *fallback, int min, int max, int *out) {
+    const char *value = getenv(key);
+    return parse_int(value ? value : fallback, min, max, out);
+}
 static void sh(char out[9], const uint8_t *b) { hex_enc(out, b, 4); }
 
 static int sci_pool_has(uint64_t k) {
@@ -499,13 +503,17 @@ int node_run(void) {
     char keypath[512], idpath[512];
     snprintf(keypath, sizeof keypath, "%s/wallet.key", data);
     snprintf(idpath, sizeof idpath, "%s/node.key", data);
-    int port = atoi(env("CONSTELLA_PORT", "7043"));
-    int threads = atoi(env("CONSTELLA_THREADS", "0"));
-    if (threads <= 0) threads = default_threads();
-    if (port < 1 || port > 65535 || threads > 256) {
-        log_msg("fatal: invalid port or thread count");
+    int port, threads, duty, temperature, battery;
+    if (env_int("CONSTELLA_PORT", "7043", 1, 65535, &port) ||
+        env_int("CONSTELLA_THREADS", "0", 0, 256, &threads) ||
+        env_int("CONSTELLA_DUTY", "50", 0, 100, &duty) ||
+        env_int("CONSTELLA_TEMP_MAX", "0", 0, 125, &temperature) ||
+        env_int("CONSTELLA_BATTERY_PAUSE", "1", 0, 1, &battery)) {
+        log_msg("fatal: invalid numeric configuration (port, threads, duty, temperature or battery pause)");
         return 1;
     }
+    if (!threads) threads = default_threads();
+    if (threads > 256) threads = 256;
     const char *private_net = getenv("CONSTELLA_PRIVATE_NET");
     if (private_net && strcmp(private_net, "0") && strcmp(private_net, "1")) {
         log_msg("fatal: CONSTELLA_PRIVATE_NET must be 0 or 1");
@@ -516,8 +524,7 @@ int node_run(void) {
     if (allow_private)
         log_msg("p2p: PRIVATE TESTNET MODE - RFC1918 discovery enabled");
     if (mining_enabled) {
-        throttle_init(atoi(env("CONSTELLA_DUTY", "50")), atoi(env("CONSTELLA_TEMP_MAX", "0")),
-                      atoi(env("CONSTELLA_BATTERY_PAUSE", "1")));
+        throttle_init(duty, temperature, battery);
         throttle_start();
         log_msg("throttle: sensor=%s cap=%dC target=%dC%s", throttle_sensor(), throttle_cap_c(),
                 throttle_target_c(), throttle_has_battery() ? " (laptop)" : "");
@@ -652,7 +659,7 @@ int node_run(void) {
     /* The bucket secret and both tables outlive this process. Rerolling the
      * secret on every restart would relearn `tried` from nothing each time,
      * which is the same eclipse exposure a fresh node has, every boot. */
-    addr_save(data);
+    if (addr_save(data)) { log_msg("error: cannot durably save peer table"); failed = 1; }
     net_stop();
     return failed ? 1 : 0;
 }

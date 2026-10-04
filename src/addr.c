@@ -1,4 +1,5 @@
 #include "addr.h"
+#include "util.h"
 #include "blake2b.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -140,7 +141,7 @@ static slot_t *bucket_stalest(slot_t bucket[ADDR_BUCKET_SIZE]) {
 }
 
 int addr_add(const uint8_t ip[16], uint16_t port, uint32_t seen) {
-    if (!addr_is_routable(ip)) return 0;
+    if (!port || !addr_is_routable(ip)) return 0;
     if (seen > g_max_seen) g_max_seen = seen;
 
     int tb = addr_bucket_of(ip, 1);
@@ -233,14 +234,17 @@ static int netgroup_avoided(const uint8_t ip[16], uint16_t port,
     return 0;
 }
 
-/* An entry more than a quarter of the table's freshness range behind the
- * freshest `seen` on record counts as stale. Relative to the table's own
- * high-water mark rather than to a fixed constant, because `seen` is a
- * caller-supplied logical timestamp with no fixed unit. */
+/* Production timestamps are Unix seconds. Age against wall time as well
+ * as the freshest observation, so an idle persisted table ages too. */
+#define ADDR_STALE_SECONDS (30u * 24u * 60u * 60u)
 static int is_stale(uint32_t seen) {
-    if (seen >= g_max_seen) return 0;
-    return (g_max_seen - seen) > (g_max_seen / 4);
+    int64_t wall = now_sec();
+    uint64_t current = wall > 0 ? (uint64_t)wall : 0;
+    if (current < g_max_seen) current = g_max_seen;
+    return current > seen && current - seen > ADDR_STALE_SECONDS;
 }
+
+int addr_stale_vector(uint32_t seen) { return is_stale(seen); }
 
 /* Two passes: the first gives stale entries a (deterministic, secret-seeded)
  * chance to be skipped in favour of a fresher one further round the bucket
@@ -372,8 +376,7 @@ static int addr_reset_fresh(const char *datadir) {
     uint8_t secret[16];
     if (addr_randbytes(secret, 16)) return -1;
     addr_init(secret);
-    addr_save(datadir);
-    return 0;
+    return addr_save(datadir);
 }
 
 static uint8_t *write_record(uint8_t *p, const addr_t *a) {
@@ -384,11 +387,7 @@ static uint8_t *write_record(uint8_t *p, const addr_t *a) {
     return p;
 }
 
-void addr_save(const char *datadir) {
-    char path[512], tmp[512];
-    if (snprintf(path, sizeof path, "%s/peers.dat", datadir) >= (int)sizeof path) return;
-    if (snprintf(tmp, sizeof tmp, "%s/peers.dat.tmp", datadir) >= (int)sizeof tmp) return;
-
+int addr_save(const char *datadir) {
     /* Exact record counts are known before any bytes are written, so the
      * buffer is sized to precisely what this call will write - never a
      * fixed worst-case allocation sitting around for the process lifetime.
@@ -400,7 +399,7 @@ void addr_save(const char *datadir) {
     size_t need = ADDR_HDR_SIZE + (size_t)(n_new + n_tried) * ADDR_REC_SIZE + ADDR_CSUM_SIZE;
 
     uint8_t *buf = malloc(need);
-    if (!buf) return;   /* nothing persisted this call; in-memory tables are unaffected */
+    if (!buf) return -1;
 
     uint8_t *p = buf;
     *p++ = 'A'; *p++ = 'D'; *p++ = 'R'; *p++ = '1';
@@ -424,35 +423,45 @@ void addr_save(const char *datadir) {
     memcpy(p, csum, ADDR_CSUM_SIZE); p += ADDR_CSUM_SIZE;
     size_t total = (size_t)(p - buf);
 
-    mkdir(datadir, 0700);   /* best-effort; ignored if it already exists */
-
-    /* mode 0600 from creation, not chmod'd on afterward - the secret must
-     * never be briefly world-readable between fopen and a later chmod. */
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0) { free(buf); return; }
-    fchmod(fd, 0600);   /* covers a pre-existing tmp file with looser perms */
+    if (mkdir(datadir, 0700) && errno != EEXIST) { free(buf); return -1; }
+    int dir = open(datadir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (dir < 0) { free(buf); return -1; }
+    static unsigned sequence;
+    char tmp[80];
+    int fd = -1;
+    for (int i = 0; i < 16; i++) {
+        snprintf(tmp, sizeof tmp, "peers.dat.tmp.%ld.%u", (long)getpid(), ++sequence);
+        fd = openat(dir, tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (fd >= 0 || errno != EEXIST) break;
+    }
+    if (fd < 0) { close(dir); free(buf); return -1; }
     FILE *f = fdopen(fd, "wb");
-    if (!f) { close(fd); free(buf); return; }
-
-    size_t written = fwrite(buf, 1, total, f);
-    int ok = written == total && fflush(f) == 0 && fsync(fileno(f)) == 0;
-    fclose(f);
+    if (!f) { close(fd); unlinkat(dir, tmp, 0); close(dir); free(buf); return -1; }
+    int ok = fwrite(buf, 1, total, f) == total && fflush(f) == 0 && fsync(fd) == 0;
+    if (fclose(f)) ok = 0;
     free(buf);
-    if (!ok) { unlink(tmp); return; }
-    rename(tmp, path);
+    if (ok && renameat(dir, tmp, dir, "peers.dat")) ok = 0;
+    if (ok && fsync(dir)) ok = 0;
+    if (!ok) unlinkat(dir, tmp, 0);
+    if (close(dir)) ok = 0;
+    return ok ? 0 : -1;
 }
 
 int addr_load(const char *datadir) {
-    char path[512];
-    if (snprintf(path, sizeof path, "%s/peers.dat", datadir) >= (int)sizeof path)
-        return addr_reset_fresh(datadir);
+    int dir = open(datadir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (dir < 0) return errno == ENOENT ? addr_reset_fresh(datadir) : -1;
+    int fd = openat(dir, "peers.dat", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    int error = errno;
+    close(dir);
+    if (fd < 0) return error == ENOENT ? addr_reset_fresh(datadir) : -1;
+    struct stat st;
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode)) { close(fd); return -1; }
+    FILE *f = fdopen(fd, "rb");
+    if (!f) { close(fd); return -1; }
 
-    FILE *f = fopen(path, "rb");
-    if (!f) return addr_reset_fresh(datadir);   /* also persists the fresh secret immediately */
-
-    if (fseek(f, 0, SEEK_END)) { fclose(f); return addr_reset_fresh(datadir); }
+    if (fseek(f, 0, SEEK_END)) { fclose(f); return -1; }
     long sz = ftell(f);
-    if (sz < 0 || fseek(f, 0, SEEK_SET)) { fclose(f); return addr_reset_fresh(datadir); }
+    if (sz < 0 || fseek(f, 0, SEEK_SET)) { fclose(f); return -1; }
     if ((uint64_t)sz < ADDR_FILE_MIN || (uint64_t)sz > ADDR_FILE_MAX) {
         fclose(f);
         return addr_reset_fresh(datadir);
@@ -461,10 +470,12 @@ int addr_load(const char *datadir) {
     /* Allocated to the file's own (already bounds-checked) size, not a
      * fixed worst-case buffer - freed before every return. */
     uint8_t *buf = malloc((size_t)sz);
-    if (!buf) { fclose(f); return addr_reset_fresh(datadir); }
+    if (!buf) { fclose(f); return -1; }
 
     size_t n = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
+    int read_error = ferror(f);
+    if (fclose(f)) read_error = 1;
+    if (read_error) { free(buf); return -1; }
     if (n != (size_t)sz) { free(buf); return addr_reset_fresh(datadir); }
 
     const uint8_t *p = buf;

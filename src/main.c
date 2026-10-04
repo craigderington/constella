@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <limits.h>
 
 static int usage(void) {
     fprintf(stderr,
@@ -33,8 +34,11 @@ int main(int argc, char **argv) {
     if (cmd && !strcmp(cmd, "send"))    return cli_send(argc, argv);
     if (sieve_init()) return 1;
     if (cmd && !strcmp(cmd, "bench")) {
-        return bench_run(argc > 2 ? (unsigned)atoi(argv[2]) : GENESIS_BITS, argc > 3 ? atoi(argv[3]) : 20,
-                         argc > 4 ? atoi(argv[4]) : default_threads());
+        int bits = GENESIS_BITS, secs = 20, threads = default_threads();
+        if (argc > 5 || (argc > 2 && parse_int(argv[2], BITS_MIN, BITS_MAX, &bits)) ||
+            (argc > 3 && parse_int(argv[3], 1, INT_MAX, &secs)) ||
+            (argc > 4 && parse_int(argv[4], 1, 256, &threads))) return usage();
+        return bench_run((unsigned)bits, secs, threads);
     }
     if (cmd) return usage();
     return node_run();

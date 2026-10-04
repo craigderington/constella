@@ -49,7 +49,8 @@ int  addr_bucket_of(const uint8_t ip[16], int tried);
  * prefix (see the chain loader's opposite, defective behaviour). It
  * generates and persists a fresh random secret when no file exists.
  * Returns 0 on success (which includes every discard-and-start-fresh path);
- * -1 only if a fresh secret was needed and no entropy source was available. */
+ * -1 on entropy, unsafe path or persistence failure. addr_save returns 0 only
+ * after the file and its directory entry have been durably published. */
 int  addr_load(const char *datadir);
-void addr_save(const char *datadir);
+int  addr_save(const char *datadir);
 #endif
