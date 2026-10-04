@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"github.com/craig/constella/explorer/internal/blake2b"
+	"github.com/craig/constella/explorer/internal/signature"
 )
 
 // Consensus constants. params_test.go asserts these match ../src/params.h.
@@ -393,4 +394,15 @@ func ReadFrame(r io.Reader) (byte, []byte, error) {
 	p := make([]byte, n)
 	_, err := io.ReadFull(r, p)
 	return h[4], p, err
+}
+
+// CheckSignature uses the same transaction domain and versioned key policy as C.
+func (t *Tx) CheckSignature() bool {
+	msg := make([]byte, 16, 16+88)
+	copy(msg, "CSTL-TX2")
+	tag := ChainID()
+	copy(msg[8:], tag[:])
+	raw := t.Bytes()
+	msg = append(msg, raw[:88]...)
+	return signature.Check(t.From[:], t.Sig[:], msg, ShareVersion >= 5)
 }

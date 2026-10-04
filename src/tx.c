@@ -57,10 +57,21 @@ void tx_sign(tx_t *t, const uint8_t sk[64]) {
     tx_sign_with(t, sk, tag);
 }
 
+int signature_check(const uint8_t sig[64], const uint8_t pk[32], const uint8_t *msg, size_t len) {
+    /* Reuse the audited curve implementation, not an encoding blacklist.
+     * With R=identity, S=0 and h=1, its equation succeeds iff [8]A=identity.
+     * This also catches noncanonical encodings of every small-order point.
+     * Off-curve keys fail the ordinary verifier below. No vendor changes. */
+    static const uint8_t neutral[64] = {1}, one[32] = {1};
+    if (!crypto_eddsa_check_equation(neutral, pk, one)) return -1;
+    return crypto_eddsa_check(sig, pk, msg, len);
+}
+
 int tx_check_sig(const tx_t *t) {
     uint8_t m[16 + TX_BODY], tag[8];
     tx_chain_id(tag);
     signing_msg(m, t, tag);
+    if (SHARE_VERSION >= 5) return signature_check(t->sig, t->from, m, sizeof m);
     return crypto_eddsa_check(t->sig, t->from, m, sizeof m) ? -1 : 0;
 }
 

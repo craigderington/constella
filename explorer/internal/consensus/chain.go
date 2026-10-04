@@ -23,7 +23,7 @@ type Node struct {
 func (n *Node) IsBlock() bool { return n.TLen >= proto.BlockK }
 
 // Chain is the explorer's sharechain view. It mirrors the node's stateless
-// share rules; transaction signatures remain trusted to the node.
+// share rules; v5 also independently verifies transaction signatures.
 type Chain struct {
 	nodes       map[proto.Hash]*Node
 	orphans     map[proto.Hash][]*proto.Msg
@@ -82,6 +82,17 @@ func NextBits(parent *Node) uint16 {
 	return uint16(b)
 }
 
+func validTxSignatures(m *proto.Msg) bool {
+	if proto.ShareVersion >= 5 {
+		for i := range m.Txs {
+			if !m.Txs[i].CheckSignature() {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (c *Chain) accept(m *proto.Msg, id proto.Hash, par *Node, now int64) (*Node, error) {
 	s := &m.Share
 	if s.Version != proto.ShareVersion || s.Height != par.Height+1 ||
@@ -111,7 +122,7 @@ func (c *Chain) accept(m *proto.Msg, id proto.Hash, par *Node, now int64) (*Node
 	}
 	p := Candidate(s)
 	tl := TupleLen(p)
-	if tl < proto.ShareK {
+	if tl < proto.ShareK || !validTxSignatures(m) {
 		return nil, ErrInvalid
 	}
 	var base *big.Int
@@ -186,7 +197,7 @@ func (c *Chain) AddAt(m *proto.Msg, now int64) (added []*Node, missing *proto.Ha
 		// messages allowed one valid proof to fill the orphan budget with many
 		// different, uncommitted payloads.
 		if proto.ShareRoot(m.Txs, m.Claims) != m.Share.TxRoot ||
-			TupleLen(Candidate(&m.Share)) < proto.ShareK {
+			TupleLen(Candidate(&m.Share)) < proto.ShareK || !validTxSignatures(m) {
 			return nil, nil, ErrInvalid
 		}
 		c.orphans[m.Share.Prev] = append(c.orphans[m.Share.Prev], m)

@@ -1,4 +1,4 @@
-"""Isolated three-profile lab. All nodes, ports, keys and files are disposable.
+"""Isolated five-profile lab. All nodes, ports, keys and files are disposable.
 
 No external peers, databases, Docker stacks or production services are used.
 Run from the repo root. --write-fixtures regenerates public test vectors/proofs.
@@ -24,6 +24,8 @@ PROFILES = [
     ("network_legacy.h", "", 3, 5, 0x33545343, 0, "shares.v3"),
     ("network_testnet_v4.h", "protocolv4", 4, 5, 0x54345443, 5, "shares.testnet-v4"),
     ("network_mainnet_v4.h", "mainnet", 4, 6, 0x4D345443, 6, "shares.mainnet-v4"),
+    ("network_testnet_v5.h", "protocolv5", 5, 5, 0x54355443, 5, "shares.testnet-v5"),
+    ("network_mainnet_v5.h", "protocolv5,mainnet", 5, 6, 0x4D355443, 6, "shares.mainnet-v5"),
 ]
 
 
@@ -134,15 +136,16 @@ def main():
             checked([os.environ.get("CC", "cc"), "-std=c11", "-D_GNU_SOURCE", "-pthread", *flags,
                      f"-DCONSTELLA_NETWORK={index}", "-Isrc", "-o", str(probe), *core,
                      "src/node.c", "tests/network_probe.c", "-lm"])
+            checked([probe, "key-policy"])
             info = json.loads(checked([probe, "info"])); verify_info(info, profile)
             infos[profile[0]] = info
             evidence["profiles"][profile[0]] = {k: info[k] for k in ("chain_id", "genesis_id", "magic", "file")}
             share = lab / f"share-{index}"; share.write_bytes(checked([probe, "mine"])); shares.append(share)
             tx = lab / f"tx-{index}"; tx.write_bytes(checked([probe, "tx"])); transactions.append(tx)
             if args.write_fixtures and index:
-                (FIXTURES / ("sync-fork.testnet-v4" if index == 1 else "sync-fork.mainnet-v4")).write_bytes(
+                (FIXTURES / PROFILES[index][6].replace("shares.", "sync-fork.")).write_bytes(
                     checked([probe, "fork-fixture"]))
-        assert len({x["genesis_id"] for x in infos.values()}) == 3
+        assert len({x["genesis_id"] for x in infos.values()}) == len(PROFILES)
         if args.write_fixtures:
             (FIXTURES / "network-profiles.json").write_text(json.dumps(infos, indent=2) + "\n")
         else:
@@ -150,7 +153,7 @@ def main():
         evidence["clock_model"] = json.loads(checked([probes[0], "clock"]))
         print("profiles, independent Python vectors and 32-phase clock model: passed", flush=True)
         for target, probe in enumerate(probes):
-            for source in range(3):
+            for source in range(len(PROFILES)):
                 data = lab / f"submit-{target}-{source}"; data.mkdir()
                 result = run([probe, "submit", data, shares[source]])
                 observed = json.loads(result.stdout)
@@ -174,7 +177,7 @@ def main():
             for index, probe in enumerate(probes):
                 port = available_port(); ports.append(port)
                 data = lab / f"node-{index}"; data.mkdir()
-                fixture = FIXTURES / ("sync-fork.v3" if index == 0 else "sync-fork.testnet-v4" if index == 1 else "sync-fork.mainnet-v4")
+                fixture = FIXTURES / PROFILES[index][6].replace("shares.", "sync-fork.")
                 (data / PROFILES[index][6]).write_bytes(fixture.read_bytes())
                 env = os.environ.copy()
                 for name in ("CONSTELLA_ADVERTISE", "CONSTELLA_KEY", "CONSTELLA_PRIVATE_NET"):
@@ -207,7 +210,7 @@ def main():
             print("live C handshakes, encrypted account queries and magic-rewriting proxy: passed", flush=True)
             evidence["peer_flood"] = {}
             for index, profile in enumerate(PROFILES):
-                fixture = FIXTURES / ("sync-fork.v3" if index == 0 else "sync-fork.testnet-v4" if index == 1 else "sync-fork.mainnet-v4")
+                fixture = FIXTURES / PROFILES[index][6].replace("shares.", "sync-fork.")
                 evidence["peer_flood"][profile[0]] = exercise(probes[index], nodes[index], ports[index], fixture)
                 print(f"mixed flood with healthy account queries and full fixture sync: {profile[0]} passed", flush=True)
             for index, profile in enumerate(PROFILES):

@@ -96,15 +96,21 @@ constella-mainnet-v4: $(CORE) $(APP) src/*.h
 protocol-test:
 	python3 -B tests/test_network_profiles.py
 
-candidate-build: constella-testnet-v4 constella-mainnet-v4
-	cd explorer && CGO_ENABLED=0 go build -mod=vendor -tags protocolv4 -trimpath -ldflags="-s -w" -o ../constella-explorer-testnet-v4 ./cmd/explorer
-	cd explorer && CGO_ENABLED=0 go build -mod=vendor -tags mainnet -trimpath -ldflags="-s -w" -o ../constella-explorer-mainnet-v4 ./cmd/explorer
-	@for binary in constella-testnet-v4 constella-mainnet-v4; do \
+constella-testnet-v5: $(CORE) $(APP) src/*.h
+	$(CC) $(CFLAGS) -DCONSTELLA_NETWORK=3 -o $@ $(CORE) $(APP) $(LDFLAGS)
+
+constella-mainnet-v5: $(CORE) $(APP) src/*.h
+	$(CC) $(CFLAGS) -DCONSTELLA_NETWORK=4 -o $@ $(CORE) $(APP) $(LDFLAGS)
+
+candidate-build: constella-testnet-v5 constella-mainnet-v5
+	cd explorer && CGO_ENABLED=0 go build -mod=vendor -tags protocolv5 -trimpath -ldflags="-s -w" -o ../constella-explorer-testnet-v5 ./cmd/explorer
+	cd explorer && CGO_ENABLED=0 go build -mod=vendor -tags protocolv5,mainnet -trimpath -ldflags="-s -w" -o ../constella-explorer-mainnet-v5 ./cmd/explorer
+	@for binary in constella-testnet-v5 constella-mainnet-v5; do \
 	  sz=$$(stat -c %s $$binary); echo "$$binary: $$sz bytes (limit $(SIZE_MAX_BYTES))"; \
 	  test $$sz -le $(SIZE_MAX_BYTES) || exit 1; done
 
 clean:
 	rm -f constella test_constella thermal_sim constella-explorer gate_snapshot test_chain_storage bench_ledger test_peer_budget \
-	  constella-testnet-v4 constella-mainnet-v4 constella-explorer-testnet-v4 constella-explorer-mainnet-v4 test_node_work test_ledger_incremental
+	  constella-testnet-v4 constella-mainnet-v4 constella-explorer-testnet-v4 constella-explorer-mainnet-v4 test_node_work test_ledger_incremental constella-testnet-v5 constella-mainnet-v5 constella-explorer-testnet-v5 constella-explorer-mainnet-v5
 
 .PHONY: all fast unit test size explorer explorer-test gate-test storage-test ledger-test clean protocol-test candidate-build peer-test node-work-test validator-test

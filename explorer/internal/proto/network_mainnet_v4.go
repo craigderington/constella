@@ -1,4 +1,4 @@
-//go:build mainnet
+//go:build mainnet && !protocolv5
 
 package proto
 

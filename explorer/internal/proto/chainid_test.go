@@ -39,6 +39,13 @@ func TestChainID(t *testing.T) {
 			want = "52a550111b2d0b38"
 		}
 	}
+	if ShareVersion == 5 {
+		want = "2094b0868a27b032"
+		if BlockK == 6 {
+			want = "e46fea4617869975"
+		}
+	}
+
 	if got := ChainIDHex(); got != want {
 		t.Errorf("ChainIDHex() = %s, want %s", got, want)
 	}

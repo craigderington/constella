@@ -323,7 +323,7 @@ int chain_init(const char *dir, accept_fn cb) {
     uint8_t gid[32], miss[32], msg[SHARE_MSG_MAX], l[2];
     char path[512];
     if (db || (mkdir(dir, 0755) && errno != EEXIST)) return -1;
-    const char *files[] = {"shares.v3", "shares.testnet-v4", "shares.mainnet-v4"};
+    const char *files[] = {"shares.v3", "shares.testnet-v4", "shares.mainnet-v4", "shares.testnet-v5", "shares.mainnet-v5"};
     for (unsigned i = 0; i < sizeof files / sizeof *files; i++) {
         if (!strcmp(files[i], CHAIN_FILE)) continue;
         if (snprintf(path, sizeof path, "%s/%s", dir, files[i]) >= (int)sizeof path) return -1;

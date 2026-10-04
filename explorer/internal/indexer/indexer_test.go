@@ -54,6 +54,12 @@ func TestForkSyncCursorAdvancesWithoutCanonicalProgress(t *testing.T) {
 			fixture = "sync-fork.mainnet-v4"
 		}
 	}
+	if proto.ShareVersion >= 5 {
+		fixture = "sync-fork.testnet-v5"
+		if proto.BlockK == 6 {
+			fixture = "sync-fork.mainnet-v5"
+		}
+	}
 	raw, err := os.ReadFile("../../../tests/fixtures/" + fixture)
 	if err != nil {
 		t.Fatal(err)

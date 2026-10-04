@@ -4,7 +4,7 @@ Idle-compute cryptocurrency node in C. Work is a search for **prime constellatio
 (useful math, verifiable in microseconds). Every contributing node is paid when a
 block lands, P2Pool-style, instead of racing for blocks.
 
-- 154 KB static binary (musl, `-Os`, LTO, gc-sections), including EdDSA
+- Static binary under a 192 KiB size gate (musl, `-Os`, LTO, gc-sections), including EdDSA
 - `SCHED_IDLE` workers, jittered duty cycle, a median-filtered PI thermal controller that
   rides out other processes' heat spikes, battery pause
 - Sharechain + PPLNS: every quadruplet share earns a slice of every block in its window
@@ -103,3 +103,30 @@ and the JSON routes `/api/stats`, `/api/blocks`, `/api/share/{id}`, `/api/addres
     docs/           protocol, science lane spec
 
 Testnet only. See `docs/protocol.md` for consensus rules.
+
+## Isolated signature-policy candidate
+
+The default build and Docker images retain the running v3 testnet's transaction
+rules. Stricter low-order signing-key rejection is transaction consensus only
+in the isolated v5 profiles. P2P identity checks reject low-order keys on every
+profile. The v5 Explorer also independently verifies transaction signatures.
+
+```sh
+make candidate-build
+make protocol-test
+```
+
+These build separate `constella-testnet-v5` / `constella-mainnet-v5` nodes and
+matching Explorer binaries. They have new genesis IDs, wire magic, transaction
+domains and default node/wallet directories, and no public bootstrap seed.
+Give each Explorer a separate database. Never point a candidate or rollback
+binary at another version's data, or rename history to force it to load. Keep
+v3/v4 backups with their matching binaries; neither history nor balances are
+migrated by this build. These are local test candidates, not a mainnet release.
+
+Wallet network operations have a ten-second total deadline; interactive
+confirmation time is excluded. Numeric settings reject malformed tokens and
+out-of-range values: port 1–65535, threads 0–256 (0 selects the default), duty
+0–100, temperature 0–125 (0 selects automatic), and battery pause 0 or 1.
+Data directories and persistence files must not be symlinks or special files.
+Peer-table save failures are reported and make shutdown unsuccessful.

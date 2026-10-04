@@ -43,6 +43,9 @@ static int info(void) {
     int len = net_seal_vector(frame, key, 0, 2, "constella", 9); field("frame_lo", frame, (size_t)len);
     hex_dec(key, 32, "e267cd603f4c9e72797c67a49a384b2fd18f41ba87974d76859f2a51332167fd");
     len = net_seal_vector(frame, key, 1, 5, "second frame, counter 1", 23); field("frame_hi", frame, (size_t)len);
+    tx_t tx = {0}; memcpy(tx.from, wallet.pk, 32); tx.to[0] = 7; tx.amount = 1;
+    uint8_t transaction[TX_SIZE]; tx_sign(&tx, wallet.sk); tx_ser(transaction, &tx);
+    field("transaction", transaction, sizeof transaction);
     puts("}"); crypto_wipe(&wallet, sizeof wallet);
     return 0;
 }
@@ -175,10 +178,27 @@ static int flood(const char *host, const char *mode) {
     return connections && sent ? 0 : 1;
 }
 
+static int key_policy(void) {
+    FILE *f = fopen("tests/fixtures/low-order-keys.txt", "r");
+    if (!f) return 1;
+    char line[80];
+    tx_t t = {0}; t.to[0] = 2; t.amount = 1; t.sig[0] = 1;
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\n")] = 0;
+        if (hex_dec(t.from, 32, line)) return 1;
+        if (!signature_check(t.sig, t.from, (const uint8_t *)"arbitrary", 9)) return 1;
+        if ((tx_check_sig(&t) == 0) != (SHARE_VERSION < 5)) return 1;
+        t.amount++; t.nonce++;
+    }
+    fclose(f);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--resolve-seed")) return resolve_main(argc, argv);
     if (argc == 4 && !strcmp(argv[1], "sync-fixture")) return sync_fixture(argv[2], argv[3]);
     if (argc == 4 && !strcmp(argv[1], "flood")) return flood(argv[2], argv[3]);
+    if (argc == 2 && !strcmp(argv[1], "key-policy")) return key_policy();
     if (argc == 2 && !strcmp(argv[1], "info")) return info();
     if (argc == 2 && !strcmp(argv[1], "mine")) return mine();
     if (argc == 2 && !strcmp(argv[1], "fork-fixture")) return fork_fixture();

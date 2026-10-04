@@ -30,6 +30,7 @@ package p2p
 import (
 	"crypto/subtle"
 	"errors"
+	"github.com/craig/constella/explorer/internal/signature"
 
 	"filippo.io/edwards25519"
 	"golang.org/x/crypto/blake2b"
@@ -100,53 +101,9 @@ func (id *identity) sign(msg []byte) []byte {
 	return append(sig, S.Bytes()...)
 }
 
-// eddsaVerify checks sig over msg under pub, matching monocypher's
-// crypto_eddsa_check / crypto_eddsa_check_equation behaviour exactly,
-// including three edge cases a naive mirror gets wrong (see §2, "Verification
-// edge cases"):
-//
-//  1. Non-canonical encodings of A and R are ACCEPTED. monocypher says so in
-//     so many words ("*Allow* non-cannonical encoding for A and R"), and
-//     filippo.io/edwards25519's Point.SetBytes accepts them too, so the two
-//     agree without extra work here.
-//  2. R must itself decode to a curve point. monocypher decodes R rather than
-//     re-encoding its own and comparing bytes, so a signature whose first 32
-//     bytes are not a valid point is rejected before any arithmetic.
-//  3. S must be strictly below L. SetCanonicalBytes enforces that, which is
-//     monocypher's is_above_l malleability guard.
-//
-// The equation is the COFACTORED one: monocypher clears the low-order
-// component with three doublings and compares against the identity, i.e.
-// [8]([S]B - [k]A - R) == O, not the strict [S]B - [k]A == R. The two differ
-// for a signature carrying a torsion component, so mirroring the strict form
-// would reject signatures the C node accepts.
+// Peer identities always require non-small-order keys, including on legacy networks.
 func eddsaVerify(pub, sig, msg []byte) bool {
-	if len(pub) != pubKeySize || len(sig) != signatureSize {
-		return false
-	}
-	A, err := new(edwards25519.Point).SetBytes(pub)
-	if err != nil {
-		return false
-	}
-	R, err := new(edwards25519.Point).SetBytes(sig[:32])
-	if err != nil {
-		return false
-	}
-	S, err := edwards25519.NewScalar().SetCanonicalBytes(sig[32:])
-	if err != nil {
-		return false // S >= L
-	}
-	k, err := edwards25519.NewScalar().SetUniformBytes(hash512(sig[:32], pub, msg))
-	if err != nil {
-		return false
-	}
-	// sum = [S]B - [k]A
-	minusA := new(edwards25519.Point).Negate(A)
-	sum := new(edwards25519.Point).VarTimeDoubleScalarBaseMult(k, minusA, S)
-	// [8](sum - R) == identity
-	diff := new(edwards25519.Point).Subtract(sum, R)
-	diff.MultByCofactor(diff)
-	return diff.Equal(edwards25519.NewIdentityPoint()) == 1
+	return signature.Check(pub, sig, msg, true)
 }
 
 // isZero reports whether b is all zero, in constant time.

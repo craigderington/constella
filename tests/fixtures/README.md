@@ -23,3 +23,9 @@ signing seed is a fixed test constant and must never be used for funds.
 Regenerate with `python3 tests/test_network_profiles.py --write-fixtures`.
 This does not regenerate the historical v3 fixture. See
 `docs/protocol-candidate-v4.md` for the lab's isolation and test scope.
+
+The v5 equivalents (`sync-fork.testnet-v5`, `sync-fork.mainnet-v5`) have distinct
+network identities and strict signing-key consensus. `low-order-keys.txt` covers
+all eight small-order Edwards points plus noncanonical encodings; C and Go
+consume the same rejection cases. Profile vectors also include C-signed
+transactions, independently verified by Go.

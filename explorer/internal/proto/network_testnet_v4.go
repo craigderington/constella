@@ -1,4 +1,4 @@
-//go:build protocolv4 && !mainnet
+//go:build protocolv4 && !protocolv5 && !mainnet
 
 package proto
 

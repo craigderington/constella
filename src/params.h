@@ -2,7 +2,7 @@
 #ifndef PARAMS_H
 #define PARAMS_H
 
-/* 0: existing testnet, 1: isolated v4 testnet, 2: prelaunch v4 mainnet.
+/* 0: existing testnet; 1/2: retained v4 profiles; 3/4: isolated v5 candidates.
  * The historical -DBLOCK_K=6 switch must no longer select v3 shared history. */
 #ifndef CONSTELLA_NETWORK
 #if defined(BLOCK_K) && BLOCK_K == 6
@@ -17,6 +17,10 @@
 #include "network_testnet_v4.h"
 #elif CONSTELLA_NETWORK == 2
 #include "network_mainnet_v4.h"
+#elif CONSTELLA_NETWORK == 3
+#include "network_testnet_v5.h"
+#elif CONSTELLA_NETWORK == 4
+#include "network_mainnet_v5.h"
 #else
 #error "unknown CONSTELLA_NETWORK"
 #endif

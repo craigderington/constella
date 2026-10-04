@@ -11,7 +11,7 @@ func TestForeignNetworkDoesNotEnterOrphanPool(t *testing.T) {
 	for _, profile := range []struct {
 		version uint32
 		marker  uint16
-	}{{3, 0}, {4, 5}, {4, 6}} {
+	}{{3, 0}, {4, 5}, {4, 6}, {5, 5}, {5, 6}} {
 		if profile.version == proto.ShareVersion && profile.marker == proto.NetworkMarker {
 			continue
 		}

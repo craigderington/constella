@@ -106,3 +106,15 @@ func TestNetworkCInterop(t *testing.T) {
 	}
 	t.Fatal("no encrypted account response")
 }
+
+func TestCTransactionSignature(t *testing.T) {
+	v := networkVector(t)
+	tx := proto.ParseTx(unhex(t, v["transaction"]))
+	if !tx.CheckSignature() {
+		t.Fatal("C transaction rejected")
+	}
+	tx.Amount++
+	if tx.CheckSignature() {
+		t.Fatal("changed transaction accepted")
+	}
+}

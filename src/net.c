@@ -596,7 +596,7 @@ static int finish_auth(int i, uint8_t type, const uint8_t *payload, uint16_t len
     /* Phase 2: the transcript as the peer saw it - its ephemeral first. */
     uint8_t tr[HS_TRANSCRIPT];
     hs_transcript(tr, p->peer_eph, p->eph_pk, p->peer_id, node_id.pk);
-    if (crypto_eddsa_check(payload, p->peer_id, tr, sizeof tr)) return -1;
+    if (signature_check(payload, p->peer_id, tr, sizeof tr)) return -1;
     if (hs_derive(p->txkey, p->rxkey, p->eph_sk, p->peer_eph, node_id.pk, p->peer_id)) return -1;
     crypto_wipe(p->eph_sk, sizeof p->eph_sk);   /* forward secrecy starts here */
     p->hs_phase = 2;
@@ -1137,7 +1137,7 @@ int net_client_open(net_client_t *c, const char *hostport, const wallet_t *id) {
         if (cframe_send(fd, MSG_AUTH2, pay, sizeof pay)) goto fail;
         if (cframe_recv(fd, hdr, buf) != 64 || hdr[4] != MSG_AUTH2) goto fail;
         hs_transcript(tr, peer_eph, eph_pk, peer_id, id->pk);
-        if (crypto_eddsa_check(buf, peer_id, tr, sizeof tr)) goto fail;
+        if (signature_check(buf, peer_id, tr, sizeof tr)) goto fail;
         if (hs_derive(c->txkey, c->rxkey, eph_sk, peer_eph, id->pk, peer_id)) goto fail;
         crypto_wipe(eph_sk, sizeof eph_sk);
     }

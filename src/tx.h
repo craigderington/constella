@@ -2,6 +2,7 @@
 #ifndef TX_H
 #define TX_H
 #include <stdint.h>
+#include <stddef.h>
 
 #define TX_SIZE 152
 #define TX_BODY 88
@@ -25,5 +26,8 @@ void tx_chain_id(uint8_t out[8]);                   /* this build's tag */
 void tx_sign(tx_t *t, const uint8_t sk[64]);        /* signs for this chain */
 void tx_sign_with(tx_t *t, const uint8_t sk[64], const uint8_t tag[8]);
 int  tx_check_sig(const tx_t *t);                   /* 0 = valid, on this chain */
+/* P2P requires non-small-order keys on every network; v5 also enforces this
+ * for transaction consensus. Legacy transaction history stays compatible. */
+int signature_check(const uint8_t sig[64], const uint8_t pk[32], const uint8_t *msg, size_t len);
 void tx_id(uint8_t id[32], const tx_t *t);
 #endif
