@@ -18,6 +18,7 @@ typedef struct { uint8_t *msg; uint16_t len; uint8_t parent[32], id[32]; } orpha
 
 static entry_t *E;
 static int nE, capE, tip;
+static int *canonical, cap_canonical;
 static int32_t *H;
 static uint32_t hcap;
 static orphan_t *O;
@@ -43,6 +44,13 @@ static void hput(int e) {
 }
 
 static int reserve(void) {
+    if (nE == cap_canonical) {
+        int nc = cap_canonical ? cap_canonical * 2 : 1024;
+        int *next = realloc(canonical, (size_t)nc * sizeof *next);
+        if (!next) return -1;
+        for (int i = cap_canonical; i < nc; i++) next[i] = -1;
+        canonical = next; cap_canonical = nc;
+    }
     if (nE == capE) {
         int nc = capE ? capE * 2 : 1024;
         entry_t *ne = realloc(E, (size_t)nc * sizeof *E);
@@ -63,6 +71,9 @@ static int reserve(void) {
 const entry_t *chain_entry(int i) { return &E[i]; }
 int chain_count(void) { return nE; }
 int chain_tip(void) { return tip; }
+int chain_at_height(uint32_t height) {
+    return canonical && height <= E[tip].height ? canonical[height] : -1;
+}
 int chain_orphans(void) { return nO; }
 
 unsigned chain_next_bits(int parent) {
@@ -184,6 +195,10 @@ static int accept(const share_t *s, const tx_t *txs, int ntx, const sci_t *sci, 
     int is_tip = 0;
     if (e->work > E[tip].work || (e->work == E[tip].work && memcmp(id, E[tip].id, 32) < 0)) {
         tip = idx; is_tip = 1;
+        /* Update just the changed suffix. Request handlers can now resolve
+         * locators and bounded response windows without allocating history. */
+        for (int i = idx; i >= 0 && canonical[E[i].height] != i; i = E[i].parent)
+            canonical[E[i].height] = i;
     }
     if (db) {
         uint8_t l[2] = {(uint8_t)len, (uint8_t)(len >> 8)};
@@ -350,6 +365,7 @@ int chain_init(const char *dir, accept_fn cb) {
     memset(&E[0], 0, sizeof E[0]);
     E[0].s = g; memcpy(E[0].id, gid, 32); E[0].parent = -1;
     nE = 1; tip = 0;
+    canonical[0] = 0;
     hput(0);
 
     int loaded = 0;

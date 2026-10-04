@@ -33,6 +33,13 @@ static int mining_enabled = 1;
 static uint64_t found;
 static ledger_t L;
 static int recovery_seen = 1, recovery_dirty;
+/* Index payload-bearing entries once. Retry work is time-sliced, never a
+ * synchronous walk over all historical shares on every tip. Science indices
+ * are partitioned by epoch so an anchor change finds previously seen sides. */
+static int *retry_txs, ntx_retry, cap_tx_retry, tx_cursor, tx_remaining;
+typedef struct { int entry, next; uint8_t anchor[32]; } science_retry;
+static science_retry *retry_science;
+static int nscience_retry, cap_science_retry, *epoch_heads, cap_epochs, sci_cursor = -1;
 /* A repeated request is redundant only while neither end's state has changed.
  * Remembering just the remote tip used to suppress the HELLO that terminates
  * a full 500-share batch.  `chain_count` notices progress even when the batch
@@ -41,6 +48,9 @@ static struct { uint8_t id[32], cursor[32]; int chain_count; int64_t at; } lastr
 /* The last validated share received from each peer, including duplicates.
  * It may be on a weaker branch that has not yet displaced our own tip. */
 static uint8_t sync_cursor[64][32];
+/* One bounded snapshot per peer; a reorg cannot mix branches within a reply.
+ * Connection callbacks discard old work before a peer slot is reused. */
+static struct { int entries[SYNC_BATCH], n, pos; uint64_t session; } sync_reply[64];
 static sci_t scipool[SCI_POOL];
 static int nscipool;
 static uint32_t sci_epoch_cur = 0xffffffffu;
@@ -133,8 +143,8 @@ static void recover_science_entry(const recovery_science *s, const entry_t *e) {
     }
 }
 
-/* Only detached canonical shares require reconsideration on a reorg. Return
- * them oldest first so dependent transaction nonces can re-enter in order.
+/* Return detached shares oldest first so dependent transaction nonces can
+ * re-enter in order; previously seen side payloads use the retry indices.
  * No depth cutoff: cost follows the changed suffix, not unrelated history. */
 static int detached_path(int old, int next, int **out) {
     *out = NULL;
@@ -162,28 +172,110 @@ static void recover_entry(const recovery_science *s, int idx) {
     if (nscipool != before) job_dirty = 1;
 }
 
+static int index_recovery(int idx) {
+    const entry_t *e = chain_entry(idx);
+    if (e->ntx) {
+        if (ntx_retry == cap_tx_retry) {
+            int nc = cap_tx_retry ? cap_tx_retry * 2 : 64;
+            int *next = realloc(retry_txs, (size_t)nc * sizeof *next);
+            if (!next) return -1;
+            retry_txs = next; cap_tx_retry = nc;
+        }
+        retry_txs[ntx_retry++] = idx;
+        tx_remaining = ntx_retry;
+    }
+    if (!mining_enabled || !e->nsci || memcmp(e->s.miner, payout, 32)) return 0;
+    int epoch = (int)(sci_epoch(e->height) / SCI_EPOCH);
+    if (epoch >= cap_epochs) {
+        int nc = cap_epochs ? cap_epochs : 64;
+        while (nc <= epoch) nc *= 2;
+        int *heads = realloc(epoch_heads, (size_t)nc * sizeof *heads);
+        if (!heads) return -1;
+        for (int i = cap_epochs; i < nc; i++) heads[i] = -1;
+        epoch_heads = heads; cap_epochs = nc;
+    }
+    if (nscience_retry == cap_science_retry) {
+        int nc = cap_science_retry ? cap_science_retry * 2 : 64;
+        science_retry *next = realloc(retry_science, (size_t)nc * sizeof *next);
+        if (!next) return -1;
+        retry_science = next; cap_science_retry = nc;
+    }
+    science_retry *r = &retry_science[nscience_retry];
+    r->entry = idx; r->next = epoch_heads[epoch];
+    chain_epoch_anchor(e->parent, e->height, r->anchor);
+    epoch_heads[epoch] = nscience_retry++;
+    return 0;
+}
+
+static int recovery_waiting(void) {
+    return tx_remaining || (sci_cursor >= 0 && nscipool < SCI_POOL);
+}
+
+static void service_recovery(void) {
+    if (!recovery_waiting()) return;
+    uint64_t deadline = now_ns() + 2000000ULL;
+    recovery_science science;
+    prepare_science_recovery(&science);
+    /* Alternate lanes so transaction retries cannot starve science. Retained
+     * share payloads already passed signature/proof admission. The ordinary
+     * mempool validator still enforces current balances and nonce order. */
+    for (int work = 0; work < 16 && now_ns() < deadline; work++) {
+        if (tx_remaining) {
+            if (tx_cursor >= ntx_retry) tx_cursor = 0;
+            const entry_t *e = chain_entry(retry_txs[tx_cursor++]);
+            tx_remaining--;
+            for (int j = 0; j < e->ntx; j++)
+                if (mempool_add(&e->txs[j], &L) == MP_ADDED) {
+                    job_dirty = 1;
+                    tx_remaining = ntx_retry; /* a nonce predecessor may now exist */
+                }
+        }
+        if (sci_cursor >= 0 && nscipool < SCI_POOL) {
+            const science_retry *r = &retry_science[sci_cursor];
+            sci_cursor = r->next;
+            if (memcmp(r->anchor, sci_anchor_cur, 32)) continue;
+            const entry_t *e = chain_entry(r->entry);
+            if (sci_epoch(e->height) != sci_epoch_cur) continue;
+            for (int j = 0; j < e->nsci && nscipool < SCI_POOL; j++)
+                if (!sci_pool_has(e->sci[j].k) && !recovery_spent(&science, e->sci[j].k)) {
+                    scipool[nscipool++] = e->sci[j]; job_dirty = 1;
+                }
+        }
+    }
+}
+
 static int recover_changes(int old_tip) {
     int *detached = NULL, n = detached_path(old_tip, chain_tip(), &detached);
     if (n < 0) return -1;
     recovery_science s;
+    uint32_t old_epoch = sci_epoch_cur;
+    uint8_t old_anchor[32]; memcpy(old_anchor, sci_anchor_cur, 32);
     prepare_science_recovery(&s);
     for (int i = 0; i < n; i++) recover_entry(&s, detached[i]);
     free(detached);
-    /* Arrival indices are parent-before-child. Initial startup visits retained
-     * history once; thereafter only newly connected shares enter this loop.
-     * Previously rejected transactions are retried on a new announcement or
-     * when their share detaches, not by repeatedly mining all old side data. */
+    /* Arrival indices are parent-before-child; initial startup indexes once. */
     int total = chain_count();
-    for (; recovery_seen < total; recovery_seen++) recover_entry(&s, recovery_seen);
+    for (; recovery_seen < total; recovery_seen++) {
+        if (index_recovery(recovery_seen)) return -1;
+        recover_entry(&s, recovery_seen);
+    }
+    if (n > 0) tx_remaining = ntx_retry;
+    int epoch = (int)(sci_epoch_cur / SCI_EPOCH);
+    if (mining_enabled && (n > 0 || old_epoch != sci_epoch_cur || memcmp(old_anchor, sci_anchor_cur, 32)))
+        sci_cursor = epoch < cap_epochs ? epoch_heads[epoch] : -1;
     recovery_dirty = 0;
     return 0;
 }
 
 static int rebuild_state(void) {
     int old = ledger_tip(&L);
+    uint32_t blocks = L.blocks;
+    uint64_t txs = L.txs;
     if (ledger_sync(&L)) return -1;
     mempool_revalidate(&L);
-    return recover_changes(old);
+    int result = recover_changes(old);
+    if (blocks != L.blocks || txs != L.txs) tx_remaining = ntx_retry;
+    return result;
 }
 
 /* Recover toward wall time using the existing 600-second parent allowance.
@@ -276,6 +368,7 @@ static void send_hello(int peer) {
 }
 
 static void reset_sync_peer(int peer) {
+    if (peer >= 0 && peer < 64) sync_reply[peer].n = sync_reply[peer].pos = 0;
     if (peer >= 0 && peer < 64) {
         memset(&lastreq[peer], 0, sizeof lastreq[peer]);
         memset(sync_cursor[peer], 0, 32);
@@ -336,22 +429,51 @@ int node_sync_locator_vector(int peer, uint8_t loc[32][32]) {
 }
 
 static void serve_chain(int peer, const uint8_t *p, uint16_t len) {
-    int *path, n = chain_path(&path), start = 1;
-    if (n < 0) return;
+    if (peer < 0 || peer >= 64 || sync_reply[peer].n) return;
+    sync_reply[peer].session = net_peer_session(peer);
+    uint32_t start = 1;
     for (int i = 0; i + 32 <= len; i += 32) {
         int idx = chain_find(p + i);
-        if (idx >= 0 && (int)chain_entry(idx)->height < n && path[chain_entry(idx)->height] == idx) {
-            start = (int)chain_entry(idx)->height + 1;
+        if (idx >= 0 && chain_at_height(chain_entry(idx)->height) == idx) {
+            start = chain_entry(idx)->height + 1;
             break;
         }
     }
-    uint8_t msg[SHARE_MSG_MAX];
-    for (int h = start; h < n && h < start + SYNC_BATCH; h++) {
-        size_t l = chain_msg(path[h], msg, sizeof msg);
-        if (l) net_send(peer, MSG_SHARE, msg, (uint16_t)l);
+    for (int j = 0; j < SYNC_BATCH; j++) {
+        int idx = chain_at_height(start + (uint32_t)j);
+        if (idx < 0) break;
+        sync_reply[peer].entries[sync_reply[peer].n++] = idx;
     }
-    free(path);
-    send_hello(peer);
+    sync_reply[peer].pos = 0;
+    if (!sync_reply[peer].n) send_hello(peer);
+}
+
+static int sync_waiting(void) {
+    for (int i = 0; i < 64; i++) if (sync_reply[i].n) return 1;
+    return 0;
+}
+
+static void service_chain(void) {
+    static unsigned turn;
+    uint64_t deadline = now_ns() + 2000000ULL;
+    int budget = 16;
+    for (int visited = 0; visited < 64 && budget && now_ns() < deadline; visited++) {
+        int peer = (int)(turn++ % 64);
+        if (sync_reply[peer].session != net_peer_session(peer)) sync_reply[peer].n = 0;
+        if (!sync_reply[peer].n || !net_send_ready(peer)) continue;
+        for (int j = 0; j < 4 && budget && now_ns() < deadline && net_send_ready(peer); j++) {
+            uint8_t msg[SHARE_MSG_MAX];
+            int idx = sync_reply[peer].entries[sync_reply[peer].pos++];
+            size_t len = chain_msg(idx, msg, sizeof msg);
+            if (len) net_send(peer, MSG_SHARE, msg, (uint16_t)len);
+            budget--;
+            if (sync_reply[peer].pos == sync_reply[peer].n) {
+                sync_reply[peer].n = sync_reply[peer].pos = 0;
+                send_hello(peer);
+                break;
+            }
+        }
+    }
 }
 
 static void put64(uint8_t *p, uint64_t v) { for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> 8 * i); }
@@ -402,6 +524,7 @@ static void on_msg(int peer, uint8_t type, const uint8_t *p, uint16_t len) {
                     (unsigned long long)t.nonce, mempool_count());
             net_broadcast(peer, MSG_TX, p, TX_SIZE);
             job_dirty = 1;
+            tx_remaining = ntx_retry;
         }
     } else if (type == MSG_GETACCT && len == 32) {
         uint8_t out[28];
@@ -620,10 +743,11 @@ int node_run(void) {
         pf[0].fd = pfd[0]; pf[0].events = POLLIN;
         pf[1].fd = spfd[0]; pf[1].events = POLLIN;
         int n = net_pollfds(pf + 2, 62);
-        if (poll(pf, (nfds_t)n + 2, net_poll_timeout(500)) < 0 && !running) break;
+        if (poll(pf, (nfds_t)n + 2, net_poll_timeout(sync_waiting() || recovery_waiting() ? 10 : 500)) < 0 && !running) break;
         if (pf[0].revents & POLLIN) drain_found(pfd[0]);
         if (pf[1].revents & POLLIN) drain_sci(spfd[0]);
         net_process(pf + 2, n);
+        service_chain();
         if (tip_dirty) {
             if (rebuild_state()) { log_msg("fatal: cannot rebuild ledger state"); failed = 1; running = 0; break; }
             if (L.blocks != last_blocks) { report_balance(); last_blocks = L.blocks; }
@@ -633,6 +757,7 @@ int node_run(void) {
         if (recovery_dirty && recover_changes(-1)) {
             log_msg("fatal: cannot recover changed shares"); failed = 1; running = 0; break;
         }
+        service_recovery();
         if (job_dirty) { update_job(); job_dirty = 0; }
         int64_t t = now_sec();
         net_tick();

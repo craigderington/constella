@@ -40,6 +40,7 @@ int            chain_find(const uint8_t id[32]);
 const entry_t *chain_entry(int idx);
 int            chain_count(void);
 int            chain_tip(void);
+int            chain_at_height(uint32_t height); /* canonical index, O(1), or -1 */
 unsigned       chain_next_bits(int parent);
 int            chain_path(int **out);                     /* genesis..tip, caller frees */
 int            chain_locator(uint8_t (*out)[32], int max);

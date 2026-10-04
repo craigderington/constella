@@ -7,7 +7,8 @@
 #include <sys/stat.h>
 
 static entry_t *synthetic;
-static int synthetic_tip;
+static int synthetic_tip, synthetic_count, sync_test, full_path_calls, sync_sent;
+static int expected_sync_height;
 static uint8_t synthetic_anchor[32];
 static uint64_t entry_reads, read_limit = UINT64_MAX;
 static const entry_t *measured_entry(int i) {
@@ -19,6 +20,33 @@ static void measured_anchor(int par, uint32_t height, uint8_t out[32]) {
     if (synthetic) memcpy(out, synthetic_anchor, 32);
     else chain_epoch_anchor(par, height, out);
 }
+static int measured_count(void) { return synthetic ? synthetic_count : chain_count(); }
+static int measured_at(uint32_t height) {
+    if (synthetic) { entry_reads++; return height <= (uint32_t)synthetic_tip ? (int)height : -1; }
+    return chain_at_height(height);
+}
+static int measured_path(int **out) { full_path_calls++; return chain_path(out); }
+static size_t measured_msg(int idx, uint8_t *out, size_t cap) {
+    return synthetic ? share_msg(out, cap, &synthetic[idx].s, NULL, 0, NULL, 0) : chain_msg(idx, out, cap);
+}
+#include "../src/net.h"
+static int measured_ready(int peer) { return sync_test ? 1 : net_send_ready(peer); }
+static uint64_t measured_session(int peer) { return sync_test ? 77 : net_peer_session(peer); }
+static void measured_send(int peer, uint8_t type, const void *msg, uint16_t len) {
+    if (!sync_test) { net_send(peer, type, msg, len); return; }
+    if (type == MSG_SHARE) {
+        share_t share; share_deser(&share, msg);
+        assert(share.height == (uint32_t)++expected_sync_height);
+        sync_sent++;
+    }
+}
+#define chain_count measured_count
+#define chain_at_height measured_at
+#define chain_path measured_path
+#define chain_msg measured_msg
+#define net_send measured_send
+#define net_send_ready measured_ready
+#define net_peer_session measured_session
 #define chain_entry measured_entry
 #define chain_tip measured_tip
 #define chain_epoch_anchor measured_anchor
@@ -26,6 +54,13 @@ static void measured_anchor(int par, uint32_t height, uint8_t out[32]) {
 #undef chain_entry
 #undef chain_tip
 #undef chain_epoch_anchor
+#undef chain_count
+#undef chain_at_height
+#undef chain_path
+#undef chain_msg
+#undef net_send
+#undef net_send_ready
+#undef net_peer_session
 
 /* Inspect real immutable jobs and inject only allocation failure. */
 #include "../src/sieve.h"
@@ -288,6 +323,57 @@ static void detached_recovery(void) {
     puts("transaction recovery: ordinary extension skips history; 128-share detach retains nonce order");
 }
 
+static void new_recovery_and_sync(void) {
+    synthetic_count = 261;
+    synthetic = calloc((size_t)synthetic_count, sizeof *synthetic); assert(synthetic);
+    for (int i = 0; i <= 256; i++) {
+        synthetic[i].height = synthetic[i].s.height = (uint32_t)i; synthetic[i].parent = i - 1;
+    }
+    synthetic[257].height = 256; synthetic[257].parent = 255;
+    for (int i = 258; i <= 260; i++) { synthetic[i].height = 257; synthetic[i].parent = i == 258 ? 256 : 257; }
+    wallet_t sender; uint8_t seed[32] = {83}; wallet_from_seed(&sender, seed);
+    ledger_free(&L); mempool_revalidate(&L);
+    assert(!ledger_credit(&L, sender.pk, COIN));
+    ledger_acct(&L, sender.pk, 0)->nonce = 1;
+    tx_t tx = {.amount = 100}; memcpy(tx.from, sender.pk, 32); tx.to[0] = 7; tx_sign(&tx, sender.sk);
+    synthetic[260].ntx = 1; synthetic[260].txs = &tx;
+    sci_t claim = {950, 776}; synthetic[260].nsci = 1; synthetic[260].sci = &claim;
+    memset(payout, 1, 32); memcpy(synthetic[260].s.miner, payout, 32);
+    memset(synthetic_anchor, 0, 32); assert(!index_recovery(260));
+    /* Already-seen side payload is invalid under the old ledger and region. */
+    synthetic_tip = 258; synthetic_anchor[0] = 1; sci_epoch_cur = UINT32_MAX; nscipool = 0;
+    recovery_science context; prepare_science_recovery(&context); recover_entry(&context, 260);
+    assert(!mempool_count() && !nscipool);
+    recovery_seen = synthetic_count;
+    /* Reorg changes balance/nonce and the same epoch's anchor; the side entry
+     * stays off-tip and no new arrival announces it again. */
+    ledger_acct(&L, sender.pk, 0)->nonce = 0;
+    synthetic_tip = 259; memset(synthetic_anchor, 0, 32);
+    assert(!recover_changes(258));
+    for (int i = 0; i < 10 && recovery_waiting(); i++) service_recovery();
+    assert(mempool_count() == 1 && nscipool == 1 && scipool[0].k == claim.k);
+    service_recovery(); assert(mempool_count() == 1 && nscipool == 1);
+    ledger_free(&L); mempool_revalidate(&L);
+    free(retry_txs); retry_txs = NULL; ntx_retry = cap_tx_retry = tx_remaining = tx_cursor = 0;
+    free(retry_science); retry_science = NULL; nscience_retry = cap_science_retry = 0;
+    free(epoch_heads); epoch_heads = NULL; cap_epochs = 0; sci_cursor = -1;
+    free(synthetic);
+
+    synthetic_count = 100001; synthetic_tip = synthetic_count - 1;
+    synthetic = calloc((size_t)synthetic_count, sizeof *synthetic); assert(synthetic);
+    for (int i = 0; i < synthetic_count; i++) synthetic[i].s.height = synthetic[i].height = (uint32_t)i;
+    uint8_t missing[32]; memset(missing, 0xff, sizeof missing);
+    sync_test = 1; full_path_calls = sync_sent = expected_sync_height = 0; entry_reads = 0;
+    reset_sync_peer(0); serve_chain(0, missing, sizeof missing);
+    assert(!full_path_calls && entry_reads <= SYNC_BATCH + 1 && sync_reply[0].n == SYNC_BATCH);
+    serve_chain(0, missing, sizeof missing); /* duplicates cannot replace active work */
+    service_chain(); assert(sync_sent > 0 && sync_sent <= 4);
+    for (int i = 0; i < SYNC_BATCH && sync_waiting(); i++) service_chain();
+    assert(sync_sent == SYNC_BATCH && !sync_waiting() && !full_path_calls);
+    sync_test = 0; free(synthetic); synthetic = NULL;
+    puts("recovery/sync: old side tx and same-epoch claim recovered after reorg; 100k-height GETCHAIN bounded and chunked");
+}
+
 static void worker_initialization(void) {
     int fd[2]; pipes(fd); running = 1; fail_bitmap = 1;
     assert(miner_start(2, fd[1], -1, &running) == -1 && !nth && !th);
@@ -340,6 +426,6 @@ int main(int argc, char **argv) {
     if (argc == 3 && !strcmp(argv[1], "--replay")) { replay(argv[2]); return 0; }
     alarm(30);
     if (argc == 2 && !strcmp(argv[1], "--recovery")) recovery();
-    else { worker_queue(); payload_concurrency(); recovery(); detached_recovery(); worker_initialization(); }
+    else { worker_queue(); payload_concurrency(); recovery(); detached_recovery(); new_recovery_and_sync(); worker_initialization(); }
     return 0;
 }
