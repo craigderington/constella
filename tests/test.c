@@ -93,6 +93,11 @@ static void t_miner_zero_duty(void) {
         usleep(1200000);
         miner_progress_vector(&w, &sc);
         CHECK(w == 0 && sc == 0);
+        /* Retire already queued old-job records after both new jobs are
+         * parked. Draining before publication races the old worker's final
+         * pipe write; the daemon normally discards those by parent/region. */
+        while (read(p[0], discard, sizeof discard) > 0) {}
+        while (read(s[0], discard, sizeof discard) > 0) {}
         throttle_fixed(100);
         uint8_t raw[SCI_SIZE];
         ssize_t got = -1;

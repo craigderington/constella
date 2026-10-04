@@ -85,11 +85,9 @@ static int keep(void *c) {
 }
 
 static void *worker(void *arg) {
-    (void)arg;
     throttle_lower_thread();
-    uint64_t *bm = malloc(SIEVE_W / 8);
+    uint64_t *bm = arg; /* allocated and checked before pthread_create */
     wctx w = {0};
-    if (!bm) return NULL;
     while (*run) {
         pthread_mutex_lock(&mu);
         job_t *j = cur;
@@ -120,6 +118,24 @@ static int sci_keep(void *c) {
     return wait_work(c, &sci_gen);
 }
 
+/* Generation checks and reservations share the region-update lock. A stale
+ * worker cannot consume the first span of a newly published region. */
+static int sci_reserve(uint64_t generation, uint64_t *start) {
+    pthread_mutex_lock(&mu);
+    uint64_t next = atomic_load(&sci_next);
+    int result = -1;
+    if (atomic_load(&sci_gen) == generation) {
+        result = 0;
+        if (next <= SCI_K_MAX - SCI_SPAN) {
+            *start = next;
+            atomic_store(&sci_next, next + SCI_SPAN);
+            result = 1;
+        }
+    }
+    pthread_mutex_unlock(&mu);
+    return result;
+}
+
 static void *sci_worker(void *arg) {
     (void)arg;
     throttle_lower_thread();
@@ -127,19 +143,21 @@ static void *sci_worker(void *arg) {
     wctx w = {0};
     w.j = &fake;
     while (*run) {
-        uint64_t g = atomic_load(&sci_gen);
-        if (!g) { usleep(100000); continue; }
-        fake.gen = g;
         uint8_t anchor[32], payout[32];
         pthread_mutex_lock(&mu);
+        uint64_t g = atomic_load(&sci_gen);
         memcpy(anchor, sci_anchor, 32); memcpy(payout, sci_payout, 32);
         pthread_mutex_unlock(&mu);
+        if (!g) { usleep(100000); continue; }
+        fake.gen = g;
         bn base;
         sci_region(&base, anchor, payout);
         while (*run && atomic_load(&sci_gen) == g) {
             if (!sci_keep(&w)) break;
-            uint64_t k0 = atomic_fetch_add(&sci_next, SCI_SPAN);
-            if (k0 + SCI_SPAN >= SCI_K_MAX) { usleep(100000); continue; }
+            uint64_t k0 = 0;
+            int reserved = sci_reserve(g, &k0);
+            if (reserved < 0) break;
+            if (!reserved) { usleep(100000); continue; }
             sci_t found;
             int r = sci_search(&base, k0, SCI_SPAN, &found, sci_keep, &w);
             if (r != 1) continue;
@@ -171,7 +189,9 @@ int miner_start(int n, int out_fd, int sci_fd, atomic_int *running) {
         log_msg("science lane idle: threads=1 leaves no worker for the science region");
     }
     for (int i = i0; i < n; i++) {
-        if (pthread_create(&th[i], NULL, worker, NULL)) goto fail;
+        uint64_t *bitmap = malloc(SIEVE_W / 8);
+        if (!bitmap) goto fail;
+        if (pthread_create(&th[i], NULL, worker, bitmap)) { free(bitmap); goto fail; }
         made++;
     }
     return 0;
@@ -207,11 +227,9 @@ void miner_set_sci(const uint8_t anchor[32], const uint8_t payout[32]) {
     pthread_mutex_lock(&mu);
     memcpy(sci_anchor, anchor, 32);
     memcpy(sci_payout, payout, 32);
-    pthread_mutex_unlock(&mu);
-    /* next must be 0 before sci_gen is visible as new, or the worker could
-     * still be mid-flight on the old region under the new generation tag. */
     atomic_store(&sci_next, 0);
     atomic_fetch_add(&sci_gen, 1);
+    pthread_mutex_unlock(&mu);
 }
 
 void miner_stop(void) {

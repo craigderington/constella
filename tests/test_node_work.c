@@ -29,13 +29,16 @@ static void measured_anchor(int par, uint32_t height, uint8_t out[32]) {
 
 /* Inspect real immutable jobs and inject only allocation failure. */
 #include "../src/sieve.h"
-static int fail_job;
+static int fail_job, fail_bitmap;
+static void *controlled_bitmap(size_t n) { return fail_bitmap ? NULL : malloc(n); }
 static job_t *controlled_job_new(const share_t *s, uint64_t generation) {
     return fail_job ? NULL : job_new(s, generation);
 }
+#define malloc controlled_bitmap
 #define job_new controlled_job_new
 #include "../src/miner.c"
 #undef job_new
+#undef malloc
 
 static miner_result result_for(const uint8_t *message, size_t len) {
     miner_result r = {0}; assert(len <= sizeof r.message);
@@ -285,6 +288,25 @@ static void detached_recovery(void) {
     puts("transaction recovery: ordinary extension skips history; 128-share detach retains nonce order");
 }
 
+static void worker_initialization(void) {
+    int fd[2]; pipes(fd); running = 1; fail_bitmap = 1;
+    assert(miner_start(2, fd[1], -1, &running) == -1 && !nth && !th);
+    fail_bitmap = 0; running = 1;
+    uint8_t anchor[32] = {0}, miner[32] = {1};
+    miner_set_sci(anchor, miner);
+    uint64_t old = atomic_load(&sci_gen), start = UINT64_MAX;
+    /* Pause old worker after keep(), publish new region, then reserve old. */
+    anchor[0] = 7; miner_set_sci(anchor, miner);
+    assert(sci_reserve(old, &start) == -1 && atomic_load(&sci_next) == 0);
+    uint64_t current = atomic_load(&sci_gen);
+    assert(sci_reserve(current, &start) == 1 && start == 0);
+    atomic_store(&sci_next, SCI_K_MAX - SCI_SPAN);
+    assert(sci_reserve(current, &start) == 1 && start == SCI_K_MAX - SCI_SPAN);
+    assert(sci_reserve(current, &start) == 0 && atomic_load(&sci_next) == SCI_K_MAX);
+    close(fd[0]); close(fd[1]); run = NULL;
+    puts("workers: bitmap allocation fails startup; stale reservation cannot consume new region; final legal span searched");
+}
+
 static void replay(const char *source) {
     char dir[] = "/tmp/constella-work-replay-XXXXXX", path[128];
     assert(mkdtemp(dir));
@@ -318,6 +340,6 @@ int main(int argc, char **argv) {
     if (argc == 3 && !strcmp(argv[1], "--replay")) { replay(argv[2]); return 0; }
     alarm(30);
     if (argc == 2 && !strcmp(argv[1], "--recovery")) recovery();
-    else { worker_queue(); payload_concurrency(); recovery(); detached_recovery(); }
+    else { worker_queue(); payload_concurrency(); recovery(); detached_recovery(); worker_initialization(); }
     return 0;
 }
