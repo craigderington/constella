@@ -1,0 +1,72 @@
+# Craig-run only. Fresh volumes; existing Apache continues using loopback 3071.
+name: constella-cloud-v5
+x-runtime: &runtime
+  restart: unless-stopped
+  stop_grace_period: 60s
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+services:
+  node:
+    <<: *runtime
+    image: ${NODE_IMAGE:?set tested v5 node image}
+    pull_policy: never
+    cpus: 0.50
+    mem_limit: 384m
+    pids_limit: 32
+    read_only: true
+    tmpfs: ['/tmp:size=32m,mode=1777']
+    environment:
+      CONSTELLA_DATA: /data
+      CONSTELLA_PORT: '7043'
+      CONSTELLA_MINE: '0'
+      CONSTELLA_PRIVATE_NET: '0'
+      # V5 has no built-in seeds. Homelab peers connect outbound to this node.
+      CONSTELLA_PEERS: '${NODE_PEERS:-}'
+      CONSTELLA_ADVERTISE: '${NODE_ADVERTISE-3.150.62.26:7043}'
+    ports: ['${P2P_BIND:-0.0.0.0}:${P2P_PORT:-7043}:7043']
+    volumes: [node-data:/data]
+    networks: [p2p]
+  postgres:
+    <<: *runtime
+    image: ${POSTGRES_IMAGE:?set tested Postgres image}
+    pull_policy: never
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    cpus: 0.25
+    mem_limit: 384m
+    pids_limit: 128
+    environment:
+      POSTGRES_USER: constella
+      POSTGRES_DB: explorer_v5
+      POSTGRES_PASSWORD: '${V5_DB_PASSWORD:?set new private hex password}'
+    command: [postgres, -c, max_connections=40, -c, shared_buffers=64MB]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [ui]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U constella -d explorer_v5']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  explorer:
+    <<: *runtime
+    image: ${EXPLORER_IMAGE:?set tested v5 Explorer image}
+    pull_policy: never
+    cpus: 0.50
+    mem_limit: 640m
+    pids_limit: 128
+    read_only: true
+    tmpfs: ['/tmp:size=16m,mode=1777']
+    environment:
+      EXPLORER_NODE: node:7043
+      EXPLORER_DB: 'postgres://constella:${V5_DB_PASSWORD:?set password}@postgres:5432/explorer_v5?sslmode=disable'
+      EXPLORER_HTTP: ':3071'
+    ports: ['127.0.0.1:${EXPLORER_HTTP_PORT:-3071}:3071']
+    networks: [p2p, ui]
+    depends_on:
+      postgres: {condition: service_healthy}
+networks:
+  p2p: {}
+  ui: {internal: true}
+volumes:
+  node-data: {}
+  pgdata: {}

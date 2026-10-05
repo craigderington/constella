@@ -1,0 +1,52 @@
+# Fresh public v5 node. Never use the retained constella-v5-asus project name.
+name: constella-public-v5-${V5_HOST:?set V5_HOST}
+x-runtime: &runtime
+  restart: unless-stopped
+  stop_grace_period: 60s
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+services:
+  temperature:
+    <<: *runtime
+    image: ${TEMPERATURE_IMAGE:?set tested temperature image}
+    pull_policy: never
+    user: '${LOCAL_UID:-1000}:${LOCAL_GID:-1000}'
+    network_mode: none
+    cpus: 0.05
+    mem_limit: 16m
+    pids_limit: 16
+    environment:
+      SENSOR_NAME: ${SENSOR_NAME:-k10temp}
+      SOURCE_FILE: ${SOURCE_FILE:-}
+    volumes:
+      - ./thermal:/thermal
+      - ${SENSOR_DIRECTORY:-./sensor}:/sensor:ro
+  node:
+    <<: *runtime
+    image: ${NODE_IMAGE:?set tested v5 image}
+    pull_policy: never
+    cpus: 1.0
+    mem_limit: 1g
+    pids_limit: 64
+    tmpfs: ['/tmp:size=32m,mode=1777']
+    environment:
+      CONSTELLA_DATA: /data
+      CONSTELLA_PORT: '18473'
+      CONSTELLA_MINE: '1'
+      CONSTELLA_THREADS: '2'
+      CONSTELLA_DUTY: '${MINING_DUTY:-25}'
+      CONSTELLA_TEMP_MAX: '${TEMP_MAX:-80}'
+      CONSTELLA_TEMP_FILE: /thermal/mining_cpu_millidegrees
+      CONSTELLA_BATTERY_PAUSE: '1'
+      CONSTELLA_PRIVATE_NET: '1'
+      CONSTELLA_PEERS: '${NODE_PEERS:?set explicit v5 peers}'
+      CONSTELLA_ADVERTISE: '${LAN_IP:?set LAN_IP}:18473'
+    ports: ['${LAN_IP}:18473:18473']
+    volumes: [data:/data, './thermal:/thermal:ro']
+    networks: [p2p]
+networks:
+  p2p: {}
+volumes:
+  data: {}
