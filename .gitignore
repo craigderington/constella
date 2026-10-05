@@ -21,10 +21,10 @@ test_node_work
 test_ledger_incremental
 
 # Local agent guidance, documentation and tests.
-/AGENTS.md
-/agents.md
-/CLAUDE.md
-/claude.md
+AGENTS.md
+agents.md
+CLAUDE.md
+claude.md
 /docs/
 /tests/
 

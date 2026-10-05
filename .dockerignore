@@ -3,6 +3,10 @@ test_constella
 constella-data
 *.log
 .git
+**/AGENTS.md
+**/CLAUDE.md
+**/agents.md
+**/claude.md
 .aws
 .env
 .env.*
