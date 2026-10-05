@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/craig/constella/explorer/internal/blake2b"
 	"github.com/craig/constella/explorer/internal/consensus"
 	"github.com/craig/constella/explorer/internal/proto"
 )
@@ -121,27 +122,33 @@ func glyph(tlen int) template.HTML {
 	return template.HTML(b.String())
 }
 
-// constellation draws the six pattern members as a star chart. Horizontal position
-// is the true offset (0..16); vertical position comes from the member's own digits.
+// constellation derives a repeatable visual signature from the starting prime.
+// Labels carry the exact offsets; positions do not represent a measured quantity.
 func constellation(p string, tlen int) template.HTML {
-	const w, h, pad = 720.0, 220.0, 48.0
 	n, ok := new(big.Int).SetString(p, 10)
 	if !ok {
 		return ""
 	}
-	type pt struct{ x, y float64 }
-	pts := make([]pt, len(offsets))
-	for i, off := range offsets {
-		m := new(big.Int).Add(n, big.NewInt(off))
-		v := new(big.Int).Mod(m, big.NewInt(9973)).Int64() // pseudo-random, stable per member
-		pts[i] = pt{pad + float64(off)/16*(w-2*pad), 36 + float64(v)/9973*(h-96)}
+	seed := blake2b.Sum256([]byte("constella-chart-v1:" + n.String()))
+	// Permute height bands to keep every map spread out, then add small offsets.
+	// Independent hash bytes avoid the almost-collinear p+i remainder layout.
+	heights := [...]float64{48, 80, 112, 144, 176, 208}
+	for i := len(heights) - 1; i > 0; i-- {
+		j := int(seed[i]) % (i + 1)
+		heights[i], heights[j] = heights[j], heights[i]
+	}
+	pts := [...]struct{ x, y float64 }{
+		{76, 0}, {212, 0}, {304, 0}, {436, 0}, {514, 0}, {644, 0},
+	}
+	for i := range pts {
+		pts[i].y = heights[i] + float64(int(seed[6+i])%17-8)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, `<svg class="chart" viewBox="0 0 %.0f %.0f" role="img" aria-label="%s: %d of 6 members prime">`,
-		w, h, tupleName(tlen), tlen)
-	for gx := 0; gx <= 16; gx += 2 { // graticule at the pattern's own spacing
-		x := pad + float64(gx)/16*(w-2*pad)
-		fmt.Fprintf(&b, `<line x1="%.1f" y1="18" x2="%.1f" y2="%.0f" class="grat"/>`, x, x, h-40)
+	fmt.Fprintf(&b, `<svg class="chart" viewBox="0 0 720 280" role="img" aria-label="%s: %d of 6 members prime; schematic star arrangement">`, tupleName(tlen), tlen)
+	b.WriteString(`<desc>Labels give exact offsets from p. The starting prime determines a repeatable, illustrative star pattern. Heights do not measure size, difficulty or rarity. Filled stars belong to the prime tuple; hollow stars are outside it.</desc>`)
+	for i := range 9 {
+		x := 48 + i*78
+		fmt.Fprintf(&b, `<line x1="%d" y1="18" x2="%d" y2="256" class="grat" aria-hidden="true"/>`, x, x)
 	}
 	for i := 1; i < tlen && i < len(pts); i++ {
 		a, c := pts[i-1], pts[i]
@@ -157,9 +164,9 @@ func constellation(p string, tlen int) template.HTML {
 		} else {
 			fmt.Fprintf(&b, `<circle cx="%.1f" cy="%.1f" r="5" class="void"/>`, q.x, q.y)
 		}
-		fmt.Fprintf(&b, `<text x="%.1f" y="%.0f" class="lbl">%s</text>`, q.x, h-16, label)
+		fmt.Fprintf(&b, `<text x="%.1f" y="%.0f" class="lbl">%s</text>`, q.x, q.y+29, label)
 	}
-	b.WriteString(`</svg>`)
+	b.WriteString(`</svg><p class="chart-note">Shape derived from the starting prime · illustrative positions, exact offset labels.</p>`)
 	return template.HTML(b.String())
 }
 

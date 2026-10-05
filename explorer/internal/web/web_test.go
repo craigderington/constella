@@ -171,6 +171,12 @@ func TestConstellationEncodesTuple(t *testing.T) {
 	if strings.Count(svg, `class="star"`) != 5 || strings.Count(svg, `class="void"`) != 1 || strings.Count(svg, `class="link"`) != 4 {
 		t.Errorf("expected 5 stars, 1 void, 4 links:\n%s", svg)
 	}
+	if svg != string(constellation("97", 5)) || svg != string(constellation("00097", 5)) {
+		t.Error("the same starting prime must keep its shape across renders and equivalent decimal spellings")
+	}
+	if svg == string(constellation("101", 5)) {
+		t.Error("different starting primes must not reuse the fixed star map")
+	}
 }
 
 // TestOverviewTextReportsErrorInsteadOfPanicking pins the fix for the

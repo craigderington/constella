@@ -90,7 +90,9 @@ h2 { font-weight: normal; font-size: 1.25rem; margin: 40px 0 12px; }
 .chart .star { fill: var(--star); }
 .chart .halo { fill: var(--star); opacity: .12; }
 .chart .void { fill: none; stroke: var(--faded); stroke-width: 1.3; stroke-dasharray: 2 3; }
-.chart .lbl { fill: var(--faded); font: 13px var(--mono); text-anchor: middle; }
+.chart .lbl { fill: var(--faded); font: 15px var(--mono); text-anchor: middle; }
+.chart-note { margin: 0 0 12px; color: var(--faded); font-size: .8rem; }
+@media (max-width: 600px) { .chart .lbl { font-size: 30px; } }
 @keyframes draw { from { stroke-dashoffset: 400; } to { stroke-dashoffset: 0; } }
 .settled .chart .link { animation: none; }
 @media (prefers-reduced-motion: reduce) { .chart .link { animation: none; } }
