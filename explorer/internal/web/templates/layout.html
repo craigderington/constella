@@ -132,32 +132,69 @@ footer { border-top: 1px solid var(--rule); color: var(--faded); font-size: .85r
   <form class="search" action="/search" role="search">
     <input name="q" aria-label="Search" placeholder="Height, share id or address" autocomplete="off">
   </form>
-  {{with .Stats.Meta}}
-    {{if eq .check "ok"}}<span class="pulse">Ledger matches node at <b>{{num .check_height}}</b></span>
-    {{else if eq .check "sample"}}<span class="pulse">Ledger sample matches node at <b>{{num .check_height}}</b> ({{.check_count}} of {{.check_total}}, rotating)</span>
-    {{else if .check}}<span class="pulse bad">Ledger differs from node: {{.check}}</span>
-    {{else}}<span class="pulse">Cross-checking ledger with node</span>{{end}}
-  {{end}}
+  {{template "ledger-status" .}}
 </div></header>
 <main class="wrap" id="live">{{template "main" .}}</main>
 <footer><div class="wrap">
   Explorer state rebuilt independently from raw shares.
-  {{with .Stats.Meta}}{{if eq .peer "false"}}<span class="pulse bad">Not connected to a node.</span>{{end}}{{end}}
+  {{template "peer-status" .}}
   JSON at <a href="/api/stats">/api/stats</a>. Try <code>curl</code> on this address.
 </div></footer>
 <script>
 // Refresh live pages in place every 10 s; the chart only animates on first load.
 (() => {
+  // Age the actual last check even while polling is paused or unavailable.
+  function updateCheckAge() {
+    const label = document.querySelector('#ledger-status time[datetime]');
+    if (!label) return;
+    const checked = Date.parse(label.dateTime);
+    if (!Number.isFinite(checked)) return;
+    const seconds = Math.max(0, Math.floor((Date.now() - checked) / 1000));
+    label.textContent = seconds < 60 ? `${seconds}s ago`
+      : seconds < 3600 ? `${Math.floor(seconds / 60)}m ago`
+      : seconds < 172800 ? `${Math.floor(seconds / 3600)}h ago`
+      : `${Math.floor(seconds / 86400)}d ago`;
+  }
+  updateCheckAge();
+  setInterval(updateCheckAge, 1000);
   if (!document.querySelector('[data-live]')) return;
   document.documentElement.classList.add('armed');
+  let refreshing = false;
   setInterval(async () => {
-    if (document.hidden || document.activeElement?.name === 'q') return;
+    if (refreshing || document.hidden || document.activeElement?.name === 'q') return;
+    refreshing = true;
     try {
-      const r = await fetch(location.href, { headers: { 'X-Partial': '1' } });
-      if (r.ok) { document.documentElement.classList.add('settled'); document.getElementById('live').innerHTML = await r.text(); }
-    } catch {}
+      const r = await fetch(location.href, { headers: { 'X-Partial': '2' }, cache: 'no-store' });
+      if (!r.ok) return;
+      const fresh = new DOMParser().parseFromString(await r.text(), 'text/html');
+      const ids = ['live', 'ledger-status', 'peer-status'];
+      if (ids.some(id => !fresh.getElementById(id))) return;
+      document.documentElement.classList.add('settled');
+      for (const id of ids) {
+        document.getElementById(id).innerHTML = fresh.getElementById(id).innerHTML;
+      }
+      updateCheckAge();
+    } catch {} finally { refreshing = false; }
   }, 10000);
 })();
 </script>
 </body>
 </html>{{end}}
+
+{{define "ledger-status"}}<span id="ledger-status" role="status">
+  {{if eq .Stats.Meta.check "ok"}}<span class="pulse">Ledger verified at share <b>{{num .Stats.Meta.check_height}}</b></span>
+  {{else if eq .Stats.Meta.check "sample"}}<span class="pulse">Ledger sample verified at share <b>{{num .Stats.Meta.check_height}}</b> ({{.Stats.Meta.check_count}} of {{.Stats.Meta.check_total}}, rotating)</span>
+  {{else if .Stats.Meta.check}}<span class="pulse bad">Ledger differs from node: {{.Stats.Meta.check}}</span>
+  {{else}}<span class="pulse">Cross-checking ledger with node</span>{{end}}
+  {{if .Stats.Meta.check}}{{with .Stats.Meta.check_at}}{{$at := .}}{{with checkAge .}}
+    <span class="pulse"> · <time datetime="{{$at}}" title="Checked at {{$at}}" aria-live="off">{{.}}</time></span>
+  {{end}}{{end}}{{end}}
+</span>{{end}}
+
+{{define "peer-status"}}<span id="peer-status" role="status">{{if eq .Stats.Meta.peer "false"}}<span class="pulse bad">Not connected to a node.</span>{{end}}</span>{{end}}
+
+{{define "refresh"}}
+<main id="live">{{template "main" .}}</main>
+{{template "ledger-status" .}}
+{{template "peer-status" .}}
+{{end}}

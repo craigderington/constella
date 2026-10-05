@@ -54,6 +54,57 @@ func emptyOf(name string) any {
 	return nil
 }
 
+// Poll responses must carry changing header/footer state as well as the body.
+func TestRefreshIncludesLedgerAndPeerStatus(t *testing.T) {
+	s := New(nil)
+	for _, tc := range []struct {
+		name string
+		meta map[string]string
+		want string
+	}{
+		{"pending", nil, "Cross-checking ledger with node"},
+		{"matched", map[string]string{"check": "ok", "check_height": "143"}, "Ledger verified at share <b>143</b>"},
+		{"advanced", map[string]string{"check": "ok", "check_height": "144", "check_at": "2026-10-04T20:00:00Z"}, "Ledger verified at share <b>144</b>"},
+		{"sample", map[string]string{"check": "sample", "check_height": "145", "check_count": "8", "check_total": "20"}, "Ledger sample verified at share <b>145</b> (8 of 20, rotating)"},
+		{"mismatch", map[string]string{"check": "balance mismatch", "peer": "false"}, `class="pulse bad">Ledger differs from node: balance mismatch`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := page{"Overview", &store.Stats{Meta: tc.meta}, &overviewData{}}
+			for _, tmpl := range []string{"layout", "refresh"} {
+				var buf bytes.Buffer
+				if err := s.pages["overview"].ExecuteTemplate(&buf, tmpl, p); err != nil {
+					t.Fatal(err)
+				}
+				out := buf.String()
+				if !strings.Contains(out, tc.want) {
+					t.Errorf("%s missing status %q", tmpl, tc.want)
+				}
+				if strings.Contains(out, `<time datetime="2026-10-04T20:00:00Z"`) != (tc.meta["check_at"] != "") {
+					t.Errorf("%s has incorrect check timestamp", tmpl)
+				}
+				for _, id := range []string{"live", "ledger-status", "peer-status"} {
+					if strings.Count(out, `id="`+id+`"`) != 1 {
+						t.Errorf("%s must contain exactly one %s region", tmpl, id)
+					}
+				}
+				if strings.Contains(out, "Not connected to a node.") != (tc.meta["peer"] == "false") {
+					t.Errorf("%s has incorrect peer status", tmpl)
+				}
+				if tmpl == "refresh" && strings.Contains(out, "<script>") {
+					t.Error("refresh must not restart the polling script")
+				}
+			}
+			var legacy bytes.Buffer
+			if err := s.pages["overview"].ExecuteTemplate(&legacy, "main", p); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(legacy.String(), `id="ledger-status"`) {
+				t.Error("legacy body-only response must remain compatible with open tabs")
+			}
+		})
+	}
+}
+
 // The network band and selector are driven directly by proto.NetworkName /
 // proto.ChainIDHex — pure functions of BlockK, wired in as template funcs
 // (render.go) — not by anything read back out of the indexer's meta map.

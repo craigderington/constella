@@ -71,6 +71,20 @@ func ago(t time.Time) string {
 	return t.Format("2006-01-02")
 }
 
+func checkAge(raw string) string {
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil || t.Unix() <= 0 {
+		return ""
+	}
+	if time.Until(t) > 0 {
+		return "0s ago"
+	}
+	if d := time.Since(t); d >= 48*time.Hour {
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+	return ago(t)
+}
+
 // clip shows the head and tail of a long decimal.
 func clip(p string) string {
 	if len(p) <= 22 {
@@ -158,7 +172,7 @@ func members(p string) []consensus.Member {
 }
 
 var funcs = template.FuncMap{
-	"hex": hexs, "short": short, "coins": coins, "num": num, "ago": ago, "clip": clip,
+	"hex": hexs, "short": short, "coins": coins, "num": num, "ago": ago, "checkAge": checkAge, "clip": clip,
 	"digits": digits, "glyph": glyph, "constellation": constellation, "tuple": tupleName,
 	"members": members, "blockK": func() int { return proto.BlockK },
 	// network and chainID are compile-time facts (pure functions of BlockK),

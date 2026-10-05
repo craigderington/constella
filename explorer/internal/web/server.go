@@ -107,8 +107,11 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name, title stri
 	}
 	var buf bytes.Buffer
 	tmpl := "layout"
-	if r.Header.Get("X-Partial") == "1" {
+	switch r.Header.Get("X-Partial") {
+	case "1": // Retain the body-only response for tabs opened before this update.
 		tmpl = "main"
+	case "2":
+		tmpl = "refresh"
 	}
 	if err := s.pages[name].ExecuteTemplate(&buf, tmpl, page{title, st, data}); err != nil {
 		log.Printf("web: %s: %v", name, err)
