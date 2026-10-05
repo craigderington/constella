@@ -1,0 +1,3 @@
+FROM alpine:3.20
+COPY deploy/testnet-v5/temperature.sh /temperature.sh
+ENTRYPOINT ["/bin/sh", "/temperature.sh"]
