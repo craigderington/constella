@@ -1,12 +1,20 @@
 # Explicit v5 opt-in; the root Dockerfile remains the live v3 profile.
 FROM alpine:3.20 AS build
+ARG TARGETARCH
 RUN apk add --no-cache build-base python3
 WORKDIR /src
 COPY Makefile ./
 COPY src ./src
 COPY tests ./tests
-RUN --network=none make CC=cc test && make CC=cc constella-testnet-v5 && \
-    test "$(stat -c %s constella-testnet-v5)" -le 196608
+# ARM's C unwind metadata and default 64 KiB segment alignment waste the size
+# budget. Keep stack protection, FORTIFY, RELRO and non-executable stack intact.
+# This ARM image targets the 4 KiB-page Colima guest qualified on Mini.
+RUN --network=none if [ "$TARGETARCH" = arm64 ] || [ "$(uname -m)" = aarch64 ]; then \
+      export LDFLAGS="-Wl,-z,max-page-size=4096"; \
+      export OPT="-Os -fno-unwind-tables"; fi; \
+    make CC=cc test && make CC=cc constella-testnet-v5 && \
+    bytes=$(stat -c %s constella-testnet-v5) && echo "v5 node: $bytes / 196608 bytes" && \
+    test "$bytes" -le 196608
 
 FROM scratch
 COPY --from=build /src/constella-testnet-v5 /constella
