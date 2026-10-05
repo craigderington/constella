@@ -1,0 +1,14 @@
+# Explicit v5 opt-in; the root Dockerfile remains the live v3 profile.
+FROM alpine:3.20 AS build
+RUN apk add --no-cache build-base python3
+WORKDIR /src
+COPY Makefile ./
+COPY src ./src
+COPY tests ./tests
+RUN --network=none make CC=cc test && make CC=cc constella-testnet-v5 && \
+    test "$(stat -c %s constella-testnet-v5)" -le 196608
+
+FROM scratch
+COPY --from=build /src/constella-testnet-v5 /constella
+ENV CONSTELLA_DATA=/data
+ENTRYPOINT ["/constella"]

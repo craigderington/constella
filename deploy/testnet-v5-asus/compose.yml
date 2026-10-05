@@ -1,0 +1,129 @@
+name: constella-v5-asus
+
+x-node: &node
+  image: constella:v5-asus-e908118-20261004
+  pull_policy: never
+  restart: unless-stopped
+  stop_grace_period: 60s
+  cpus: 1.0
+  mem_limit: 768m
+  pids_limit: 64
+  read_only: true
+  tmpfs: ['/tmp:size=16m,mode=1777']
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  networks: [p2p]
+  logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+
+x-env: &env
+  CONSTELLA_DATA: /data
+  CONSTELLA_PORT: '18457'
+  CONSTELLA_MINE: '1'
+  CONSTELLA_THREADS: '2'
+  CONSTELLA_DUTY: '25'
+  CONSTELLA_TEMP_MAX: '80'
+  CONSTELLA_TEMP_FILE: /thermal/mining_cpu_millidegrees
+  CONSTELLA_BATTERY_PAUSE: '1'
+  CONSTELLA_PRIVATE_NET: '1'
+
+services:
+  temperature:
+    image: alpine:3.20
+    pull_policy: never
+    user: '1000:1000'
+    restart: unless-stopped
+    read_only: true
+    network_mode: none
+    cpus: 0.05
+    mem_limit: 16m
+    pids_limit: 16
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        while :; do
+          sensor=
+          for name in /sys/class/hwmon/hwmon*/name; do
+            if [ "$$(cat "$$name" 2>/dev/null)" = k10temp ]; then
+              sensor="$${name%/name}/temp1_input"; break
+            fi
+          done
+          if [ -n "$$sensor" ] && cat "$$sensor" > /thermal/cpu.new; then
+            mv /thermal/cpu.new /thermal/cpu_millidegrees
+          else
+            rm -f /thermal/cpu_millidegrees /thermal/cpu.new
+          fi
+          sleep 1
+        done
+    volumes: ['./thermal:/thermal']
+    logging: {driver: json-file, options: {max-size: 1m, max-file: '2'}}
+  node1:
+    <<: *node
+    environment:
+      <<: *env
+      CONSTELLA_PEERS: 'node2:18457'
+      CONSTELLA_ADVERTISE: 'node1:18457'
+    volumes: ['node1:/data', './thermal:/thermal:ro']
+  node2:
+    <<: *node
+    environment:
+      <<: *env
+      CONSTELLA_PEERS: 'node1:18457'
+      CONSTELLA_ADVERTISE: 'node2:18457'
+    volumes: ['node2:/data', './thermal:/thermal:ro']
+  postgres:
+    image: postgres:16-alpine
+    pull_policy: never
+    restart: unless-stopped
+    stop_grace_period: 60s
+    cpus: 0.5
+    mem_limit: 512m
+    pids_limit: 96
+    environment:
+      POSTGRES_USER: constella
+      POSTGRES_PASSWORD: '${V5_DB_PASSWORD:?Set V5_DB_PASSWORD in the private .env file}'
+      POSTGRES_DB: explorer_v5
+    command: ['postgres', '-c', 'shared_buffers=64MB', '-c', 'max_connections=30']
+    volumes: ['pgdata:/var/lib/postgresql/data']
+    networks: [ui]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U constella -d explorer_v5']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    logging: {driver: json-file, options: {max-size: 5m, max-file: '3'}}
+  explorer:
+    image: constella-explorer:v5-asus-prime-shapes-20261004
+    pull_policy: never
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cpus: 0.5
+    mem_limit: 384m
+    pids_limit: 64
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      EXPLORER_NODE: node1:18457
+      EXPLORER_DB: 'postgres://constella:${V5_DB_PASSWORD:?Set V5_DB_PASSWORD}@postgres:5432/explorer_v5?sslmode=disable'
+      EXPLORER_HTTP: ':31857'
+    ports: ['192.168.1.174:31857:31857']
+    networks: [p2p, ui, http]
+    logging: {driver: json-file, options: {max-size: 5m, max-file: '3'}}
+
+networks:
+  p2p:
+    internal: true
+  ui:
+    internal: true
+  # Docker suppresses published ports on internal-only containers. Only the
+  # Explorer joins this HTTP bridge; nodes and Postgres stay internal-only.
+  http: {}
+volumes:
+  node1: {}
+  node2: {}
+  pgdata: {}
