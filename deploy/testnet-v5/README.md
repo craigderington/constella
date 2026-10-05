@@ -65,7 +65,23 @@ file by itself does not release mining. Do not import rehearsal keys/history.
 
 ## 1. Craig: prepare cloud images and private configuration
 
-After pushing the reviewed release and updating the cloud checkout:
+After pushing the reviewed release, start from the existing cloud repository
+directory. Its history predates the agent-file removal, so use a fresh worktree
+instead of trying to fast-forward or reset the old checkout:
+
+```sh
+legacy_checkout=$PWD
+git fetch origin
+git worktree add --detach ../constella-v5-20261005 origin/master
+release_checkout=$(cd ../constella-v5-20261005 && pwd)
+cmp "$legacy_checkout/deploy/lightsail/compose.yml" "$release_checkout/deploy/lightsail/compose.yml"
+sudo install -m 600 "$legacy_checkout/deploy/lightsail/production.env" "$release_checkout/deploy/lightsail/production.env"
+cd "$release_checkout"
+```
+
+If the Compose comparison differs, stop and inspect the existing host changes
+before proceeding; the rollback must preserve the actual v3 configuration.
+The original checkout and its private configuration remain untouched. Then:
 
 ```sh
 git rev-parse HEAD
