@@ -33,3 +33,7 @@ claude.md
 *-evidence.json
 *-evidence.js
 evidence-*.json
+
+# Local one-off Mini mining ramp and its companion test.
+/deploy/testnet-v5/mini-duty-ramp.py
+/deploy/testnet-v5/test_mini_duty_ramp.py
