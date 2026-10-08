@@ -71,6 +71,9 @@ static void transaction(const tx_t *t) {
            "\"amount\":\"%" PRIu64 "\",\"fee\":\"%" PRIu64 "\",\"nonce\":\"%" PRIu64 "\"}\n",
            hash, wire, from, to, t->amount, t->fee, t->nonce);
 }
+#ifdef CONSTELLA_WALLET_EMBEDDED
+#define main constella_wallet_main
+#endif
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "profile")) {
         uint8_t tag[8]; char chain[17]; tx_chain_id(tag); hex_enc(chain, tag, 8);

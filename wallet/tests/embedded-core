@@ -1,0 +1,5 @@
+#!/bin/sh
+# Exercise the exact shipped executable through the existing protocol tests.
+set -eu
+: "${CONSTELLA_WALLET_TEST_BINARY:?Set the absolute path to the built wallet}"
+exec "$CONSTELLA_WALLET_TEST_BINARY" --wallet-core "$@"

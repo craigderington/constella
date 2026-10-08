@@ -182,7 +182,7 @@ class ModelTests(unittest.TestCase):
 class BackendTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.binary = ROOT / 'constella-wallet-core'
+        cls.binary = Path(os.environ.get('CONSTELLA_WALLET_TEST_CORE', str(ROOT / 'constella-wallet-core')))
         cls.backend = Backend(cls.binary)
         cls.peer_binary = ROOT / 'wallet/tests/peer-test'
 

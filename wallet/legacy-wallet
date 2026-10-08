@@ -1,0 +1,6 @@
+#!/bin/sh
+# Kept during migration for explicit rollback; normal wallet launch is Rust.
+set -eu
+base=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if command -v python3 >/dev/null 2>&1; then exec python3 -B "$base/tui.py" "$@"; fi
+exec "$base/nix-entry" "$@"

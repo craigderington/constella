@@ -113,8 +113,22 @@ candidate-build: constella-testnet-v5 constella-mainnet-v5
 constella-wallet-core: $(CORE) wallet/backend.c src/*.h
 	$(CC) $(CFLAGS) -DCONSTELLA_NETWORK=3 -Isrc -o $@ $(CORE) wallet/backend.c $(LDFLAGS)
 
-wallet: constella-wallet-core
-	@python3 -c 'import curses; print("Run ./constella-wallet (or --demo for an offline preview)")'
+# Release wallet: one static musl executable. Override WALLET_TARGET for a native dev build.
+WALLET_TARGET ?= x86_64-unknown-linux-musl
+WALLET_LINKER ?= musl-gcc
+WALLET_RUSTC ?= rustc
+WALLET_RUSTFLAGS ?= -C target-feature=+crt-static -C relocation-model=static
+WALLET_BIN = wallet/target/$(WALLET_TARGET)/release/constella-wallet
+
+wallet:
+	RUSTC="$(WALLET_RUSTC)" CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="$(WALLET_LINKER)" CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="$(WALLET_RUSTFLAGS)" cargo build --manifest-path wallet/Cargo.toml --locked --release --target $(WALLET_TARGET)
+	@case "$(WALLET_TARGET)" in *-musl) sh wallet/check-static.sh "$(WALLET_BIN)";; esac
+	@echo "Run ./constella-wallet (or --demo for an offline preview)"
+
+# Migration checkpoint: Rust UI plus the external C JSON backend.
+wallet-stage1: constella-wallet-core
+	cargo build --manifest-path wallet/Cargo.toml --locked --release --no-default-features
+	@echo "Run wallet/target/release/constella-wallet --backend ./constella-wallet-core"
 
 wallet/tests/peer-test: $(CORE) wallet/tests/peer.c src/*.h
 	$(CC) $(CFLAGS) -DCONSTELLA_NETWORK=3 -Isrc -o $@ $(CORE) wallet/tests/peer.c $(LDFLAGS)
@@ -122,20 +136,20 @@ wallet/tests/peer-test: $(CORE) wallet/tests/peer.c src/*.h
 wallet/tests/chain-test: $(CORE) wallet/tests/chain.c src/*.h
 	$(CC) $(CFLAGS) -DCONSTELLA_NETWORK=3 -Isrc -o $@ $(CORE) wallet/tests/chain.c $(LDFLAGS)
 
-wallet-test: constella-wallet-core constella-testnet-v5 wallet/tests/peer-test wallet/tests/chain-test
-	python3 -B -m unittest discover -s wallet/tests -v
+wallet-test: wallet constella-wallet-core constella-testnet-v5 wallet/tests/peer-test wallet/tests/chain-test
+	cargo fmt --manifest-path wallet/Cargo.toml --check
+	cargo clippy --manifest-path wallet/Cargo.toml --locked --all-targets -- -D warnings
+	cargo test --manifest-path wallet/Cargo.toml --locked
+	CONSTELLA_WALLET_TEST_BINARY="$(abspath $(WALLET_BIN))" CONSTELLA_WALLET_TEST_CORE="$(abspath wallet/tests/embedded-core)" cargo test --manifest-path wallet/Cargo.toml --locked -- --ignored
+	CONSTELLA_WALLET_TEST_BINARY="$(abspath $(WALLET_BIN))" CONSTELLA_WALLET_TEST_CORE="$(abspath wallet/tests/embedded-core)" python3 -B -m unittest discover -s wallet/tests -v
 
 PREFIX ?= $(HOME)/.local
 wallet-install: wallet
-	install -d $(DESTDIR)$(PREFIX)/lib/constella-wallet/wallet $(DESTDIR)$(PREFIX)/bin
-	install -m 755 constella-wallet constella-wallet-core $(DESTDIR)$(PREFIX)/lib/constella-wallet/
-	install -m 644 wallet/model.py wallet/tui.py $(DESTDIR)$(PREFIX)/lib/constella-wallet/wallet/
-	install -m 755 wallet/nix-entry $(DESTDIR)$(PREFIX)/lib/constella-wallet/wallet/
-	printf '%s\n' '#!/bin/sh' 'exec "$(PREFIX)/lib/constella-wallet/constella-wallet" "$$@"' > $(DESTDIR)$(PREFIX)/bin/constella-wallet
-	chmod 755 $(DESTDIR)$(PREFIX)/bin/constella-wallet
+	install -d $(DESTDIR)$(PREFIX)/bin
+	install -m 755 $(WALLET_BIN) $(DESTDIR)$(PREFIX)/bin/constella-wallet
 
 clean:
 	rm -f constella test_constella thermal_sim constella-explorer gate_snapshot test_chain_storage bench_ledger test_peer_budget \
 	  constella-testnet-v4 constella-mainnet-v4 constella-explorer-testnet-v4 constella-explorer-mainnet-v4 test_node_work test_ledger_incremental constella-testnet-v5 constella-mainnet-v5 constella-explorer-testnet-v5 constella-explorer-mainnet-v5 constella-wallet-core wallet/tests/peer-test wallet/tests/chain-test
 
-.PHONY: all fast unit test size explorer explorer-test gate-test storage-test ledger-test clean protocol-test candidate-build peer-test node-work-test validator-test wallet wallet-test wallet-install
+.PHONY: all fast unit test size explorer explorer-test gate-test storage-test ledger-test clean protocol-test candidate-build peer-test node-work-test validator-test wallet wallet-stage1 wallet-test wallet-install

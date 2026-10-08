@@ -2,13 +2,26 @@
 
 A standalone terminal wallet for **testnet v5**, chain `2094b0868a27b032`.
 No Docker or local miner is required. The C backend signs locally and talks to
-an authenticated v5 peer. The Python standard-library TUI provides Overview,
+an authenticated v5 peer. The Rust/Ratatui TUI provides Overview,
 Send, Receive and History screens, contacts, private backups and watch-only mode.
 
 ## Run
 
-Linux, Python 3.10+ with curses, and a C compiler supporting the repository's
-static build flags are required to build from source. No pip packages are needed.
+The qualified release is a **single static x86-64 Linux musl executable**.
+Running it needs no Python, Docker, Nix shell, or separate backend. The C signing
+and authenticated P2P implementation is linked into the Rust application.
+
+Building requires a matching Rust toolchain and musl target, `musl-gcc`, and Make.
+Use Rust 1.98.1 for the qualified lockfile build (the crate's minimum is 1.88).
+With a rustup-managed toolchain, add its matching target first:
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+```
+
+Distribution-patched Rust compilers can reject upstream target libraries even
+when their version numbers match. Use one consistent toolchain for both. Cargo
+fetches the locked build dependencies; users of the binary need none of them.
 
 ```sh
 make wallet
@@ -59,13 +72,16 @@ It can read the public address, peer balance and Explorer history. Exit and laun
 normally to create/open a spendable wallet. A new wallet starts at zero; it is
 separate from the miner's payout wallet.
 
-On NixOS, the launcher uses an installed Python if available. Otherwise it uses
-[Nix's script interpreter support](https://nix.dev/manual/nix/2.28/command-ref/nix-shell#use-as-a--interpreter)
-to supply Python from the host's configured nixpkgs channel. This can download
-Python on first launch; it does not rebuild NixOS or change mining services.
-A static x86-64 `constella-wallet-core` built on another Linux host can be copied
-alongside the launcher and `wallet/{tui.py,model.py,nix-entry}`. ARM needs its own
-backend build. macOS and Windows native builds are not qualified by this release.
+On NixOS, copy `wallet/target/x86_64-unknown-linux-musl/release/constella-wallet`
+to a directory on your PATH and make it executable. That file is the whole app;
+it runs directly without a Python interpreter or dynamic libc loader. The root
+`./constella-wallet` script is only a convenience launcher for this source checkout.
+ARM, macOS and Windows release builds are not qualified by this migration.
+
+The existing NixOS preview uses `constella-wallet` for a user wallet and
+`constella-wallet-nixos` for the mining address in watch-only mode. Existing keys,
+contacts, settings and receipts use the same paths and state format as before.
+Do not run the old and new interfaces concurrently against the same state store.
 
 ## Keys
 
@@ -128,14 +144,31 @@ but a saved signed transaction can still be broadcast by anyone who holds it.
 
 ## Backend API and validation
 
-`constella-wallet-core` is a separate v5-only executable, not a node subcommand.
-It reuses the existing wallet, signature and authenticated network implementation.
-It has a versioned JSON `profile`, plus `new`, `address`, `balance`, `prepare`
-and `broadcast` operations. `prepare` signs without broadcasting; `broadcast`
-verifies and submits existing signed bytes. Errors are structured JSON. Integer
-account and transaction amounts/nonces are decimal strings for future clients.
-Private keys never appear in its output. The TUI invokes it with argv arrays,
-not shell commands. The node build, consensus rules and size gate are unchanged.
+The migration has two reproducible stages:
+
+```sh
+# Step 1: Rust/Ratatui frontend using the existing external C JSON backend.
+make wallet-stage1
+wallet/target/release/constella-wallet --backend ./constella-wallet-core
+
+# Step 2 (normal release): the same C backend linked into one static executable.
+make wallet
+./constella-wallet
+```
+
+Step 2 invokes the linked C entry point in a short-lived child of the same
+executable. This preserves process isolation for key handling and the versioned
+JSON contract without shipping another file. Private keys never cross that
+interface. `prepare` signs without broadcasting; `broadcast` verifies and submits
+the saved bytes. All subprocess arguments are argv arrays, never shell commands.
+The v5 profile is checked before opening keys. Consensus and the node size gate
+are unchanged. `--backend` remains available for explicit migration diagnostics.
+
+The Python sources and `wallet/legacy-wallet` remain for rollback and regression
+comparison. They are not installed by `make wallet-install`; Python is only needed
+to run the legacy development tests. Rust tests cover the new model and Ratatui
+screens; protocol tests also run against the final linked backend. The suite
+requires permission to open disposable loopback sockets.
 
 ```sh
 make wallet-test
@@ -150,3 +183,21 @@ fixtures are local and disposable. The real-node integration mines a test-only
 funding proof, applies a signed transfer, restarts/replays the chain and checks
 that rebroadcast cannot pay the recipient twice. No live wallets or miner
 services are used by these tests.
+
+## Preview rollback on NixOS
+
+The new release lives in `/home/cd/constella-wallet-ratatui-20261008`.
+The previous app stays in `/home/cd/constella-wallet-v5-20261007`, and the two
+previous launcher files are saved in the new release's `rollback/` directory.
+Exit the wallet, then restore those launchers if needed:
+
+```sh
+cp /home/cd/constella-wallet-ratatui-20261008/rollback/constella-wallet ~/.local/bin/constella-wallet
+cp /home/cd/constella-wallet-ratatui-20261008/rollback/constella-wallet-nixos ~/.local/bin/constella-wallet-nixos
+```
+
+Keep the current receipt store and keys; rolling back an executable is **not** a
+reason to restore stale receipt state. The old interface has the same locking
+and state schema, but the Rust release additionally requires a successful save
+before manual retries after disk failures and invalidates inclusion on peer
+rollback even while the Explorer is unavailable.

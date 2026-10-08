@@ -1,0 +1,32 @@
+[package]
+name = "constella-wallet"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.88"
+
+[features]
+default = ["embedded-core"]
+embedded-core = []
+
+[dependencies]
+anyhow = "1.0"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4.6", features = ["derive"] }
+crossterm = "0.29"
+libc = "0.2"
+ratatui = "0.30.2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+serde_json = "1.0"
+tempfile = "3.27"
+url = "2.5"
+zeroize = "1.9"
+
+[build-dependencies]
+cc = "1.4"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
