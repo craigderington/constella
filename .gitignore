@@ -2,6 +2,10 @@ constella
 test_constella
 constella-data/
 constella-explorer
+/constella-wallet-core
+/wallet/tests/peer-test
+/wallet/tests/chain-test
+__pycache__/
 thermal_sim
 gate_snapshot
 test_chain_storage

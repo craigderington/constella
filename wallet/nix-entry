@@ -1,0 +1,12 @@
+#!/usr/bin/env nix-shell
+#! nix-shell -i python3 -p python3
+# Nix supplies the interpreter without changing the host's system configuration.
+from pathlib import Path
+import runpy
+import sys
+
+sys.dont_write_bytecode = True
+entry = Path(__file__).resolve().with_name('tui.py')
+sys.path.insert(0, str(entry.parent))
+sys.argv[0] = str(entry)
+runpy.run_path(str(entry), run_name='__main__')

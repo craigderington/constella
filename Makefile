@@ -109,8 +109,33 @@ candidate-build: constella-testnet-v5 constella-mainnet-v5
 	  sz=$$(stat -c %s $$binary); echo "$$binary: $$sz bytes (limit $(SIZE_MAX_BYTES))"; \
 	  test $$sz -le $(SIZE_MAX_BYTES) || exit 1; done
 
+# Standalone TUI backend: always v5, never changes the default node profile.
+constella-wallet-core: $(CORE) wallet/backend.c src/*.h
+	$(CC) $(CFLAGS) -DCONSTELLA_NETWORK=3 -Isrc -o $@ $(CORE) wallet/backend.c $(LDFLAGS)
+
+wallet: constella-wallet-core
+	@python3 -c 'import curses; print("Run ./constella-wallet (or --demo for an offline preview)")'
+
+wallet/tests/peer-test: $(CORE) wallet/tests/peer.c src/*.h
+	$(CC) $(CFLAGS) -DCONSTELLA_NETWORK=3 -Isrc -o $@ $(CORE) wallet/tests/peer.c $(LDFLAGS)
+
+wallet/tests/chain-test: $(CORE) wallet/tests/chain.c src/*.h
+	$(CC) $(CFLAGS) -DCONSTELLA_NETWORK=3 -Isrc -o $@ $(CORE) wallet/tests/chain.c $(LDFLAGS)
+
+wallet-test: constella-wallet-core constella-testnet-v5 wallet/tests/peer-test wallet/tests/chain-test
+	python3 -B -m unittest discover -s wallet/tests -v
+
+PREFIX ?= $(HOME)/.local
+wallet-install: wallet
+	install -d $(DESTDIR)$(PREFIX)/lib/constella-wallet/wallet $(DESTDIR)$(PREFIX)/bin
+	install -m 755 constella-wallet constella-wallet-core $(DESTDIR)$(PREFIX)/lib/constella-wallet/
+	install -m 644 wallet/model.py wallet/tui.py $(DESTDIR)$(PREFIX)/lib/constella-wallet/wallet/
+	install -m 755 wallet/nix-entry $(DESTDIR)$(PREFIX)/lib/constella-wallet/wallet/
+	printf '%s\n' '#!/bin/sh' 'exec "$(PREFIX)/lib/constella-wallet/constella-wallet" "$$@"' > $(DESTDIR)$(PREFIX)/bin/constella-wallet
+	chmod 755 $(DESTDIR)$(PREFIX)/bin/constella-wallet
+
 clean:
 	rm -f constella test_constella thermal_sim constella-explorer gate_snapshot test_chain_storage bench_ledger test_peer_budget \
-	  constella-testnet-v4 constella-mainnet-v4 constella-explorer-testnet-v4 constella-explorer-mainnet-v4 test_node_work test_ledger_incremental constella-testnet-v5 constella-mainnet-v5 constella-explorer-testnet-v5 constella-explorer-mainnet-v5
+	  constella-testnet-v4 constella-mainnet-v4 constella-explorer-testnet-v4 constella-explorer-mainnet-v4 test_node_work test_ledger_incremental constella-testnet-v5 constella-mainnet-v5 constella-explorer-testnet-v5 constella-explorer-mainnet-v5 constella-wallet-core wallet/tests/peer-test wallet/tests/chain-test
 
-.PHONY: all fast unit test size explorer explorer-test gate-test storage-test ledger-test clean protocol-test candidate-build peer-test node-work-test validator-test
+.PHONY: all fast unit test size explorer explorer-test gate-test storage-test ledger-test clean protocol-test candidate-build peer-test node-work-test validator-test wallet wallet-test wallet-install
