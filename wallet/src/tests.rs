@@ -398,7 +398,7 @@ fn real_core_lost_ack_recovery_through_rust_model() {
             .spawn()
             .unwrap(),
     );
-    let node = format!("127.0.0.1:{port}");
+    let node = format!("localhost:{port}");
     let mut ready = false;
     for _ in 0..100 {
         if core.call(&["balance", &node, &addr]).is_ok() {
@@ -443,4 +443,127 @@ fn fresh_peer_rollback_blocks_review_without_explorer() {
         serde_json::from_slice(&fs::read(f.wallet.store.directory.join("state.json")).unwrap())
             .unwrap();
     assert_eq!(disk["receipts"][0]["status"], "unverified");
+}
+
+#[test]
+fn missing_wallet_explains_create_without_accessing_core() {
+    let mut f = Fixture::new();
+    let err = f
+        .wallet
+        .open(
+            f.wallet.view.key.clone(),
+            "localhost:18473".into(),
+            String::new(),
+            false,
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("Esc, then N"));
+    assert!(f.state.lock().unwrap().calls.is_empty());
+    assert!(!f.wallet.view.key.exists());
+}
+
+#[test]
+fn first_run_does_not_claim_node_is_offline() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut f = Fixture::new();
+    f.wallet.view.address.clear();
+    let ui = ui::Ui::new(f.wallet.snapshot());
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| ui.draw(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let screen = (0..24)
+        .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(screen.contains("No wallet open"));
+    assert!(!screen.contains("node offline"));
+    assert!(screen.contains("Create a new wallet"));
+}
+
+#[test]
+fn mining_all_uses_fresh_balance_and_cannot_send_to_itself() {
+    let mut f = Fixture::new();
+    f.wallet.view.mining = true;
+    let r = f.wallet.review(&"bb".repeat(32), "ALL", "0.001").unwrap();
+    assert_eq!(r["amount"], 999900000u64);
+    assert_eq!(r["fee"], 100000u64);
+    assert_eq!(f.wallet.send(&r).unwrap()["amount"], "999900000");
+    let mut f = Fixture::new();
+    f.wallet.view.mining = true;
+    assert!(f.wallet.review(&"aa".repeat(32), "1", "0.001").is_err());
+    assert!(
+        f.wallet
+            .backup(&f._tmp.path().join("forbidden.key"))
+            .is_err()
+    );
+    assert!(
+        f.wallet
+            .open(
+                f.wallet.view.key.clone(),
+                "other:1".into(),
+                String::new(),
+                true
+            )
+            .is_err()
+    );
+    assert!(!f.wallet.view.key.exists());
+}
+#[test]
+fn mining_transfer_prefills_personal_address_and_still_requires_confirmation() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+    let mut f = Fixture::new();
+    f.wallet.view.mining = true;
+    f.wallet.view.personal_address = "bb".repeat(32);
+    let mut ui = ui::Ui::new(f.wallet.snapshot());
+    let size = Rect::new(0, 0, 80, 24);
+    let key = |k| KeyEvent::new(k, KeyModifiers::NONE);
+    assert!(ui.key(key(KeyCode::Char('T')), size).unwrap().is_none());
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| ui.draw(frame)).unwrap();
+    let screen = (0..24)
+        .map(|y| {
+            (0..80)
+                .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(screen.contains("Transfer mining rewards"));
+    assert!(screen.contains(&"bb".repeat(32)));
+    ui.key(key(KeyCode::Tab), size).unwrap();
+    ui.key(key(KeyCode::Char('1')), size).unwrap();
+    ui.key(key(KeyCode::Tab), size).unwrap();
+    ui.key(key(KeyCode::Tab), size).unwrap();
+    assert!(
+        matches!(ui.key(key(KeyCode::Enter),size).unwrap(),Some(ui::Action::Review(to,amount,_)) if to=="bb".repeat(32) && amount=="1")
+    );
+    ui.review = Some(f.review());
+    ui.test_confirm("");
+    assert!(ui.key(key(KeyCode::Enter), size).unwrap().is_none());
+    ui.test_confirm("SEND");
+    assert!(ui.key(key(KeyCode::Esc), size).unwrap().is_none());
+    assert!(
+        f.state
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .all(|c| c[0] != "prepare")
+    );
+}
+#[test]
+fn mining_receipt_migration_keeps_pending_transactions_and_locking() {
+    let mut f = Fixture::new();
+    f.sent();
+    let personal = f.wallet.store.data.clone();
+    let directory = f._tmp.path().join("mining-state");
+    let mut mining = Store::open(directory.clone()).unwrap();
+    mining.import_mining(&personal, &"aa".repeat(32)).unwrap();
+    assert_eq!(mining.data["receipts"], personal["receipts"]);
+    mining.import_mining(&personal, &"aa".repeat(32)).unwrap();
+    assert_eq!(mining.data["receipts"].as_array().unwrap().len(), 1);
+    assert!(mining.import_mining(&personal, &"bb".repeat(32)).is_err());
+    assert!(Store::open(directory).is_err());
+    assert_eq!(f.wallet.store.data, personal);
 }

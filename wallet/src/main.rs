@@ -1,11 +1,12 @@
 mod backend;
+mod mining;
 mod model;
 mod store;
 #[cfg(test)]
 mod tests;
 mod ui;
 use anyhow::{Context, Result, ensure};
-use backend::Backend;
+use backend::{Backend, Core};
 use clap::Parser;
 use model::{Wallet, address};
 use std::{io::IsTerminal, path::PathBuf};
@@ -36,6 +37,15 @@ struct Args {
     /// Offline interactive preview; no files, keys or network
     #[arg(long)]
     demo: bool,
+    /// Enable confirmed transfers from a local Docker miner; never exports its key
+    #[arg(long, requires="mining_address", conflicts_with_all=["wallet","watch","backend","demo","node"])]
+    mining_container: Option<String>,
+    /// Expected mining payout address; checked against the key before use
+    #[arg(long, requires = "mining_container")]
+    mining_address: Option<String>,
+    /// Personal wallet used to prefill the transfer recipient
+    #[arg(long, requires = "mining_container")]
+    personal_wallet: Option<PathBuf>,
 }
 pub fn expand(path: PathBuf) -> Result<PathBuf> {
     let path = if path.starts_with("~") {
@@ -63,6 +73,50 @@ fn run() -> Result<()> {
         return ui::demo();
     }
     let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?);
+    if let Some(container) = args.mining_container {
+        let expected = address(args.mining_address.as_deref().unwrap())?;
+        let personal =
+            mining::personal_state(&home.join(".local/share/constella-wallet-v5/state.json"))?;
+        let personal_key = expand(args.personal_wallet.unwrap_or_else(|| {
+            personal["config"]["wallet"]
+                .as_str()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".constella-testnet-v5/wallet.key"))
+        }))?;
+        let personal_address = if personal_key.exists() {
+            // Only the public address crosses the C key boundary.
+            Backend::new(None)?
+                .call(&[
+                    "address",
+                    personal_key
+                        .to_str()
+                        .context("Invalid personal wallet path")?,
+                ])
+                .ok()
+                .and_then(|v| v["address"].as_str().and_then(|a| address(a).ok()))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let mut store = Store::open(expand(args.state_dir.unwrap_or_else(|| {
+            home.join(".local/share/constella-wallet-mining-v5")
+                .join(&expected)
+        }))?)?;
+        store.import_mining(&personal, &expected)?;
+        let core = mining::MiningBackend::new(&container, &expected)?;
+        let peer = core.peer().to_owned();
+        let mut wallet = Wallet::new(
+            Box::new(core),
+            store,
+            PathBuf::from("/data/wallet.key"),
+            peer,
+            args.explorer
+                .unwrap_or_else(|| "https://explorer.catasterism.xyz".into()),
+            false,
+        );
+        wallet.connect_mining(&expected, personal_address)?;
+        return ui::run(wallet);
+    }
     let store = Store::open(expand(
         args.state_dir
             .unwrap_or_else(|| home.join(".local/share/constella-wallet-v5")),
@@ -104,9 +158,18 @@ fn run() -> Result<()> {
 }
 fn main() {
     #[cfg(feature = "embedded-core")]
-    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--wallet-core")) {
-        embedded_main();
-        return;
+    match std::env::args_os().nth(1).as_deref() {
+        Some(flag) if flag == "--wallet-core" => {
+            embedded_main(false);
+            return;
+        }
+        // The C resolver re-execs /proc/self/exe with an empty environment.
+        // Dispatch before Clap, terminal setup, or any wallet/key access.
+        Some(flag) if flag == "--resolve-seed" => {
+            embedded_main(true);
+            return;
+        }
+        _ => {}
     }
     if let Err(e) = run() {
         eprintln!("constella-wallet: {e:#}");
@@ -114,19 +177,27 @@ fn main() {
     }
 }
 #[cfg(feature = "embedded-core")]
-fn embedded_main() {
+fn embedded_main(resolver: bool) {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     unsafe extern "C" {
         fn constella_wallet_main(argc: libc::c_int, argv: *mut *mut libc::c_char) -> libc::c_int;
+        fn resolve_main(argc: libc::c_int, argv: *mut *mut libc::c_char) -> libc::c_int;
     }
     let args: Vec<CString> = std::env::args_os()
-        .skip(1)
+        .skip(if resolver { 0 } else { 1 })
         .map(|a| CString::new(a.as_bytes()).unwrap())
         .collect();
     let mut argv: Vec<*mut libc::c_char> = args.iter().map(|a| a.as_ptr().cast_mut()).collect();
     argv.push(std::ptr::null_mut());
     // Run only in the short-lived helper process. C owns key handling and never returns keys to Rust.
-    let code = unsafe { constella_wallet_main(args.len() as libc::c_int, argv.as_mut_ptr()) };
+    let code = unsafe {
+        libc::alarm(20);
+        if resolver {
+            resolve_main(args.len() as libc::c_int, argv.as_mut_ptr())
+        } else {
+            constella_wallet_main(args.len() as libc::c_int, argv.as_mut_ptr())
+        }
+    };
     unsafe {
         libc::fflush(std::ptr::null_mut());
     }

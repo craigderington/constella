@@ -119,6 +119,8 @@ pub struct Snapshot {
     pub node_error: String,
     pub history_error: String,
     pub watch: bool,
+    pub mining: bool,
+    pub personal_address: String,
     pub demo: bool,
 }
 impl Snapshot {
@@ -165,9 +167,30 @@ impl Wallet {
                 node_error: String::new(),
                 history_error: String::new(),
                 watch,
+                mining: false,
+                personal_address: String::new(),
                 demo: false,
             },
         }
+    }
+    pub fn connect_mining(&mut self, expected: &str, personal: String) -> Result<()> {
+        ensure!(
+            !self.view.watch && !self.view.demo,
+            "Watch-only mode cannot enable mining transfers"
+        );
+        let expected = address(expected)?;
+        let result = self.core.call(&["address", "/data/wallet.key"])?;
+        ensure!(
+            result["address"] == expected,
+            "Mining wallet address mismatch"
+        );
+        if !personal.is_empty() {
+            address(&personal)?;
+        }
+        self.view.address = expected;
+        self.view.mining = true;
+        self.view.personal_address = personal;
+        Ok(())
     }
     pub fn snapshot(&mut self) -> Snapshot {
         self.view.receipts = self.store.data["receipts"]
@@ -202,18 +225,29 @@ impl Wallet {
         create: bool,
     ) -> Result<()> {
         ensure!(
-            !self.view.watch && !self.view.demo,
-            "Watch-only/demo mode cannot open keys"
+            !self.view.watch && !self.view.demo && !self.view.mining,
+            "Open the personal wallet separately to create or open keys"
         );
         if create {
             private_dir(key.parent().context("Wallet path needs a parent")?)?;
+        } else {
+            match std::fs::symlink_metadata(&key) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    anyhow::bail!(
+                        "No wallet key exists here. Press Esc, then N to create a new wallet."
+                    );
+                }
+                Err(e) => return Err(e).context("Cannot inspect the wallet key path"),
+                Ok(_) => {}
+            }
         }
         let result = self.core.call(&[
             if create { "new" } else { "address" },
             key.to_str().context("Invalid wallet path")?,
         ])?;
         let addr = address(text(&result, "address"))?;
-        self.store.data["config"] = json!({"wallet":key,"peer":peer,"explorer":explorer});
+        self.store.data["config"] =
+            json!({"wallet":key,"peer":peer,"explorer":explorer,"address":addr});
         self.store.save()?;
         self.view.address = addr;
         self.view.key = key;
@@ -360,13 +394,19 @@ impl Wallet {
             .and_then(Value::as_str)
             .unwrap_or(recipient);
         let to = address(recipient.trim())?;
-        let n = amount(value.trim())?;
+        let all = self.view.mining && value.trim().eq_ignore_ascii_case("ALL");
+        let requested = if all {
+            None
+        } else {
+            Some(amount(value.trim())?)
+        };
         let fee = amount(fee.trim())?;
-        ensure!(n > 0, "Amount must be greater than zero");
-        let total = n
-            .checked_add(fee)
-            .context("Total exceeds supported range")?;
-        ensure!(fee <= n.min(COIN), "Fee exceeds the wallet safety limit");
+        if self.view.mining {
+            ensure!(
+                to != self.view.address,
+                "Choose a personal recipient address, not this mining wallet"
+            );
+        }
         ensure!(
             !self.unresolved(),
             "A saved transfer is still unverified. Check History; R retries that transaction."
@@ -376,6 +416,17 @@ impl Wallet {
             !self.unresolved(),
             "Peer state changed; verify the saved payment in History before sending"
         );
+        let n = match requested {
+            Some(n) => n,
+            None => number(&a["balance"])?
+                .checked_sub(fee)
+                .context("Balance does not cover the fee")?,
+        };
+        ensure!(n > 0, "Amount must be greater than zero");
+        let total = n
+            .checked_add(fee)
+            .context("Total exceeds supported range")?;
+        ensure!(fee <= n.min(COIN), "Fee exceeds the wallet safety limit");
         let nonce = number(&a["nonce"])?;
         ensure!(
             nonce == number(&a["next"])? && nonce < u64::MAX,
@@ -474,6 +525,10 @@ impl Wallet {
         Ok(self.store.data["receipts"][i].clone())
     }
     pub fn backup(&self, target: &Path) -> Result<()> {
+        ensure!(
+            !self.view.mining,
+            "Mining keys stay in their existing storage; this view cannot export them"
+        );
         self.spendable()?;
         self.core.call(&[
             "address",

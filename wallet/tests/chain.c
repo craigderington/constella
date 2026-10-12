@@ -1,5 +1,6 @@
 /* Disposable, real-PoW v5 wallet integration fixture. Seed is public test data. */
 #include "net.h"
+#include "resolve.h"
 #include "chain.h"
 #include "sieve.h"
 #include "tx.h"
@@ -24,6 +25,7 @@ static int mine(share_t *s, int minimum) {
     job_put(job); free(bitmap); return result;
 }
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "--resolve-seed")) return resolve_main(argc, argv);
     wallet_t wallet; uint8_t seed[32] = {0x42}; wallet_from_seed(&wallet, seed);
     share_t s = {0}; s.version = SHARE_VERSION; s.bits = GENESIS_BITS;
     s.time = GENESIS_TIME; s.rsv = NETWORK_MARKER;

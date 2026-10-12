@@ -101,25 +101,46 @@ impl Ui {
             self.form(
                 Kind::Send,
                 vec![
-                    ("Recipient address or contact", String::new()),
-                    ("Amount", String::new()),
+                    (
+                        "Recipient address or contact",
+                        if self.view.mining {
+                            self.view.personal_address.clone()
+                        } else {
+                            String::new()
+                        },
+                    ),
+                    (
+                        if self.view.mining {
+                            "Amount (or ALL minus fee)"
+                        } else {
+                            "Amount"
+                        },
+                        String::new(),
+                    ),
                     ("Fee", "0.001".into()),
                 ],
             );
         }
     }
     fn open_form(&mut self, create: bool) {
-        if self.view.watch || self.view.demo {
-            self.message = "Watch-only/demo mode does not access keys.".into();
+        if self.view.watch || self.view.demo || self.view.mining {
+            self.message = "Open the personal wallet separately to create or open keys.".into();
             return;
         }
         self.form(
             Kind::Open(create),
             vec![
-                ("Wallet key file", self.view.key.display().to_string()),
-                ("Node", self.view.peer.clone()),
                 (
-                    "Explorer (empty disables history)",
+                    if create {
+                        "New wallet key file"
+                    } else {
+                        "Existing wallet key file"
+                    },
+                    self.view.key.display().to_string(),
+                ),
+                ("Node (host:port)", self.view.peer.clone()),
+                (
+                    "Explorer URL (HTTPS; empty disables history)",
                     self.view.explorer.clone(),
                 ),
             ],
@@ -162,10 +183,11 @@ impl Ui {
             KeyCode::Char('q') => self.quitting = true,
             KeyCode::Char('r') if !self.view.demo => return Ok(Some(Action::Refresh)),
             KeyCode::Char('S' | 's') => self.send_form(),
+            KeyCode::Char('T' | 't') if self.view.mining => self.send_form(),
             KeyCode::Enter if self.tab == 1 => self.send_form(),
             KeyCode::Char('N' | 'n') => self.open_form(true),
             KeyCode::Char('O' | 'o') => self.open_form(false),
-            KeyCode::Char('B' | 'b') if self.can_spend() => {
+            KeyCode::Char('B' | 'b') if !self.view.mining && self.can_spend() => {
                 self.form(Kind::Backup, vec![("New backup file", String::new())])
             }
             KeyCode::Char('A' | 'a') if !self.view.demo => self.form(
@@ -330,6 +352,8 @@ impl Ui {
         .split(area);
         let mode = if self.view.demo {
             "  DEMO / OFFLINE"
+        } else if self.view.mining {
+            "  MINING WALLET"
         } else if self.view.watch {
             "  WATCH-ONLY"
         } else {
@@ -354,16 +378,25 @@ impl Ui {
             parts[0],
         );
         f.render_widget(
-            Tabs::new(["1 Overview", "2 Send", "3 Receive", "4 History"])
-                .select(self.tab)
-                .highlight_style(
-                    Style::default()
-                        .fg(BG)
-                        .bg(CYAN)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .style(Style::default().fg(MUTED))
-                .divider("   "),
+            Tabs::new([
+                "1 Overview",
+                if self.view.mining {
+                    "2 Transfer"
+                } else {
+                    "2 Send"
+                },
+                "3 Receive",
+                "4 History",
+            ])
+            .select(self.tab)
+            .highlight_style(
+                Style::default()
+                    .fg(BG)
+                    .bg(CYAN)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .style(Style::default().fg(MUTED))
+            .divider("   "),
             parts[1],
         );
         let body = Rect {
@@ -389,7 +422,14 @@ impl Ui {
         } else {
             match self.tab {
                 0 => {
-                    lines.push(Line::styled("BALANCE", Style::default().fg(MUTED)));
+                    lines.push(Line::styled(
+                        if self.view.mining {
+                            "MINING BALANCE"
+                        } else {
+                            "BALANCE"
+                        },
+                        Style::default().fg(MUTED),
+                    ));
                     lines.push(Line::styled(
                         self.view
                             .account
@@ -398,7 +438,11 @@ impl Ui {
                             .unwrap_or_else(|| "Connecting...".into()),
                         Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
                     ));
-                    lines.push(Line::from("testnet coins"));
+                    lines.push(Line::from(if self.view.mining {
+                        "T  Transfer mining rewards to a personal wallet"
+                    } else {
+                        "testnet coins"
+                    }));
                     lines.push(Line::from(""));
                     lines.push(Line::from(format!("Wallet   {}", self.view.address)));
                     lines.push(Line::from(format!(
@@ -435,15 +479,32 @@ impl Ui {
                 }
                 1 => {
                     lines.extend([
-                        Line::styled("Send testnet coins", Style::default().fg(CYAN)),
+                        Line::styled(
+                            if self.view.mining {
+                                "Transfer mining rewards"
+                            } else {
+                                "Send testnet coins"
+                            },
+                            Style::default().fg(CYAN),
+                        ),
                         Line::from(""),
-                        Line::from("S or Enter  Compose a payment"),
+                        Line::from(if self.view.mining {
+                            "T or Enter  Transfer to a personal wallet"
+                        } else {
+                            "S or Enter  Compose a payment"
+                        }),
                         Line::from(""),
                         Line::from("Review recipient, amount, fee and total before typing SEND."),
                         Line::from("Saved payments stay in History until inclusion is verified."),
                         Line::from(""),
                         Line::from("A  Add a contact; use its name as the recipient"),
                     ]);
+                    if self.view.mining {
+                        lines.push(Line::from(
+                            "Enter an amount or ALL to transfer the balance minus the fee.",
+                        ));
+                        lines.push(Line::styled(if self.view.personal_address.is_empty() { "Paste a personal Receive address or use a saved contact." } else { "Your personal receive address is prefilled; review it before sending." },Style::default().fg(GOLD)));
+                    }
                     if self.view.watch || self.view.demo {
                         lines.push(Line::styled(
                             "Signing is disabled in this mode.",
@@ -528,6 +589,10 @@ impl Ui {
             && self.view.node_error.is_empty();
         let status = if self.view.demo {
             "demo data (offline)"
+        } else if self.view.address.is_empty() {
+            "No wallet open - N: create / O: open"
+        } else if self.view.account_at.is_none() && self.view.node_error.is_empty() {
+            "Connecting to node..."
         } else if connected {
             "node connected"
         } else {
@@ -564,6 +629,8 @@ impl Ui {
                 Line::styled(
                     if self.form.is_some() {
                         "Tab: fields / action   Enter: continue   Ctrl-U: clear   Esc: cancel"
+                    } else if self.view.mining {
+                        "1-4 / Tab: screens   T: transfer rewards   r: refresh   C: copy   q: quit"
                     } else {
                         "1-4 / Tab: screens   r: refresh   S: send   C: copy   B: backup   q: quit"
                     },
@@ -606,7 +673,9 @@ impl Ui {
         );
         f.render_widget(Clear, rect);
         let title = match form.kind {
+            Kind::Send if self.view.mining => "Transfer mining rewards",
             Kind::Send => "Compose payment",
+            Kind::Confirm if self.view.mining => "Review mining reward transfer",
             Kind::Confirm => "Review your payment",
             Kind::Open(true) => "Create wallet",
             Kind::Open(false) => "Open wallet / settings",
@@ -624,9 +693,17 @@ impl Ui {
         {
             lines.extend([
                 Line::from(format!("Testnet v5   Chain {CHAIN}")),
-                Line::from("From:"),
+                Line::from(if self.view.mining {
+                    "From mining wallet:"
+                } else {
+                    "From:"
+                }),
                 Line::styled(text(r, "from").to_owned(), Style::default().fg(GOLD)),
-                Line::from("To:"),
+                Line::from(if self.view.mining {
+                    "To personal wallet / recipient:"
+                } else {
+                    "To:"
+                }),
                 Line::styled(text(r, "to").to_owned(), Style::default().fg(GOLD)),
                 Line::from(format!(
                     "Amount: {}",

@@ -1,0 +1,15 @@
+# Native ARM64 qualification in a disposable build container, never the miner.
+FROM rust:1.98.1-alpine@sha256:7cc1c22d77d9432f7fe012a70e6d3e555af54c2a6832700ed7d553f1769ae89f
+RUN apk add --no-cache build-base python3 binutils
+RUN rustup component add rustfmt clippy
+WORKDIR /work
+ENV CARGO_BUILD_JOBS=1
+ENV CARGO_BUILD_TARGET=aarch64-unknown-linux-musl
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=cc
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static"
+COPY src ./src
+COPY wallet ./wallet
+COPY Makefile ./Makefile
+RUN test "$(uname -m)" = aarch64
+# Run with explicit memory/CPU limits; copy the artifacts out only after exit 0.
+CMD ["sh", "-ec", "make wallet-test WALLET_TARGET=aarch64-unknown-linux-musl WALLET_LINKER=cc; cargo test --manifest-path wallet/Cargo.toml --locked --no-run --message-format=json > /work/wallet-test-artifacts.json"]

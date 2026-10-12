@@ -21,6 +21,9 @@ test_chain_storage
 bench_ledger
 constella-*-v4
 constella-data-*
+/wallet/target
+/wallet/tests/peer-test
+/wallet/tests/chain-test
 test_peer_budget
 test_node_work
 constella-*-v5

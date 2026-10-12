@@ -218,7 +218,7 @@ class BackendTests(unittest.TestCase):
         with (self.root / 'peer.log').open('w+') as log:
             p = subprocess.Popen([str(self.peer_binary), str(port)] + (['drop'] if drop else []), stdout=log, stderr=log)
             try:
-                peer = f'127.0.0.1:{port}'
+                peer = f'localhost:{port}'
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline:
                     if p.poll() is not None: self.fail('peer exited')
@@ -268,7 +268,7 @@ class BackendTests(unittest.TestCase):
         subprocess.run([helper, 'fund', fixture], check=True, timeout=120)
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
-        peer = f'127.0.0.1:{port}'
+        peer = f'localhost:{port}'
         env = {k: v for k, v in os.environ.items() if not k.startswith('CONSTELLA_')}
         env.update(CONSTELLA_DATA=str(data), CONSTELLA_PORT=str(port), CONSTELLA_MINE='0', CONSTELLA_PEERS='127.0.0.1:1')
         with (self.root / 'node.log').open('w') as log:

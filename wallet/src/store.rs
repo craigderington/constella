@@ -93,7 +93,7 @@ impl Store {
             _lock: None,
         }
     }
-    fn validate(v: &Value) -> Result<()> {
+    pub(crate) fn validate(v: &Value) -> Result<()> {
         ensure!(
             v["version"] == 1 && v["chain_id"] == CHAIN,
             "Wallet state belongs to a different network or version"
@@ -118,6 +118,44 @@ impl Store {
             );
         }
         Ok(())
+    }
+    pub fn import_mining(&mut self, personal: &Value, expected: &str) -> Result<()> {
+        address(expected)?;
+        ensure!(
+            self.data["mining_address"].is_null() || self.data["mining_address"] == expected,
+            "This receipt store belongs to another mining wallet"
+        );
+        if self.data["mining_imported"] == true {
+            return Ok(());
+        }
+        if !personal.as_object().is_some_and(|o| o.is_empty()) {
+            Self::validate(personal)?;
+        }
+        if let Some(receipts) = personal["receipts"].as_array() {
+            for receipt in receipts.iter().filter(|r| r["from"] == expected) {
+                if !self.data["receipts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|r| r["id"] == receipt["id"])
+                {
+                    self.data["receipts"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(receipt.clone());
+                }
+            }
+        }
+        if let Some(contacts) = personal["contacts"].as_object() {
+            for (k, v) in contacts {
+                if self.data["contacts"].get(k).is_none() {
+                    self.data["contacts"][k] = v.clone();
+                }
+            }
+        }
+        self.data["mining_address"] = json!(expected);
+        self.data["mining_imported"] = json!(true);
+        self.save()
     }
     pub fn save(&self) -> Result<()> {
         ensure!(self._lock.is_some(), "Demo cannot save state");

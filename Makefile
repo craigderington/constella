@@ -140,8 +140,12 @@ wallet-test: wallet constella-wallet-core constella-testnet-v5 wallet/tests/peer
 	cargo fmt --manifest-path wallet/Cargo.toml --check
 	cargo clippy --manifest-path wallet/Cargo.toml --locked --all-targets -- -D warnings
 	cargo test --manifest-path wallet/Cargo.toml --locked
-	CONSTELLA_WALLET_TEST_BINARY="$(abspath $(WALLET_BIN))" CONSTELLA_WALLET_TEST_CORE="$(abspath wallet/tests/embedded-core)" cargo test --manifest-path wallet/Cargo.toml --locked -- --ignored
+	CONSTELLA_WALLET_TEST_BINARY="$(abspath $(WALLET_BIN))" CONSTELLA_WALLET_TEST_CORE="$(abspath wallet/tests/embedded-core)" cargo test --manifest-path wallet/Cargo.toml --locked real_core_lost_ack -- --ignored
 	CONSTELLA_WALLET_TEST_BINARY="$(abspath $(WALLET_BIN))" CONSTELLA_WALLET_TEST_CORE="$(abspath wallet/tests/embedded-core)" python3 -B -m unittest discover -s wallet/tests -v
+
+# Explicit Docker integration: creates and removes only unique disposable fixtures.
+wallet-mining-test: wallet wallet/tests/peer-test
+	CONSTELLA_WALLET_TEST_BINARY="$(abspath $(WALLET_BIN))" python3 -B wallet/tests/mining_docker.py
 
 PREFIX ?= $(HOME)/.local
 wallet-install: wallet
@@ -152,4 +156,4 @@ clean:
 	rm -f constella test_constella thermal_sim constella-explorer gate_snapshot test_chain_storage bench_ledger test_peer_budget \
 	  constella-testnet-v4 constella-mainnet-v4 constella-explorer-testnet-v4 constella-explorer-mainnet-v4 test_node_work test_ledger_incremental constella-testnet-v5 constella-mainnet-v5 constella-explorer-testnet-v5 constella-explorer-mainnet-v5 constella-wallet-core wallet/tests/peer-test wallet/tests/chain-test
 
-.PHONY: all fast unit test size explorer explorer-test gate-test storage-test ledger-test clean protocol-test candidate-build peer-test node-work-test validator-test wallet wallet-stage1 wallet-test wallet-install
+.PHONY: all fast unit test size explorer explorer-test gate-test storage-test ledger-test clean protocol-test candidate-build peer-test node-work-test validator-test wallet wallet-stage1 wallet-test wallet-mining-test wallet-install

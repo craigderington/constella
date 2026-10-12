@@ -1,6 +1,7 @@
 /* One-shot wallet API. Never starts a node. Secret keys never cross stdout. */
 #include "net.h"
 #include "params.h"
+#include "resolve.h"
 #include "tx.h"
 #include "util.h"
 #include "vendor/monocypher.h"
@@ -75,6 +76,7 @@ static void transaction(const tx_t *t) {
 #define main constella_wallet_main
 #endif
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "--resolve-seed")) return resolve_main(argc, argv);
     if (argc == 2 && !strcmp(argv[1], "profile")) {
         uint8_t tag[8]; char chain[17]; tx_chain_id(tag); hex_enc(chain, tag, 8);
         printf("{\"ok\":true,\"api\":1,\"network\":\"testnet-v5\",\"chain_id\":\"%s\"}\n", chain);
