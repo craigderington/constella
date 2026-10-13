@@ -33,6 +33,19 @@ gate_snapshot: $(CORE) tests/gate_snapshot.c src/*.h
 gate-test: gate_snapshot
 	python3 tests/test_gate_snapshot.py
 
+checkpoint-client: deploy/monitoring/checkpoint-client
+
+deploy/monitoring/checkpoint-client: $(CORE) deploy/monitoring/checkpoint_client.c src/*.h
+	$(CC) $(CFLAGS) -DCONSTELLA_NETWORK=3 -Isrc -o deploy/monitoring/checkpoint-client $(CORE) deploy/monitoring/checkpoint_client.c $(LDFLAGS)
+
+checkpoint-fixture: deploy/monitoring/checkpoint-fixture
+
+deploy/monitoring/checkpoint-fixture: $(CORE) deploy/monitoring/checkpoint_fixture.c src/*.h
+	$(CC) $(CFLAGS) -DCONSTELLA_NETWORK=3 -Isrc -o deploy/monitoring/checkpoint-fixture $(CORE) deploy/monitoring/checkpoint_fixture.c $(LDFLAGS)
+
+checkpoint-test: checkpoint-client checkpoint-fixture constella-testnet-v5
+	python3 -B deploy/monitoring/test_checkpoint.py
+
 test_chain_storage: $(CORE) tests/test_chain_storage.c src/*.h
 	$(CC) $(CFLAGS) -Isrc -o $@ $(filter-out src/chain.c,$(CORE)) tests/test_chain_storage.c $(LDFLAGS)
 

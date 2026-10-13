@@ -21,6 +21,22 @@ block lands, P2Pool-style, instead of racing for blocks.
     CONSTELLA_DUTY=40 ./constella          # creates ./constella-data/wallet.key on first run
 
 ## Wallet
+
+For a keyboard-driven interface with balances, payment review, receiving and
+transaction history, build the standalone **Rust/Ratatui v5 testnet TUI**:
+
+```sh
+make wallet
+./constella-wallet
+```
+
+The release is one static musl executable; no Python, Docker or local miner is
+required. `./constella-wallet --demo` opens an offline
+preview. See [the wallet guide](wallet/README.md) for setup, NixOS, backups,
+watch-only accounts and interrupted-send recovery.
+
+The existing CLI remains available:
+
     constella wallet new                   # ~/.constella/wallet.key (or $CONSTELLA_KEY)
     constella wallet addr
     constella balance 127.0.0.1:7043 [addr]

@@ -1,0 +1,29 @@
+name: constella-public-v5-${V5_HOST:?set V5_HOST}
+services:
+  node:
+    image: ${NODE_IMAGE:?set qualified v5 image ID}
+    pull_policy: never
+    restart: unless-stopped
+    stop_grace_period: 60s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 1.0
+    mem_limit: 1g
+    pids_limit: 32
+    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+    tmpfs: ['/tmp:size=32m,mode=1777']
+    environment:
+      CONSTELLA_DATA: /data
+      CONSTELLA_PORT: '18473'
+      CONSTELLA_MINE: '0'
+      CONSTELLA_PRIVATE_NET: '1'
+      CONSTELLA_PEERS: '${NODE_PEERS:?set explicit v5 peers}'
+      CONSTELLA_ADVERTISE: '${LAN_IP:?set LAN_IP}:18473'
+    ports: ['${LAN_IP}:18473:18473']
+    volumes: [data:/data]
+    networks: [p2p]
+networks:
+  p2p: {}
+volumes:
+  data: {}

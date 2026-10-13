@@ -44,3 +44,5 @@ evidence-*.json
 
 # Native wallet build output
 /wallet/target/
+/deploy/monitoring/checkpoint-client
+/deploy/monitoring/checkpoint-fixture
