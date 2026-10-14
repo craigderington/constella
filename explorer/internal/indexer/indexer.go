@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/craig/constella/explorer/internal/consensus"
@@ -43,28 +44,77 @@ func New(s *store.Store, peer *p2p.Client) *Indexer {
 }
 
 func (x *Indexer) Load(ctx context.Context) error {
+	return x.LoadWithProgress(ctx, nil)
+}
+
+type LoadProgress struct {
+	Phase     string
+	Processed int
+	Total     int
+	Height    uint32
+}
+
+func (x *Indexer) LoadWithProgress(ctx context.Context, notify func(LoadProgress)) error {
+	started := time.Now()
+	var progress atomic.Pointer[LoadProgress]
+	progress.Store(&LoadProgress{Phase: "reading_history"})
+	report := func() {
+		p := *progress.Load()
+		log.Printf("indexer: startup %s; shares %d/%d; validated height %d; elapsed %s",
+			p.Phase, p.Processed, p.Total, p.Height, time.Since(started).Round(time.Second))
+		if notify != nil {
+			notify(p)
+		}
+	}
+	report()
+	stop, stopped := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				report()
+			}
+		}
+	}()
+	defer func() { close(stop); <-stopped; report() }()
 	raws, err := x.store.LoadRaw(ctx)
 	if err != nil {
 		return err
 	}
-	for _, r := range raws {
+	return x.loadRecords(ctx, raws, func(p LoadProgress) { progress.Store(&p) })
+}
+
+func (x *Indexer) loadRecords(ctx context.Context, raws [][]byte, progress func(LoadProgress)) error {
+	progress(LoadProgress{Phase: "validating_history", Total: len(raws)})
+	for i, r := range raws {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		m, err := proto.ParseMsg(r)
 		if err != nil {
 			return fmt.Errorf("invalid persisted share: %w", err)
 		}
-		if _, missing, err := x.chain.AddAt(m, 0); err != nil {
+		if _, _, err := x.chain.AddAt(m, 0); err != nil {
 			return fmt.Errorf("invalid persisted share: %w", err)
-		} else if missing != nil {
-			// Arrival order should be sufficient to connect every persisted
-			// record; an unresolved parent means the database is incomplete.
-			continue
 		}
+		// Orphaned records are counted as processed, but readiness still
+		// requires that every parent resolves before replay completes.
+		progress(LoadProgress{Phase: "validating_history", Processed: i + 1, Total: len(raws), Height: x.chain.Tip.Height})
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if n := x.chain.OrphanCount(); n != 0 {
 		return fmt.Errorf("%d persisted shares have missing parents", n)
 	}
 	log.Printf("indexer: loaded %d shares, height %d", len(raws), x.chain.Tip.Height)
 	x.dirty = true
+	progress(LoadProgress{Phase: "history_loaded", Processed: len(raws), Total: len(raws), Height: x.chain.Tip.Height})
 	return nil
 }
 

@@ -4,7 +4,6 @@ package web
 import (
 	"bytes"
 	"context"
-	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"html/template"
@@ -17,21 +16,22 @@ import (
 	"github.com/craig/constella/explorer/internal/store"
 )
 
-//go:embed templates/*.html
-var tfs embed.FS
-
 type Server struct {
 	st    *store.Store
 	pages map[string]*template.Template
+	ui    *UI
 }
 
 func New(st *store.Store) *Server {
-	s := &Server{st: st, pages: map[string]*template.Template{}}
-	for _, p := range []string{"overview", "share", "address", "records", "missing"} {
-		s.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).
-			ParseFS(tfs, "templates/layout.html", "templates/"+p+".html"))
+	ui, err := NewUI("")
+	if err != nil {
+		panic(err) // Embedded templates are validated by the build's tests.
 	}
-	return s
+	return NewWithUI(st, ui)
+}
+
+func NewWithUI(st *store.Store, ui *UI) *Server {
+	return &Server{st: st, pages: ui.current.pages, ui: ui}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -47,6 +47,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("GET /api/share/{id}", s.apiShare)
 	m.HandleFunc("GET /api/address/{addr}", s.apiAddress)
 	m.HandleFunc("GET /healthz", s.healthz)
+	m.HandleFunc("GET /assets/{version}/{name}", s.ui.asset)
 	return m
 }
 
@@ -113,12 +114,15 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name, title stri
 	case "2":
 		tmpl = "refresh"
 	}
-	if err := s.pages[name].ExecuteTemplate(&buf, tmpl, page{title, st, data}); err != nil {
+	bundle := s.ui.snapshot()
+	if err := bundle.pages[name].ExecuteTemplate(&buf, tmpl, page{title, st, data}); err != nil {
 		log.Printf("web: %s: %v", name, err)
 		http.Error(w, "render error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Explorer-UI", bundle.id)
 	w.WriteHeader(code)
 	w.Write(buf.Bytes())
 }

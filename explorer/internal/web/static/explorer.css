@@ -1,0 +1,117 @@
+:root {
+  --ink: #16324F; --deep: #0E2540; --chalk: #E8EEF2; --faded: #9FB4C7;
+  --star: #F4D35E; --alarm: #F28482; --rule: rgba(232, 238, 242, .14);
+  --band: #C9A6FF; --band-bg: rgba(160, 118, 249, .16); --band-rule: rgba(201, 166, 255, .3);
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  --mono: "Iosevka", "JetBrains Mono", "Berkeley Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html { background: var(--ink); color: var(--chalk); }
+body { margin: 0; font: 17px/1.55 var(--serif); }
+a { color: inherit; text-decoration-color: var(--rule); text-underline-offset: 3px; }
+a:hover { text-decoration-color: var(--star); }
+:focus-visible { outline: 2px solid var(--star); outline-offset: 2px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+/* network band: full-width status strip above the header, not a decoration.
+   Its hue (--band, violet) is kept distinct from .pulse's (--star/--alarm)
+   so the two never blur together. */
+.netband { background: var(--band-bg); border-bottom: 1px solid var(--band-rule); }
+.netband .wrap {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+  padding: 7px 24px; font-size: .85rem; line-height: 1.4;
+}
+.netband .net-name {
+  color: var(--band); font: 600 .78rem var(--mono); letter-spacing: .07em; text-transform: uppercase;
+}
+.netband .net-note { color: var(--chalk); }
+.netband .net-id { margin-left: auto; color: var(--faded); }
+.netband .net-id code { font: .82rem var(--mono); color: var(--band); }
+
+header.top { border-bottom: 1px solid var(--rule); }
+header.top .wrap {
+  display: grid; grid-template-columns: max-content 6.5rem max-content minmax(160px, 1fr) 21rem;
+  align-items: center; gap: 10px 14px; padding-block: 14px;
+}
+.brand { font-size: 1.35rem; letter-spacing: .01em; text-decoration: none; display: flex; align-items: center; gap: 10px; }
+.brand svg { width: 34px; height: 12px; }
+.netsel select {
+  background: var(--deep); color: var(--faded); border: 1px solid var(--rule); border-radius: 4px;
+  width: 100%; min-width: 0; padding: 4px 6px; font: .8rem var(--mono);
+}
+nav { display: flex; gap: 10px; }
+nav a { color: var(--faded); text-decoration: none; white-space: nowrap; }
+nav a:hover, nav a[aria-current] { color: var(--chalk); }
+form.search { min-width: 0; }
+form.search input {
+  width: 100%; background: var(--deep); color: var(--chalk); border: 1px solid var(--rule);
+  border-radius: 4px; padding: 8px 12px; font: 15px var(--mono);
+}
+form.search input::placeholder { color: var(--faded); opacity: .7; }
+.pulse { font-size: .9rem; color: var(--faded); }
+.pulse.bad { color: var(--alarm); }
+.pulse b { font: 500 .9rem var(--mono); color: var(--chalk); }
+#ledger-status { min-width: 0; text-align: right; line-height: 1.35; font-variant-numeric: tabular-nums; }
+#ledger-status time { display: inline-block; min-width: 7ch; }
+@media (max-width: 1080px) {
+  header.top .wrap { grid-template-columns: max-content 6.5rem minmax(0, 1fr); }
+  header.top nav { justify-self: end; }
+  form.search { grid-column: 1 / 3; }
+  #ledger-status { grid-column: 3; }
+}
+@media (max-width: 700px) {
+  header.top .wrap { grid-template-columns: minmax(0, 1fr) 6.5rem; }
+  header.top nav { grid-column: 1 / -1; justify-self: start; }
+  form.search, #ledger-status { grid-column: 1 / -1; }
+  #ledger-status { min-height: 2.7em; text-align: left; }
+}
+
+main { padding: 32px 0 64px; }
+main.wrap { padding-top: 4px; }
+h1 { font-weight: normal; font-size: 2rem; line-height: 1.2; margin: 0 0 6px; }
+h2 { font-weight: normal; font-size: 1.25rem; margin: 40px 0 12px; }
+.lede { color: var(--faded); margin: 0 0 24px; max-width: 64ch; }
+.mono, td.n, code { font-family: var(--mono); font-size: .88rem; }
+
+/* the chart: the one bold thing on the page */
+.hero { background: var(--deep); border: 1px solid var(--rule); border-radius: 6px; padding: 24px 28px 20px; }
+.chart { width: 100%; height: auto; display: block; margin: 8px 0 4px; }
+.chart .grat { stroke: var(--rule); stroke-width: 1; }
+.chart .link { stroke: var(--star); stroke-width: 1.5; stroke-dasharray: 400; stroke-dashoffset: 0;
+  animation: draw 900ms ease-out both; animation-delay: calc(var(--i) * 180ms); opacity: .8; }
+.chart .star { fill: var(--star); }
+.chart .halo { fill: var(--star); opacity: .12; }
+.chart .void { fill: none; stroke: var(--faded); stroke-width: 1.3; stroke-dasharray: 2 3; }
+.chart .lbl { fill: var(--faded); font: 15px var(--mono); text-anchor: middle; }
+.chart-note { margin: 0 0 12px; color: var(--faded); font-size: .8rem; }
+@media (max-width: 600px) { .chart .lbl { font-size: 30px; } }
+@keyframes draw { from { stroke-dashoffset: 400; } to { stroke-dashoffset: 0; } }
+.settled .chart .link { animation: none; }
+@media (prefers-reduced-motion: reduce) { .chart .link { animation: none; } }
+.pdigits { font: 15px/1.7 var(--mono); color: var(--faded); display: flex; flex-wrap: wrap; gap: 0 1ch; margin: 14px 0 0; word-break: break-all; }
+.pdigits span:first-child { color: var(--chalk); }
+.cert { color: var(--star); }
+
+.cols { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 48px; }
+@media (max-width: 880px) { .cols { grid-template-columns: 1fr; gap: 8px; } }
+
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-weight: normal; color: var(--faded); font-size: .85rem; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--rule); }
+td { padding: 7px 10px 7px 0; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+td.n, th.n { text-align: right; }
+tr.blk td:first-child { color: var(--star); }
+.scroll { overflow-x: auto; }
+.glyph { width: 70px; height: 10px; display: block; }
+.glyph .on { fill: var(--star); }
+.glyph .off { fill: none; stroke: var(--faded); stroke-width: 1; }
+
+dl.facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; }
+dl.facts dt { color: var(--faded); }
+dl.facts dd { margin: 0; font: .9rem/1.9 var(--mono); text-align: right; }
+.facts.wide dd { text-align: left; word-break: break-all; }
+
+.status { font-size: .85rem; color: var(--faded); }
+.status.applied { color: var(--chalk); }
+.status.skipped, .status.orphaned { color: var(--alarm); }
+.empty { color: var(--faded); padding: 24px 0; max-width: 60ch; }
+footer { border-top: 1px solid var(--rule); color: var(--faded); font-size: .85rem; padding: 18px 0 32px; }

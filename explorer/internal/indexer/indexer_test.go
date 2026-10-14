@@ -46,7 +46,8 @@ func TestAccountCheckBatchRotatesPastFirstPage(t *testing.T) {
 	}
 }
 
-func TestForkSyncCursorAdvancesWithoutCanonicalProgress(t *testing.T) {
+func replayFixture(t *testing.T) [][]byte {
+	t.Helper()
 	fixture := "sync-fork.v3"
 	if proto.ShareVersion >= 4 {
 		fixture = "sync-fork.testnet-v4"
@@ -80,6 +81,11 @@ func TestForkSyncCursorAdvancesWithoutCanonicalProgress(t *testing.T) {
 	if len(records) != 29 {
 		t.Fatalf("fixture has %d records, want 29", len(records))
 	}
+	return records
+}
+
+func TestForkSyncCursorAdvancesWithoutCanonicalProgress(t *testing.T) {
+	records := replayFixture(t)
 	// A closed database exercises the pending-write path without connecting
 	// anywhere. Validated sync progress must survive a failed raw insert.
 	db, err := sql.Open("postgres", "")
@@ -133,5 +139,64 @@ func TestAccountCheckBatchReturnsAllSmallLedgers(t *testing.T) {
 	got, pos := accountCheckBatch(addrs, 2, 64)
 	if len(got) != len(addrs) || pos != 0 {
 		t.Fatalf("small ledger batch len=%d pos=%d, want len=%d pos=0", len(got), pos, len(addrs))
+	}
+}
+
+func TestReplayProgressPreservesValidation(t *testing.T) {
+	records := replayFixture(t)
+	baseline := consensus.NewChain()
+	for _, raw := range records {
+		msg, err := proto.ParseMsg(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := baseline.AddAt(msg, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	x := New(nil, nil)
+	var progress []LoadProgress
+	if err := x.loadRecords(context.Background(), records, func(p LoadProgress) { progress = append(progress, p) }); err != nil {
+		t.Fatal(err)
+	}
+	if x.chain.Tip.ID != baseline.Tip.ID || x.chain.Len() != baseline.Len() || !x.dirty {
+		t.Fatal("replay changed validated state")
+	}
+	last := progress[len(progress)-1]
+	if last.Phase != "history_loaded" || last.Processed != len(records) || last.Total != len(records) || last.Height != baseline.Tip.Height {
+		t.Fatalf("bad completion: %+v", last)
+	}
+	for i, p := range progress[1 : len(progress)-1] {
+		if p.Processed != i+1 || p.Total != len(records) {
+			t.Fatalf("bad progress: %+v", p)
+		}
+	}
+}
+
+func TestReplayRejectsBadHistoryAndCancellation(t *testing.T) {
+	records := replayFixture(t)
+	for _, tc := range []struct {
+		name    string
+		records [][]byte
+		cancel  bool
+	}{
+		{"malformed", [][]byte{{1, 2, 3}}, false},
+		{"missing-parent", records[1:2], false},
+		{"cancelled", records, true},
+		{"cancelled-empty", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.cancel {
+				cancel()
+			}
+			x := New(nil, nil)
+			completed := false
+			err := x.loadRecords(ctx, tc.records, func(p LoadProgress) { completed = completed || p.Phase == "history_loaded" })
+			if err == nil || completed || x.dirty {
+				t.Fatalf("invalid/incomplete replay marked ready: %v", err)
+			}
+		})
 	}
 }

@@ -32,6 +32,9 @@ claude.md
 /docs/
 /tests/
 
+# Deployment files are maintained locally.
+/deploy/
+
 # Generated audit/run evidence is retained locally, not versioned.
 **/evidence/
 *-evidence.json
