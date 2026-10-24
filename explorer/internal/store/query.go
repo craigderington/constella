@@ -102,11 +102,18 @@ func scanClaims(rows *sql.Rows, err error) ([]ClaimRow, error) {
 	return out, rows.Err()
 }
 
-// TopClaims returns the best recent finds on the main chain, ranked by merit.
+// TopClaims returns the best finds on the main chain, ranked by merit.
+// Merit is g/(SciBits*ln(2)), so ordering by g preserves the rank and uses
+// claims_g. Rank narrow identifiers first: fetching every claim's prime and
+// other display fields before LIMIT makes the historical join much costlier.
 func (s *Store) TopClaims(ctx context.Context, limit int) ([]ClaimRow, error) {
-	return scanClaims(s.DB.QueryContext(ctx, `SELECT `+claimCols+` FROM claims c
-		JOIN shares sh ON sh.id = c.share_id
-		WHERE sh.on_main ORDER BY c.merit DESC, sh.height DESC LIMIT $1`, limit))
+	return scanClaims(s.DB.QueryContext(ctx, `WITH ranked AS MATERIALIZED (
+		SELECT c.uid, sh.height FROM claims c
+		JOIN shares sh ON sh.id = c.share_id WHERE sh.on_main
+		ORDER BY c.g DESC, sh.height DESC LIMIT $1
+	) SELECT `+claimCols+` FROM ranked r
+		JOIN claims c ON c.uid = r.uid JOIN shares sh ON sh.id = c.share_id
+		ORDER BY c.g DESC, r.height DESC`, limit))
 }
 
 func (s *Store) Stats(ctx context.Context) (*Stats, error) {
