@@ -71,7 +71,7 @@ def main():
     (args.out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     checksums=''.join(digest(path)+'  '+str(path.relative_to(args.out))+'\n' for path in sorted(args.out.rglob('*')) if path.is_file())
     (args.out/'SHA256SUMS').write_text(checksums)
-    archive=args.out.with_suffix('.tar.gz')
+    archive=Path(str(args.out)+'.tar.gz')
     with tarfile.open(archive,'w:gz') as tar:tar.add(args.out,arcname=args.out.name)
     print('Prepared',archive,'sha256='+digest(archive),'revision='+revision)
 if __name__=='__main__':main()
