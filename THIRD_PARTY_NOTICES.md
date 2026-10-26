@@ -16,7 +16,7 @@ third-party terms.
 - Container base images and compiler/runtime packages retain their own licenses.
   Image references are pinned in `release/build-inputs.json`; distributed images
   require their applicable notices and source obligations.
-- Static runtime notices for musl, Go and the GCC Runtime Library Exception are
+- Static runtime notices for musl, Go, Rust 1.98.1 and the GCC Runtime Library Exception are
   retained in `third_party/runtime/`. The scratch node and Explorer images carry
   their project and applicable runtime/dependency notices under `/licenses`.
 
