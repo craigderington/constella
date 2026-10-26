@@ -1,5 +1,10 @@
 # Constella Wallet
 
+Component v0.3.1 is part of the project v0.1 testnet release candidate. It updates
+the TLS/runtime lockfile; the v0.3.0 host installations described below are
+historical deployment evidence. See [release qualification](../docs/release-v0.1.md)
+for the candidate status.
+
 A standalone terminal wallet for **testnet v5**, chain `2094b0868a27b032`.
 No Docker or local miner is required. The C backend signs locally and talks to
 an authenticated v5 peer. The Rust/Ratatui TUI provides Overview,

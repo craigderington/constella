@@ -435,18 +435,18 @@ footer p{max-width:62ch}
 
     <div class="meter">
       <div class="m">
-        <div class="mv">162–178 KiB</div>
+        <div class="mv">≤192 KiB</div>
         <div class="mk">the whole binary</div>
         <p>Statically linked against <b>musl</b> and stripped. <span class="mono">ldd</span>
           reports “not a dynamic executable” — there is no libc to install, no runtime, no
-          interpreter. It is one file, and a build gate fails if it grows past 192 KiB. These are the tested x86 and ARM builds.</p>
+          interpreter. It is one file, with a 192 KiB node build gate. Release qualification checks each architecture separately.</p>
       </div>
       <div class="m">
-        <div class="mv">~59 MiB</div>
-        <div class="mk">resident memory</div>
-        <p>Observed container memory on the Nixos testnet miner with two workers, on 2 October
-          2026. Chain history, peers and replay affect usage. Budget disk and RAM separately
-          for the Explorer and its database.</p>
+        <div class="mv">~110–120 MiB</div>
+        <div class="mk">observed node memory</div>
+        <p>Observed testnet container memory around 400,000 shares on 24 October 2026,
+          not a permanent requirement. History is currently retained in RAM; usage and
+          restart time grow. Explorer and PostgreSQL need separate budgets.</p>
       </div>
       <div class="m">
         <div class="mv">SCHED_IDLE</div>
@@ -529,6 +529,10 @@ footer p{max-width:62ch}
         instructions; mining needs a real temperature sensor, while a validation-only node
         can follow the chain without one. Test coins have no monetary value.</p>
       <p><a href="https://github.com/craigderington/constella#readme">Source and node setup on GitHub ↗</a></p>
+      <p>At the four-second target, a year adds about 7.9 million shares. Disk-backed
+        history, bounded memory caches and faster verified restart are still development
+        work. Mainnet requires measured capacity and security review. Testnet will remain
+        a separate network for testing after mainnet launches.</p>
       <p>You can inspect the live chain before installing anything. The Explorer serves
         HTML to a browser and a text dashboard to a terminal:</p>
     </div>
@@ -549,9 +553,9 @@ curl -fsS https://explorer.catasterism.xyz/</pre>
       <div><dt>Share spacing</dt><dd>4 s target</dd></div>
       <div><dt>Payout</dt><dd>PPLNS over 256 shares</dd></div>
       <div><dt>Reward split</dt><dd>30% chain · 70% science</dd></div>
-      <div><dt>Node binary</dt><dd>162–178 KiB, static, musl</dd></div>
-      <div><dt>Resident memory</dt><dd>grows with chain history</dd></div>
-      <div><dt>Network</dt><dd>testnet · a8f4562e57e74f9d</dd></div>
+      <div><dt>Node binary</dt><dd>≤192 KiB, static, musl</dd></div>
+      <div><dt>Memory and storage</dt><dd>grow with retained history; long-term capacity work remains open</dd></div>
+      <div><dt>Network</dt><dd>testnet v5 · 2094b0868a27b032</dd></div>
     </dl>
   </section>
 

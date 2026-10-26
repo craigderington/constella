@@ -11,8 +11,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/craig/constella/explorer/internal/consensus"
-	"github.com/craig/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/consensus"
+	"github.com/craigderington/constella/explorer/internal/proto"
 )
 
 type queryer interface {

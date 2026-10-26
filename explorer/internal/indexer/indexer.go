@@ -13,10 +13,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/craig/constella/explorer/internal/consensus"
-	"github.com/craig/constella/explorer/internal/p2p"
-	"github.com/craig/constella/explorer/internal/proto"
-	"github.com/craig/constella/explorer/internal/store"
+	"github.com/craigderington/constella/explorer/internal/consensus"
+	"github.com/craigderington/constella/explorer/internal/p2p"
+	"github.com/craigderington/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/store"
 )
 
 type Indexer struct {

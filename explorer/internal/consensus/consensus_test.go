@@ -4,7 +4,7 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/craig/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/proto"
 )
 
 func TestScienceMatchesC(t *testing.T) {

@@ -1,82 +1,79 @@
-# Local 5-node testnet + explorer. Published on localhost only:
-#   node1 P2P 7043, explorer http://127.0.0.1:3071, postgres 5439.
-# Each node generates its own key in its volume (/data/wallet.key).
-#   docker compose up --build -d && docker compose logs -f
-#   docker compose exec node1 /constella wallet addr /data/wallet.key
-x-node: &node
-  image: constella:dev
+# Public v5 testnet. Separate project/volumes from historical v3 sandboxes.
+name: constella-testnet-v5
+x-runtime: &runtime
   restart: unless-stopped
-  cpus: 1.0
-  networks: [constella]
-
-x-env: &env
-  CONSTELLA_PORT: "7043"
-  CONSTELLA_THREADS: "2"
-  CONSTELLA_DUTY: "50"
-  CONSTELLA_BATTERY_PAUSE: "1"
-
+  stop_grace_period: 60s
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
 services:
-  node1:
-    <<: *node
-    build: .
-    ports: ["127.0.0.1:7043:7043"]
-    # CONSTELLA_ADVERTISE exercises the self-advertisement parse/resolve path
-    # (Task 10). node1:7043 resolves inside the compose network but lands on
-    # a container-private address, which addr_is_routable correctly refuses
-    # to store or gossip - this is here to prove the code path runs cleanly
-    # end to end, not to demonstrate real inbound reachability, which needs
-    # a publicly routable address.
-    environment: { <<: *env, CONSTELLA_ADVERTISE: "node1:7043" }
-    volumes: [node1:/data]
-  node2:
-    <<: *node
-    depends_on: [node1]
-    environment: { <<: *env, CONSTELLA_PEERS: "node1:7043" }
-    volumes: [node2:/data]
-  node3:
-    <<: *node
-    depends_on: [node1]
-    environment: { <<: *env, CONSTELLA_PEERS: "node1:7043,node2:7043" }
-    volumes: [node3:/data]
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    # Override EXPLORER_DB together with these values when using non-default
-    # credentials; the DSN must contain a URL-encoded password.
+  node:
+    <<: *runtime
+    image: constella-node:v0.1.0-rc.1
+    build:
+      context: .
+      args: {VCS_REF: '${VCS_REF:-unknown}', VERSION: '0.1.0-rc.1'}
+    cpus: 0.50
+    mem_limit: 512m
+    pids_limit: 32
+    read_only: true
+    tmpfs: ['/tmp:size=32m,mode=1777']
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-constella}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-constella}
-      POSTGRES_DB: ${POSTGRES_DB:-explorer}
-    ports: ["127.0.0.1:5439:5432"]
+      CONSTELLA_DATA: /data
+      CONSTELLA_PORT: '7043'
+      CONSTELLA_MINE: '0'
+      CONSTELLA_PRIVATE_NET: '0'
+      CONSTELLA_PEERS: '${NODE_PEERS:-explorer.catasterism.xyz:7043}'
+      CONSTELLA_ADVERTISE: '${NODE_ADVERTISE:-}'
+    ports: ['${P2P_BIND:-127.0.0.1}:${P2P_PORT:-7043}:7043']
+    volumes: [node-data:/data]
+    networks: [p2p]
+  postgres:
+    <<: *runtime
+    profiles: [explorer]
+    image: postgres:16-alpine@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36
+    cpus: 0.25
+    mem_limit: 384m
+    pids_limit: 128
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    environment:
+      POSTGRES_USER: constella
+      POSTGRES_DB: explorer_v5
+      POSTGRES_PASSWORD: '${TESTNET_DB_PASSWORD:-}'
+    command: [postgres, -c, max_connections=40, -c, shared_buffers=64MB]
     volumes: [pgdata:/var/lib/postgresql/data]
-    networks: [explorer-ui]
+    networks: [database]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U constella -d explorer"]
+      test: [CMD-SHELL, 'pg_isready -U constella -d explorer_v5']
       interval: 3s
       timeout: 3s
-      retries: 20
-
+      retries: 30
   explorer:
-    # Build context is the repo root, not ./explorer: the params.h drift
-    # guard needs src/params.h and src/science.h reachable inside the image
-    # (see explorer/Dockerfile). Building from ./explorer alone left those
-    # headers unreachable and the guard silently skipped in the shipped build.
+    <<: *runtime
+    profiles: [explorer]
+    image: constella-explorer:v0.1.0-rc.1
     build:
       context: .
       dockerfile: explorer/Dockerfile
-    image: constella-explorer:dev
-    restart: unless-stopped
-    depends_on:
-      postgres: { condition: service_healthy }
+      args: {VCS_REF: '${VCS_REF:-unknown}', VERSION: '0.1.0-rc.1'}
+    cpus: 0.50
+    mem_limit: '${EXPLORER_MEMORY:-1536m}'
+    memswap_limit: '${EXPLORER_MEMORY_SWAP:-2176m}'
+    pids_limit: 128
+    read_only: true
+    tmpfs: ['/tmp:size=16m,mode=1777']
     environment:
-      EXPLORER_NODE: node1:7043
-      EXPLORER_DB: ${EXPLORER_DB:-postgres://constella:constella@postgres:5432/explorer?sslmode=disable}
-      EXPLORER_HTTP: ":3071"
-    ports: ["127.0.0.1:3071:3071"]
-    networks: [constella, explorer-ui]
-
+      EXPLORER_NODE: node:7043
+      EXPLORER_DB: 'postgres://constella:${TESTNET_DB_PASSWORD:-}@postgres:5432/explorer_v5?sslmode=disable'
+      EXPLORER_HTTP: ':3071'
+    ports: ['127.0.0.1:${EXPLORER_HTTP_PORT:-3071}:3071']
+    depends_on:
+      postgres: {condition: service_healthy}
+      node: {condition: service_started}
+    networks: [p2p, database]
 networks:
-  constella: {}
-  explorer-ui: {}
-
-volumes: { node1: {}, node2: {}, node3: {}, pgdata: {} }
+  p2p: {}
+  database: {internal: true}
+volumes:
+  node-data: {}
+  pgdata: {}

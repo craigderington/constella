@@ -1,0 +1,312 @@
+{
+  "audit_baseline": "1ddebdff1526e39592ecc9e19643a9da2999c504",
+  "network": "testnet",
+  "protocol": 5,
+  "chain_id": "2094b0868a27b032",
+  "cloud_operator_observation": {
+    "recorded_at": "2026-10-24T19:11:02.987234+00:00",
+    "source": "Craig-pasted operator report; selected fields preserved, not a complete raw transcript",
+    "checkout_revision": "3e780f7537e246d4e5b4d2a17f8d227b775eb3d9",
+    "tracked_changes": [
+      "deploy/testnet-v5/compose.cloud.yml",
+      "explorer/internal/store/query.go"
+    ],
+    "containers": [
+      {
+        "role": "cloud-validator",
+        "image_id": "sha256:4b1b5ac48eecf1c2e82a0ddaed0b30175ffc2287d71f312ad7eeaa6ef0c4ff01",
+        "executable_sha256": "a3880ebc62be91d74855eac7f27f7ea3977875591caec427529e7f929dc062a3",
+        "bytes": 182608,
+        "mining": false,
+        "cpu": 0.5,
+        "memory_bytes": 402653184,
+        "memory_swap_bytes": 805306368,
+        "revision_label": null,
+        "running": true,
+        "oom": false,
+        "restarts": 0
+      },
+      {
+        "role": "cloud-explorer",
+        "image_id": "sha256:a01d22b02805e0de825634a48b135cb514ebbcaf585c1c9e63d82f24018bc89e",
+        "executable_sha256": "c4235e829ef7d4a4c4fe400d5923b3245f7f28c3fa9153f25dbe232d324f5610",
+        "bytes": 7876760,
+        "cpu": 0.5,
+        "memory_bytes": 1610612736,
+        "memory_swap_bytes": 2281701376,
+        "external_ui": false,
+        "http_binding": "127.0.0.1:3071",
+        "revision_label": null,
+        "running": true,
+        "oom": false,
+        "restarts": 0
+      },
+      {
+        "role": "cloud-postgres",
+        "image_id": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea",
+        "cpu": 0.25,
+        "memory_bytes": 402653184,
+        "memory_swap_bytes": 805306368,
+        "published_database_port": false,
+        "running": true,
+        "oom": false,
+        "restarts": 0
+      }
+    ],
+    "source_sha256_subset": {
+      "src/node.c": "3ba6b86f276ccfa41849aafd668634ffbc19e52d25472189abeb055727c29ae6",
+      "src/chain.c": "d4a98cab9d1141dbf9dc7d231a329622fcde51335f1fee15330aa991f815d99b",
+      "src/ledger.c": "4db0fd7546c88e3166658a07e3df15101581ef635d6c14a749fc86d10f17ec33",
+      "src/tx.c": "b8b1a185c1dceb24107084ed581b4ef69ef43363ffe7c0298717da039ae923a2",
+      "src/params.h": "7118b3de8af9029451cd68c19edeca9000df4f51be9b13a4982edde38f076d1f",
+      "explorer/internal/store/query.go": "1552ee97c001832f5503bb05acd49191cc9340abef5cae53d01bb2a0f83199e7",
+      "explorer/cmd/explorer/main.go": "86c4882947ddbf79916b76c73e19daa0358382a3514daa7322901ffcfb2aeb36",
+      "explorer/internal/indexer/indexer.go": "4eb2d6ab4c5c220e931f0942a0bf8b0da1dd6f83e299da5c24710cb7207cd213",
+      "explorer/internal/web/templates/layout.html": "dacae2bb8e300a17d3f0e6532d04ac4ea68815bcd66f4db88fdef2b58a28c4d2"
+    }
+  },
+  "homelab": [
+    {
+      "host_role": "nixos",
+      "recorded_at": "2026-10-24T20:03:37.542409+00:00",
+      "containers": [
+        {
+          "service": "node",
+          "image_id": "sha256:1d9b37e4d56bed3e46958bdf4fca1b8943ebbf2ed74f1c9d54024e0b414ae6bb",
+          "architecture": "amd64",
+          "executable": {
+            "path": "/constella",
+            "bytes": 182608,
+            "sha256": "a3880ebc62be91d74855eac7f27f7ea3977875591caec427529e7f929dc062a3"
+          },
+          "environment": {
+            "CONSTELLA_DUTY": "100",
+            "CONSTELLA_MINE": "1",
+            "CONSTELLA_PORT": "18473",
+            "CONSTELLA_PRIVATE_NET": "1",
+            "CONSTELLA_TEMP_MAX": "88",
+            "CONSTELLA_THREADS": "2"
+          },
+          "resources": {
+            "NanoCpus": 1000000000,
+            "Memory": 1073741824,
+            "MemorySwap": 2147483648,
+            "PidsLimit": 64,
+            "ReadonlyRootfs": true
+          },
+          "restart_count": 0,
+          "state": {
+            "Status": "running",
+            "Running": true,
+            "OOMKilled": false,
+            "StartedAt": "2009-01-01T00:00:36.199798201Z",
+            "ExitCode": 0
+          }
+        },
+        {
+          "service": "temperature",
+          "image_id": "sha256:791477a4039b24b07fbb1cf43ac8520b0fd54b9dbe10c5a55087dc357333222c",
+          "architecture": "amd64",
+          "executable": null,
+          "environment": {},
+          "resources": {
+            "NanoCpus": 50000000,
+            "Memory": 16777216,
+            "MemorySwap": 33554432,
+            "PidsLimit": 16,
+            "ReadonlyRootfs": true
+          },
+          "restart_count": 0,
+          "state": {
+            "Status": "running",
+            "Running": true,
+            "OOMKilled": false,
+            "StartedAt": "2009-01-01T00:00:36.201956962Z",
+            "ExitCode": 0
+          }
+        }
+      ],
+      "errors": []
+    },
+    {
+      "host_role": "mini",
+      "recorded_at": "2026-10-24T20:03:37.542768+00:00",
+      "containers": [
+        {
+          "service": "node",
+          "image_id": "sha256:0bd8f6f6c0194d81669fa485a1a7dc586e74fda32c183df4f9a95e25f48c0dec",
+          "architecture": "arm64",
+          "executable": {
+            "path": "/constella",
+            "bytes": 194704,
+            "sha256": "4dd39be593a416c1264779bd7d43ffedf0bc9a37d5e6c5ddd903670bd24797c9"
+          },
+          "environment": {
+            "CONSTELLA_DUTY": "100",
+            "CONSTELLA_MINE": "1",
+            "CONSTELLA_PORT": "18473",
+            "CONSTELLA_PRIVATE_NET": "1",
+            "CONSTELLA_TEMP_MAX": "80",
+            "CONSTELLA_THREADS": "2"
+          },
+          "resources": {
+            "NanoCpus": 1000000000,
+            "Memory": 1073741824,
+            "MemorySwap": 2147483648,
+            "PidsLimit": 64,
+            "ReadonlyRootfs": true
+          },
+          "restart_count": 0,
+          "state": {
+            "Status": "running",
+            "Running": true,
+            "OOMKilled": false,
+            "StartedAt": "2026-10-08T12:29:06.434777469Z",
+            "ExitCode": 0
+          }
+        },
+        {
+          "service": "temperature",
+          "image_id": "sha256:cfe918c30e4516969574bc1ab225f670eab4f733ddd849059012143f9c1cec7a",
+          "architecture": "arm64",
+          "executable": null,
+          "environment": {},
+          "resources": {
+            "NanoCpus": 50000000,
+            "Memory": 16777216,
+            "MemorySwap": 33554432,
+            "PidsLimit": 16,
+            "ReadonlyRootfs": true
+          },
+          "restart_count": 0,
+          "state": {
+            "Status": "running",
+            "Running": true,
+            "OOMKilled": false,
+            "StartedAt": "2026-10-06T12:20:43.466010229Z",
+            "ExitCode": 0
+          }
+        }
+      ],
+      "errors": []
+    },
+    {
+      "host_role": "wolf359",
+      "recorded_at": "2026-10-24T20:03:37.542347+00:00",
+      "containers": [
+        {
+          "service": "node",
+          "image_id": "sha256:1d9b37e4d56bed3e46958bdf4fca1b8943ebbf2ed74f1c9d54024e0b414ae6bb",
+          "architecture": "amd64",
+          "executable": {
+            "path": "/constella",
+            "bytes": 182608,
+            "sha256": "a3880ebc62be91d74855eac7f27f7ea3977875591caec427529e7f929dc062a3"
+          },
+          "environment": {
+            "CONSTELLA_DUTY": "100",
+            "CONSTELLA_MINE": "1",
+            "CONSTELLA_PORT": "18473",
+            "CONSTELLA_PRIVATE_NET": "1",
+            "CONSTELLA_TEMP_MAX": "88",
+            "CONSTELLA_THREADS": "2"
+          },
+          "resources": {
+            "NanoCpus": 1000000000,
+            "Memory": 1073741824,
+            "MemorySwap": 2147483648,
+            "PidsLimit": 64,
+            "ReadonlyRootfs": true
+          },
+          "restart_count": 0,
+          "state": {
+            "Status": "running",
+            "Running": true,
+            "OOMKilled": false,
+            "StartedAt": "2026-10-24T14:18:55.871369619Z",
+            "ExitCode": 0
+          }
+        },
+        {
+          "service": "temperature",
+          "image_id": "sha256:791477a4039b24b07fbb1cf43ac8520b0fd54b9dbe10c5a55087dc357333222c",
+          "architecture": "amd64",
+          "executable": null,
+          "environment": {},
+          "resources": {
+            "NanoCpus": 50000000,
+            "Memory": 16777216,
+            "MemorySwap": 33554432,
+            "PidsLimit": 16,
+            "ReadonlyRootfs": true
+          },
+          "restart_count": 0,
+          "state": {
+            "Status": "running",
+            "Running": true,
+            "OOMKilled": false,
+            "StartedAt": "2026-10-23T17:02:00.392454172Z",
+            "ExitCode": 0
+          }
+        }
+      ],
+      "errors": []
+    },
+    {
+      "host_role": "andromeda",
+      "recorded_at": "2026-10-24T20:03:37.542132+00:00",
+      "containers": [
+        {
+          "service": "node",
+          "image_id": "sha256:1d9b37e4d56bed3e46958bdf4fca1b8943ebbf2ed74f1c9d54024e0b414ae6bb",
+          "architecture": "amd64",
+          "executable": {
+            "path": "/constella",
+            "bytes": 182608,
+            "sha256": "a3880ebc62be91d74855eac7f27f7ea3977875591caec427529e7f929dc062a3"
+          },
+          "environment": {
+            "CONSTELLA_MINE": "0",
+            "CONSTELLA_PORT": "18473",
+            "CONSTELLA_PRIVATE_NET": "1"
+          },
+          "resources": {
+            "NanoCpus": 1000000000,
+            "Memory": 1073741824,
+            "MemorySwap": 2147483648,
+            "PidsLimit": 32,
+            "ReadonlyRootfs": true
+          },
+          "restart_count": 0,
+          "state": {
+            "Status": "running",
+            "Running": true,
+            "OOMKilled": false,
+            "StartedAt": "2026-10-24T14:18:57.124065311Z",
+            "ExitCode": 0
+          }
+        }
+      ],
+      "errors": []
+    }
+  ],
+  "allocation": {
+    "testnet_after_mainnet": [
+      "ASUS",
+      "NixOS"
+    ],
+    "proposed_mainnet": [
+      "Mini",
+      "Wolf359",
+      "Gliese518"
+    ],
+    "ASUS": "intentionally paused, not inspected as an active miner",
+    "Gliese518": "reserved; no active testnet node claimed"
+  },
+  "limitations": [
+    "Executable hashes identify the inspected binaries; old images have no source revision attestations.",
+    "Candidate release artifacts are newer and not deployed.",
+    "Configured-account checkpoint comparisons are not a complete independent ledger audit.",
+    "No production commands were run by the agent."
+  ]
+}

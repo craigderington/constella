@@ -7,8 +7,8 @@ import (
 	"errors"
 	"io"
 
-	"github.com/craig/constella/explorer/internal/blake2b"
-	"github.com/craig/constella/explorer/internal/signature"
+	"github.com/craigderington/constella/explorer/internal/blake2b"
+	"github.com/craigderington/constella/explorer/internal/signature"
 )
 
 // Consensus constants. params_test.go asserts these match ../src/params.h.

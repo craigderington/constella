@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/craig/constella/explorer/internal/store"
+	"github.com/craigderington/constella/explorer/internal/store"
 )
 
 func writeBundle(t *testing.T, root, name, marker string) string {

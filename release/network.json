@@ -1,0 +1,14 @@
+{
+  "network": "testnet",
+  "protocol_version": 5,
+  "chain_id": "2094b0868a27b032",
+  "wire_magic": "54355443",
+  "marker": 5,
+  "block_k": 5,
+  "genesis_bits": 384,
+  "genesis_time": 1790121600,
+  "chain_file": "shares.testnet-v5",
+  "bootstrap": "explorer.catasterism.xyz:7043",
+  "explorer": "https://explorer.catasterism.xyz",
+  "mainnet_approved": false
+}

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/craig/constella/explorer/internal/proto"
-	"github.com/craig/constella/explorer/internal/store"
+	"github.com/craigderington/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/store"
 )
 
 // Every page must render with realistic data and with empty data, no database needed.

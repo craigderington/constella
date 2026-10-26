@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/craig/constella/explorer/internal/store"
+	"github.com/craigderington/constella/explorer/internal/store"
 )
 
 // Embedded files keep existing installations working without a UI mount.

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/craig/constella/explorer/internal/blake2b"
-	"github.com/craig/constella/explorer/internal/consensus"
-	"github.com/craig/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/blake2b"
+	"github.com/craigderington/constella/explorer/internal/consensus"
+	"github.com/craigderington/constella/explorer/internal/proto"
 )
 
 var tupleNames = map[int]string{4: "quadruplet", 5: "quintuplet", 6: "sextuplet"}

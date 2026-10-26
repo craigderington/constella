@@ -8,7 +8,9 @@
 # of failing -- silently reporting a build gate that never ran. See
 # CONSTELLA_CI below: even if this path ever breaks again, the test is wired
 # to fail loudly here rather than skip.
-FROM golang:1.22-alpine AS build
+FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS build
+ARG VCS_REF=unknown
+ARG VERSION=0.1.0-rc.1
 WORKDIR /repo
 COPY src/params.h src/science.h src/net.h src/network_*.h ./src/
 COPY tests/fixtures/ ./tests/fixtures/
@@ -22,10 +24,21 @@ WORKDIR /repo/explorer
 # a hard failure when this is set, so a future refactor that breaks the COPY
 # paths above fails the build instead of silently skipping and passing.
 ENV CONSTELLA_CI=1
-RUN CGO_ENABLED=0 go test -mod=vendor ./... && \
-    CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o /explorer ./cmd/explorer
+RUN --network=none CGO_ENABLED=0 go test -count=1 -mod=vendor -tags protocolv5 ./... && \
+    CGO_ENABLED=0 go build -mod=vendor -tags protocolv5 -trimpath \
+      -ldflags="-s -w -X main.version=$VERSION -X main.revision=$VCS_REF" -o /explorer ./cmd/explorer
 
 FROM scratch
+ARG VCS_REF=unknown
+ARG VERSION=0.1.0-rc.1
+LABEL org.opencontainers.image.source="https://github.com/craigderington/constella" \
+      org.opencontainers.image.revision=$VCS_REF org.opencontainers.image.version=$VERSION
 COPY --from=build /explorer /explorer
+COPY LICENSE THIRD_PARTY_NOTICES.md /licenses/
+COPY third_party/runtime/go /licenses/go-runtime/
+COPY explorer/vendor/filippo.io/edwards25519/LICENSE /licenses/edwards25519/
+COPY explorer/vendor/github.com/lib/pq/LICENSE.md /licenses/lib-pq/
+COPY explorer/vendor/golang.org/x/crypto/LICENSE explorer/vendor/golang.org/x/crypto/PATENTS /licenses/x-crypto/
+COPY explorer/vendor/golang.org/x/sys/LICENSE explorer/vendor/golang.org/x/sys/PATENTS /licenses/x-sys/
 EXPOSE 3071
 ENTRYPOINT ["/explorer"]

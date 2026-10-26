@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/craig/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/proto"
 )
 
 var benchmarkLedger *Ledger

@@ -1,73 +1,122 @@
 name: CI
-
 on:
   push:
   pull_request:
-
 permissions:
   contents: read
-
 jobs:
-  protocol:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: explorer/go.mod
-          cache: false
-      - name: Check isolated network profiles and C/Go interoperability
-        run: make protocol-test
-
-  c:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run C tests and cross-checks
-        run: make test
-      - name: Enforce node size limit
-        run: make size
-
-  sanitizers:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
-      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run isolated C regressions with address and undefined-behavior checks
-        run: >-
-          make CC=clang
-          CFLAGS="-std=c11 -O1 -g -Wall -Wextra -D_GNU_SOURCE -pthread
-          -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
-          LDFLAGS="-pthread -fsanitize=address,undefined -lm"
-          test
-
-  explorer:
-    runs-on: ubuntu-latest
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16-alpine@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36
         env:
           POSTGRES_USER: constella
           POSTGRES_PASSWORD: constella
           POSTGRES_DB: explorer
-        ports:
-          - 5432:5432
+        ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U constella -d explorer"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
+          --health-interval 5s --health-timeout 5s --health-retries 30
     env:
+      CONSTELLA_CI: '1'
       EXPLORER_TEST_DB: postgres://constella:constella@127.0.0.1:5432/explorer?sslmode=disable
+      CARGO_BUILD_JOBS: '2'
+      RUSTUP_TOOLCHAIN: '1.98.1'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: explorer/go.mod
           cache: false
-      - name: Run Go vet and tests
-        run: make explorer-test
+      - name: Install native tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools clang binutils
+      - name: Use one matching Rust toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+          case "${{ runner.arch }}" in
+            ARM64) target=aarch64-unknown-linux-musl
+              echo 'LDFLAGS=-Wl,-z,max-page-size=4096' >> "$GITHUB_ENV"
+              echo 'OPT=-Os -fno-unwind-tables' >> "$GITHUB_ENV" ;;
+            X64) target=x86_64-unknown-linux-musl ;;
+            *) exit 1 ;;
+          esac
+          rustup target add --toolchain 1.98.1 "$target"
+          echo "WALLET_TARGET=$target" >> "$GITHUB_ENV"
+          cargo fetch --manifest-path wallet/Cargo.toml --locked
+      - name: Verify complete tracked release inputs
+        run: make release-check
+      - name: C, v5 Go, SQL, checkpoint and release safety tests
+        run: make release-test
+      - name: Five-profile protocol and crypto interoperability
+        run: make protocol-test
+      - name: Wallet and authenticated recovery tests
+        run: make wallet-test WALLET_TARGET="$WALLET_TARGET" WALLET_LINKER=musl-gcc
+      - name: Disposable Docker mining helper
+        run: make wallet-mining-test WALLET_TARGET="$WALLET_TARGET" WALLET_LINKER=musl-gcc
+      - name: Build public node, Explorer and real-temperature helper
+        run: |
+          export VCS_REF=$(git rev-parse HEAD)
+          docker compose --env-file /dev/null --profile explorer build node explorer
+          docker build -f deploy/public-testnet/Dockerfile.temperature -t constella-temperature:v0.1.0-rc.1 .
+          python3 tests/test_temperature_container.py
+      - name: Native artifacts and license/checksum bundle
+        run: |
+          node=$(docker create constella-node:v0.1.0-rc.1 --version)
+          docker cp "$node:/constella" ./constella-testnet-v5
+          docker rm "$node"
+          explorer=$(docker create constella-explorer:v0.1.0-rc.1 --version)
+          docker cp "$explorer:/explorer" ./constella-explorer
+          docker rm "$explorer"
+          python3 tools/package-release.py --out "dist/constella-0.1.0-rc.1-${{ runner.arch }}" \
+            --wallet "wallet/target/$WALLET_TARGET/release/constella-wallet"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: constella-testnet-${{ runner.arch }}
+          path: dist/
+          if-no-files-found: error
+  sanitizers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Address and undefined-behavior checks
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: >-
+          make CC=clang
+          CFLAGS="-std=c11 -O1 -g -Wall -Wextra -D_GNU_SOURCE -pthread
+          -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
+          LDFLAGS="-pthread -fsanitize=address,undefined -lm" test
+
+  security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - name: Locked Rust/module advisory inventory
+        run: python3 tools/dependency-audit.py --out release/local/dependencies.json --fail-on-rust-advisories
+      - name: Reachable Go vulnerability scan
+        run: |
+          GOBIN="$RUNNER_TEMP/security" go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          "$RUNNER_TEMP/security/govulncheck" -C explorer -tags=protocolv5 ./...
+      - name: Redacted reachable-history secret scan
+        run: python3 tools/secret-audit.py --out release/local/gitleaks.json

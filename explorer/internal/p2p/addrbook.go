@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/craig/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/proto"
 )
 
 // Routable mirrors src/addr.c's addr_is_routable exactly: loopback,

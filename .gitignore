@@ -24,16 +24,22 @@ test_peer_budget
 test_node_work
 test_ledger_incremental
 
-# Local agent guidance, documentation and tests.
+# Local agent guidance. Public documentation and regression tests belong in Git.
 AGENTS.md
 agents.md
 CLAUDE.md
 claude.md
-/docs/
-/tests/
 
-# Deployment files are maintained locally.
-/deploy/
+# Publish the generic testnet profile and checkpoint tools, not host-specific
+# configurations, historical deployment bundles, private env files or evidence.
+/deploy/*
+!/deploy/public-testnet/
+!/deploy/monitoring/
+/deploy/monitoring/*
+!/deploy/monitoring/checkpoint_client.c
+!/deploy/monitoring/checkpoint_fixture.c
+!/deploy/monitoring/checkpoint.py
+!/deploy/monitoring/test_checkpoint.py
 
 # Generated audit/run evidence is retained locally, not versioned.
 **/evidence/
@@ -49,3 +55,5 @@ evidence-*.json
 /wallet/target/
 /deploy/monitoring/checkpoint-client
 /deploy/monitoring/checkpoint-fixture
+/dist/
+/release/local/

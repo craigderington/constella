@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/craig/constella/explorer/internal/proto"
-	"github.com/craig/constella/explorer/internal/store"
+	"github.com/craigderington/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/store"
 )
 
 // TestWriteText confirms the curl dashboard renders the science-lane line and

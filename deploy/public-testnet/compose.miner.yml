@@ -1,0 +1,36 @@
+# Opt-in Linux miner. tools/miner.py starts held and verifies sync before release.
+# No automatic miner restart: a reboot requires a fresh sync/sensor check.
+services:
+  node:
+    restart: 'no'
+    cpus: 1.0
+    mem_limit: 1g
+    pids_limit: 64
+    environment:
+      CONSTELLA_MINE: '1'
+      CONSTELLA_ADDR: '${MINING_ADDRESS:?set a backed-up v5 testnet payout address}'
+      CONSTELLA_THREADS: '2'
+      CONSTELLA_DUTY: '${MINING_DUTY:-25}'
+      CONSTELLA_TEMP_MAX: '${TEMP_MAX:-80}'
+      CONSTELLA_BATTERY_PAUSE: '1'
+      CONSTELLA_TEMP_FILE: /thermal/mining_cpu_millidegrees
+    volumes: [thermal:/thermal:ro]
+  temperature:
+    image: constella-temperature:v0.1.0-rc.1
+    build:
+      context: .
+      dockerfile: deploy/public-testnet/Dockerfile.temperature
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    network_mode: none
+    cpus: 0.05
+    mem_limit: 16m
+    pids_limit: 16
+    environment:
+      SENSOR_NAME: '${SENSOR_NAME:?select the real Linux CPU sensor, e.g. coretemp or k10temp}'
+    volumes: [thermal:/thermal]
+    logging: {driver: json-file, options: {max-size: 1m, max-file: '2'}}
+volumes:
+  thermal: {}

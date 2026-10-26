@@ -3,7 +3,7 @@ package p2p
 import (
 	"testing"
 
-	"github.com/craig/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/proto"
 )
 
 func v4(a, b, c, d byte) [16]byte {

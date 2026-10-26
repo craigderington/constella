@@ -1,7 +1,9 @@
 [package]
 name = "constella-wallet"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/craigderington/constella"
 rust-version = "1.88"
 
 [features]

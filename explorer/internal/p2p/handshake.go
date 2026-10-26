@@ -21,7 +21,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/craig/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/proto"
 	"golang.org/x/crypto/curve25519"
 )
 

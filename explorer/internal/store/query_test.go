@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/craig/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/proto"
 )
 
 // The REAL display score must strictly preserve g's ordering throughout the

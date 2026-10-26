@@ -3,7 +3,7 @@ package consensus
 import (
 	"math/bits"
 
-	"github.com/craig/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/proto"
 )
 
 type Account struct {

@@ -5,6 +5,8 @@
 #include "params.h"
 #include "sieve.h"
 #include "util.h"
+#include "version.h"
+#include "tx.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +30,14 @@ static int usage(void) {
 
 int main(int argc, char **argv) {
     const char *cmd = argc > 1 ? argv[1] : NULL;
+    if (cmd && !strcmp(cmd, "--version") && argc == 2) {
+        uint8_t id[8]; char chain[17];
+        tx_chain_id(id); hex_enc(chain, id, sizeof id);
+        printf("constella %s protocol=%u network=%s chain=%s\n",
+               CONSTELLA_RELEASE_VERSION, (unsigned)SHARE_VERSION,
+               BLOCK_K == 5 ? "testnet" : "mainnet", chain);
+        return 0;
+    }
     if (cmd && !strcmp(cmd, "--resolve-seed")) return resolve_main(argc, argv);
     if (cmd && !strcmp(cmd, "wallet"))  return cli_wallet(argc, argv);
     if (cmd && !strcmp(cmd, "balance")) return cli_balance(argc, argv);

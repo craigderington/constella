@@ -1,4 +1,4 @@
-/* Isolated strict-signature candidate. Never reuse v3/v4 data. */
+/* Public v5 testnet with strict signatures. Never reuse v3/v4 data. */
 #define NETWORK_BLOCK_K 5
 #define SHARE_VERSION 5
 #define NET_MAGIC 0x54355443u

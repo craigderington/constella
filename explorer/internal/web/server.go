@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/craig/constella/explorer/internal/store"
+	"github.com/craigderington/constella/explorer/internal/store"
 )
 
 type Server struct {

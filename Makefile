@@ -13,7 +13,20 @@ CORE := src/blake2b.c src/bn.c src/share.c src/science.c src/tx.c src/wallet.c s
         src/miner.c src/chain.c src/ledger.c src/mempool.c src/resolve.c src/net.c src/util.c src/addr.c src/vendor/monocypher.c
 APP  := src/node.c src/cli.c src/main.c
 
-all: constella
+all: testnet
+
+# Public entry points select the running v5 testnet explicitly. The historical
+# `constella` target remains available to the v3 regression fixtures.
+testnet: constella-testnet-v5
+
+testnet-size: constella-testnet-v5
+	@sz=$$(stat -c %s constella-testnet-v5); echo "v5 node: $$sz bytes (limit $(SIZE_MAX_BYTES))"; test $$sz -le $(SIZE_MAX_BYTES)
+
+release-check:
+	python3 -B tools/release-check.py
+
+release-test: testnet test explorer-test checkpoint-test
+	python3 -B -m unittest discover -s tests -p test_release.py -v
 
 constella: $(CORE) $(APP) src/*.h
 	$(CC) $(CFLAGS) -o $@ $(CORE) $(APP) $(LDFLAGS)
@@ -88,16 +101,19 @@ size: constella
 	@sz=$$(stat -c %s constella); echo "constella: $$sz bytes (limit $(SIZE_MAX_BYTES))"; \
 	test $$sz -le $(SIZE_MAX_BYTES) || { echo "SIZE GATE FAILED"; exit 1; }
 
+EXPLORER_TAGS ?= protocolv5
+VCS_REF ?= $(shell git rev-parse --verify HEAD 2>/dev/null || echo unknown)
+
 explorer-test:
 # -count=1 is load-bearing, not caution. params_test.go is the C/Go drift
 # guard and it reads src/params.h and src/science.h with os.ReadFile at
 # runtime. Go's test cache tracks source, flags and env - not files a test
 # opens itself - so after a C-only header edit the cache serves the old
 # PASS and the guard reports success on a divergence it never looked at.
-	cd explorer && go vet -mod=vendor ./... && go test -count=1 -mod=vendor ./...
+	cd explorer && CONSTELLA_CI=1 go vet -mod=vendor -tags "$(EXPLORER_TAGS)" ./... && CONSTELLA_CI=1 go test -count=1 -mod=vendor -tags "$(EXPLORER_TAGS)" ./...
 
 explorer:
-	cd explorer && CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o ../constella-explorer ./cmd/explorer
+	cd explorer && CGO_ENABLED=0 go build -mod=vendor -tags "$(EXPLORER_TAGS)" -trimpath -ldflags="-s -w -X main.revision=$(VCS_REF)" -o ../constella-explorer ./cmd/explorer
 
 # Explicit opt-in candidates. Never overwrite the existing testnet executables.
 constella-testnet-v4: $(CORE) $(APP) src/*.h
@@ -133,8 +149,14 @@ WALLET_RUSTC ?= rustc
 WALLET_RUSTFLAGS ?= -C target-feature=+crt-static -C relocation-model=static
 WALLET_BIN = wallet/target/$(WALLET_TARGET)/release/constella-wallet
 
+ifeq ($(WALLET_TARGET),aarch64-unknown-linux-musl)
+WALLET_BUILD_ENV = CC_aarch64_unknown_linux_musl="$(WALLET_LINKER)" CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$(WALLET_LINKER)" CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="$(WALLET_RUSTFLAGS)"
+else ifeq ($(WALLET_TARGET),x86_64-unknown-linux-musl)
+WALLET_BUILD_ENV = CC_x86_64_unknown_linux_musl="$(WALLET_LINKER)" CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="$(WALLET_LINKER)" CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="$(WALLET_RUSTFLAGS)"
+endif
+
 wallet:
-	RUSTC="$(WALLET_RUSTC)" CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="$(WALLET_LINKER)" CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="$(WALLET_RUSTFLAGS)" cargo build --manifest-path wallet/Cargo.toml --locked --release --target $(WALLET_TARGET)
+	RUSTC="$(WALLET_RUSTC)" $(WALLET_BUILD_ENV) cargo build --manifest-path wallet/Cargo.toml --locked --release --target $(WALLET_TARGET)
 	@case "$(WALLET_TARGET)" in *-musl) sh wallet/check-static.sh "$(WALLET_BIN)";; esac
 	@echo "Run ./constella-wallet (or --demo for an offline preview)"
 
@@ -169,4 +191,4 @@ clean:
 	rm -f constella test_constella thermal_sim constella-explorer gate_snapshot test_chain_storage bench_ledger test_peer_budget \
 	  constella-testnet-v4 constella-mainnet-v4 constella-explorer-testnet-v4 constella-explorer-mainnet-v4 test_node_work test_ledger_incremental constella-testnet-v5 constella-mainnet-v5 constella-explorer-testnet-v5 constella-explorer-mainnet-v5 constella-wallet-core wallet/tests/peer-test wallet/tests/chain-test
 
-.PHONY: all fast unit test size explorer explorer-test gate-test storage-test ledger-test clean protocol-test candidate-build peer-test node-work-test validator-test wallet wallet-stage1 wallet-test wallet-mining-test wallet-install
+.PHONY: all testnet testnet-size release-check release-test fast unit test size explorer explorer-test gate-test storage-test ledger-test clean protocol-test candidate-build peer-test node-work-test validator-test wallet wallet-stage1 wallet-test wallet-mining-test wallet-install

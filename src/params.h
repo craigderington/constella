@@ -2,7 +2,7 @@
 #ifndef PARAMS_H
 #define PARAMS_H
 
-/* 0: existing testnet; 1/2: retained v4 profiles; 3/4: isolated v5 candidates.
+/* 0: legacy v3; 1/2: retained v4; 3: public v5 testnet; 4: mainnet candidate.
  * The historical -DBLOCK_K=6 switch must no longer select v3 shared history. */
 #ifndef CONSTELLA_NETWORK
 #if defined(BLOCK_K) && BLOCK_K == 6

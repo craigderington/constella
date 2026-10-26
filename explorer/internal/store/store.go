@@ -15,8 +15,8 @@ import (
 
 	"github.com/lib/pq"
 
-	"github.com/craig/constella/explorer/internal/consensus"
-	"github.com/craig/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/consensus"
+	"github.com/craigderington/constella/explorer/internal/proto"
 )
 
 //go:embed schema.sql

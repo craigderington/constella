@@ -10,8 +10,8 @@ import (
 
 	"github.com/lib/pq"
 
-	"github.com/craig/constella/explorer/internal/consensus"
-	"github.com/craig/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/consensus"
+	"github.com/craigderington/constella/explorer/internal/proto"
 )
 
 // The cache contains owned account values, not mutable ledger pointers. It is

@@ -5,8 +5,8 @@ import (
 	"math/bits"
 	"sync"
 
-	"github.com/craig/constella/explorer/internal/blake2b"
-	"github.com/craig/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/blake2b"
+	"github.com/craigderington/constella/explorer/internal/proto"
 )
 
 // SciEpoch returns the epoch a share at this height belongs to (sci_epoch in

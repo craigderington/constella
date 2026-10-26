@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/craig/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/proto"
 )
 
 func TestForeignNetworkDoesNotEnterOrphanPool(t *testing.T) {

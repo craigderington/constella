@@ -14,12 +14,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/craig/constella/explorer/internal/indexer"
-	"github.com/craig/constella/explorer/internal/p2p"
-	"github.com/craig/constella/explorer/internal/proto"
-	"github.com/craig/constella/explorer/internal/store"
-	"github.com/craig/constella/explorer/internal/web"
+	"github.com/craigderington/constella/explorer/internal/indexer"
+	"github.com/craigderington/constella/explorer/internal/p2p"
+	"github.com/craigderington/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/store"
+	"github.com/craigderington/constella/explorer/internal/web"
 )
+
+var version = "0.1.0-rc.1"
+var revision = "unknown"
 
 func env(k, d string) string {
 	if v := os.Getenv(k); v != "" {
@@ -30,8 +33,14 @@ func env(k, d string) string {
 
 func main() {
 	log.SetFlags(log.Ltime)
+	showVersion := flag.Bool("version", false, "print release and network identity without opening a database")
 	checkUI := flag.String("check-ui", "", "validate a presentation directory without connecting to a database or node")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("constella-explorer %s protocol=%d network=%s chain=%s revision=%s\n",
+			version, proto.ShareVersion, proto.NetworkName(), proto.ChainIDHex(), revision)
+		return
+	}
 	if *checkUI != "" {
 		if _, err := web.NewUI(*checkUI); err != nil {
 			log.Fatalf("UI validation: %v", err)

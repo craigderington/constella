@@ -5,8 +5,8 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/craig/constella/explorer/internal/proto"
-	"github.com/craig/constella/explorer/internal/store"
+	"github.com/craigderington/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/store"
 )
 
 // writeText is the curl dashboard: `curl localhost:3071`.

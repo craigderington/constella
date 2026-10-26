@@ -1,0 +1,4 @@
+#ifndef CONSTELLA_VERSION_H
+#define CONSTELLA_VERSION_H
+#define CONSTELLA_RELEASE_VERSION "0.1.0-rc.1"
+#endif

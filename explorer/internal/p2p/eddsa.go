@@ -30,7 +30,7 @@ package p2p
 import (
 	"crypto/subtle"
 	"errors"
-	"github.com/craig/constella/explorer/internal/signature"
+	"github.com/craigderington/constella/explorer/internal/signature"
 
 	"filippo.io/edwards25519"
 	"golang.org/x/crypto/blake2b"

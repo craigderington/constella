@@ -6,7 +6,7 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/craig/constella/explorer/internal/proto"
+	"github.com/craigderington/constella/explorer/internal/proto"
 )
 
 type Node struct {

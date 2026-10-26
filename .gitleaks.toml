@@ -1,0 +1,27 @@
+# Public deterministic P2P test vectors, not credentials. Match exact derived
+# 32-byte values AND their test paths; never suppress entire files/rules.
+[extend]
+useDefault = true
+[[allowlists]]
+description = "Deterministic transport keys from public interoperability vectors"
+condition = "AND"
+regexTarget = "secret"
+paths = [
+  '''(^|/)tests/fixtures/network-profiles\.json$''',
+  '''(^|/)explorer/internal/p2p/(transport|handshake)_test\.go$''',
+]
+regexes = [
+  '''^272167ef59a047be10a9180e8ae3f07509413099a5d4ad0e120f13f82a415c89$''',
+  '''^295f6812b443b4f6bb49fadc7c96351db5be628952a7e4f107768de6487ca31e$''',
+  '''^311711f6ca5d7cb05914bf65fec9f106a3fc86d6614a4c6d86b34999d212b3ad$''',
+  '''^31c3bf21a5008f83af85ad0e81881a26e466c79d4d749d5ecd5b2308d12eaec1$''',
+  '''^64e678befc6f30cc634c3fab917765710082860242940aab5efa6e61fe321938$''',
+  '''^6d66ba6be4ed702e831b1c892f516c4c78306abd11609b42a5c406f96026e9bb$''',
+  '''^8010995c722971ab450673e83c81ef9730f0840d5366e9f20f83745bb22a1069$''',
+  '''^9f9663b9418847d9237137343257ca6af863cfc0dba4a0325712b943aa54566a$''',
+  '''^a4023e0eee09ceca3568415ebe665d7d8efe55bf3233f008aa8c42c729cbbb12$''',
+  '''^c4afcebefb54c3f0c50b62ed7e07952ae5143647bb8ba8f6f3e39367f6ead244$''',
+  '''^d5a5728d5e20d39750c6c0a995a2431ae2a78ab4b77bcdcc055f48300829288d$''',
+  '''^e267cd603f4c9e72797c67a49a384b2fd18f41ba87974d76859f2a51332167fd$''',
+  '''^ed75360a0773d9173f63ddc4e9102613d1059f4259f6ee7ff221f51b39c82c85$''',
+]
