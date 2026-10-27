@@ -35,7 +35,10 @@ type Ledger struct {
 	SciPaid    uint64
 	SciClaims  uint32
 	SciPayouts []Payout
-	SciPayable map[TxKey]bool // one entry per (share, claim index), set once, never cleared
+	SciPayable map[TxKey]bool // historical in Build; batch-only in incremental updates
+	// A prepared incremental update owns only changed accounts. Reads fall
+	// through to the committed ledger; acct copies before any mutation.
+	base *Ledger
 }
 
 func addBalance(a *Account, v uint64) {
@@ -55,7 +58,11 @@ func addEarned(a *Account, v uint64) {
 func (l *Ledger) acct(a proto.Hash) *Account {
 	x := l.Accounts[a]
 	if x == nil {
-		x = &Account{Addr: a}
+		if l.base != nil && l.base.Accounts[a] != nil {
+			x = new(*l.base.Accounts[a])
+		} else {
+			x = &Account{Addr: a}
+		}
 		l.Accounts[a] = x
 	}
 	return x
@@ -63,6 +70,9 @@ func (l *Ledger) acct(a proto.Hash) *Account {
 
 func (l *Ledger) applyTx(t *proto.Tx, miner proto.Hash) bool {
 	f := l.Accounts[t.From]
+	if f == nil && l.base != nil {
+		f = l.base.Accounts[t.From]
+	}
 	if f == nil || t.Amount == 0 || t.Nonce != f.Nonce || f.Nonce == ^uint64(0) {
 		return false
 	}
@@ -72,6 +82,7 @@ func (l *Ledger) applyTx(t *proto.Tx, miner proto.Hash) bool {
 	if l.Txs == ^uint64(0) {
 		return false
 	}
+	f = l.acct(t.From)
 	to := l.acct(t.To)
 	var m *Account
 	if t.Fee > 0 {

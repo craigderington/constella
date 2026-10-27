@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"slices"
 
 	"github.com/lib/pq"
 
@@ -17,12 +16,12 @@ import (
 // The cache contains owned account values, not mutable ledger pointers. It is
 // published only after COMMIT and never persisted as a source of truth.
 type stateCache struct {
-	path     []*consensus.Node
+	tip      *consensus.Node
 	accounts map[proto.Hash]consensus.Account
 }
 
 func stateSnapshot(path []*consensus.Node, l *consensus.Ledger) *stateCache {
-	s := &stateCache{path: slices.Clone(path), accounts: make(map[proto.Hash]consensus.Account, len(l.Accounts))}
+	s := &stateCache{tip: path[len(path)-1], accounts: make(map[proto.Hash]consensus.Account, len(l.Accounts))}
 	for key, account := range l.Accounts {
 		s.accounts[key] = *account
 	}
@@ -54,7 +53,7 @@ func (s *Store) ApplyState(ctx context.Context, path []*consensus.Node, l *conse
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if actual != hex.EncodeToString(base.path[len(base.path)-1].ID[:]) {
+		if actual != hex.EncodeToString(base.tip.ID[:]) {
 			base = nil
 		}
 	}
@@ -88,14 +87,25 @@ func shareIDs(path []*consensus.Node) pq.ByteaArray {
 }
 
 func applyDelta(ctx context.Context, tx *sql.Tx, old *stateCache, path []*consensus.Node, l *consensus.Ledger) error {
-	common := min(len(old.path), len(path))
-	for common > 0 && old.path[common-1].ID != path[common-1].ID {
-		common--
+	a, b := old.tip, path[len(path)-1]
+	for a != nil && b != nil && a.Height > b.Height {
+		a = a.Parent
 	}
-	if common == 0 {
+	for a != nil && b != nil && b.Height > a.Height {
+		b = b.Parent
+	}
+	for a != nil && b != nil && a.ID != b.ID {
+		a, b = a.Parent, b.Parent
+	}
+	if a == nil || b == nil {
 		return fmt.Errorf("derived state changed genesis")
 	}
-	detached, attached := shareIDs(old.path[common:]), shareIDs(path[common:])
+	var removedNodes []*consensus.Node
+	for n := old.tip; n.ID != a.ID; n = n.Parent {
+		removedNodes = append(removedNodes, n)
+	}
+	common := int(a.Height) + 1
+	detached, attached := shareIDs(removedNodes), shareIDs(path[common:])
 	if len(detached) > 0 {
 		for _, query := range []string{
 			`UPDATE shares SET on_main=false WHERE id=ANY($1) AND on_main`,

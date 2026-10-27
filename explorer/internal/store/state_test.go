@@ -142,7 +142,7 @@ func TestIncrementalStateTransactions(t *testing.T) {
 	if !reflect.DeepEqual(before, stateDump(t, s.DB)) {
 		t.Fatal("failed transaction exposed partial state")
 	}
-	if s.state.path[len(s.state.path)-1].ID != c.ID {
+	if s.state.tip.ID != c.ID {
 		t.Fatal("failed transaction advanced cache")
 	}
 	if _, err := s.DB.ExecContext(ctx, `DROP TRIGGER reject_tip ON meta; DROP FUNCTION reject_state_tip()`); err != nil {

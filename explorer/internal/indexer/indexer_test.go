@@ -30,6 +30,35 @@ func TestFailedFlushKeepsPublishedLedger(t *testing.T) {
 	}
 }
 
+func TestFailedAppendKeepsPublishedAccountsAndContext(t *testing.T) {
+	db, err := sql.Open("postgres", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	x := New(&store.Store{DB: db}, p2p.New("unused:7043"))
+	x.accounting, err = consensus.NewAccumulator(x.chain.Genesis, consensus.Build(x.chain.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	x.ledger = x.accounting.Ledger()
+	published := x.ledger
+	msg, err := proto.ParseMsg(replayFixture(t)[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, missing, err := x.chain.AddAt(msg, 0); err != nil || missing != nil {
+		t.Fatalf("fixture: %v missing %v", err, missing)
+	}
+	x.dirty = true
+	x.flush(t.Context())
+	if x.ledger != published || len(x.ledger.Accounts) != 0 || x.accounting.Tip() != x.chain.Genesis || !x.dirty {
+		t.Fatal("failed append changed published accounting or advanced its reward context")
+	}
+}
+
 func TestAccountCheckBatchRotatesPastFirstPage(t *testing.T) {
 	addrs := make([]proto.Hash, 130)
 	for i := range addrs {

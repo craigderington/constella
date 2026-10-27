@@ -74,22 +74,45 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	return &Store{DB: db}, nil
 }
 
-// LoadRaw returns stored share messages in arrival order.
-func (s *Store) LoadRaw(ctx context.Context) ([][]byte, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT raw FROM shares ORDER BY seq`)
+// StreamRaw verifies an ordered, consistent history snapshot without first
+// accumulating every raw message and its slice index in a second input list.
+// The callback owns each scanned byte slice; sql.Rows buffers are not borrowed.
+func (s *Store) StreamRaw(ctx context.Context, visit func([]byte, int, int) error) (int, error) {
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
-		return nil, err
+		return 0, err
+	}
+	defer tx.Rollback()
+	var total int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM shares`).Scan(&total); err != nil {
+		return 0, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT raw FROM shares ORDER BY seq`)
+	if err != nil {
+		return 0, err
 	}
 	defer rows.Close()
-	var out [][]byte
+	processed := 0
 	for rows.Next() {
 		var b []byte
 		if err := rows.Scan(&b); err != nil {
-			return nil, err
+			return processed, err
 		}
-		out = append(out, b)
+		processed++
+		if err := visit(b, processed, total); err != nil {
+			return processed, err
+		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return processed, err
+	}
+	if err := rows.Close(); err != nil {
+		return processed, err
+	}
+	if processed != total {
+		return processed, fmt.Errorf("history snapshot has %d records, expected %d", processed, total)
+	}
+	return processed, tx.Commit()
 }
 
 func uid(share proto.Hash, i int) []byte { return append(append([]byte{}, share[:]...), byte(i)) }

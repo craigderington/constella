@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -24,6 +25,7 @@ type Indexer struct {
 	store         *store.Store
 	peer          *p2p.Client
 	ledger        *consensus.Ledger
+	accounting    *consensus.Accumulator
 	dirty         bool
 	pendingShares []*consensus.Node
 	lastReq       time.Time
@@ -82,39 +84,56 @@ func (x *Indexer) LoadWithProgress(ctx context.Context, notify func(LoadProgress
 		}
 	}()
 	defer func() { close(stop); <-stopped; report() }()
-	raws, err := x.store.LoadRaw(ctx)
+	processed, err := x.store.StreamRaw(ctx, func(raw []byte, processed, total int) error {
+		if err := x.loadRecord(ctx, raw); err != nil {
+			return err
+		}
+		progress.Store(&LoadProgress{Phase: "validating_history", Processed: processed, Total: total, Height: x.chain.Tip.Height})
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	return x.loadRecords(ctx, raws, func(p LoadProgress) { progress.Store(&p) })
+	return x.finishReplay(ctx, processed, func(p LoadProgress) { progress.Store(&p) })
 }
 
 func (x *Indexer) loadRecords(ctx context.Context, raws [][]byte, progress func(LoadProgress)) error {
 	progress(LoadProgress{Phase: "validating_history", Total: len(raws)})
 	for i, r := range raws {
-		if err := ctx.Err(); err != nil {
+		if err := x.loadRecord(ctx, r); err != nil {
 			return err
-		}
-		m, err := proto.ParseMsg(r)
-		if err != nil {
-			return fmt.Errorf("invalid persisted share: %w", err)
-		}
-		if _, _, err := x.chain.AddAt(m, 0); err != nil {
-			return fmt.Errorf("invalid persisted share: %w", err)
 		}
 		// Orphaned records are counted as processed, but readiness still
 		// requires that every parent resolves before replay completes.
 		progress(LoadProgress{Phase: "validating_history", Processed: i + 1, Total: len(raws), Height: x.chain.Tip.Height})
 	}
+	return x.finishReplay(ctx, len(raws), progress)
+}
+
+func (x *Indexer) loadRecord(ctx context.Context, raw []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m, err := proto.ParseMsg(raw)
+	if err != nil {
+		return fmt.Errorf("invalid persisted share: %w", err)
+	}
+	if _, _, err := x.chain.AddAt(m, 0); err != nil {
+		return fmt.Errorf("invalid persisted share: %w", err)
+	}
+	return nil
+}
+
+func (x *Indexer) finishReplay(ctx context.Context, total int, progress func(LoadProgress)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if n := x.chain.OrphanCount(); n != 0 {
 		return fmt.Errorf("%d persisted shares have missing parents", n)
 	}
-	log.Printf("indexer: loaded %d shares, height %d", len(raws), x.chain.Tip.Height)
+	log.Printf("indexer: loaded %d shares, height %d", total, x.chain.Tip.Height)
 	x.dirty = true
-	progress(LoadProgress{Phase: "history_loaded", Processed: len(raws), Total: len(raws), Height: x.chain.Tip.Height})
+	progress(LoadProgress{Phase: "history_loaded", Processed: total, Total: total, Height: x.chain.Tip.Height})
 	return nil
 }
 
@@ -176,8 +195,6 @@ func (x *Indexer) flush(ctx context.Context) {
 	if !x.dirty {
 		return
 	}
-	path := x.chain.Path()
-	ledger := consensus.Build(path)
 	if len(x.pendingShares) > 0 {
 		if err := x.store.InsertShares(ctx, x.pendingShares); err != nil {
 			log.Printf("indexer: retry insert: %v", err)
@@ -185,8 +202,50 @@ func (x *Indexer) flush(ctx context.Context) {
 		}
 		x.pendingShares = nil
 	}
+	if x.accounting != nil {
+		u, err := x.accounting.Prepare(x.chain.Tip)
+		if err == nil {
+			if err := x.store.ApplyAppend(ctx, u.Base, u.Nodes, u.Delta, x.ledgerMeta(u.Tip, u.Delta)); err != nil {
+				log.Printf("indexer: append state: %v", err)
+				if errors.Is(err, store.ErrStateChanged) {
+					x.accounting = nil // external writer or ambiguous previous COMMIT
+				}
+				return
+			}
+			if err := x.accounting.Commit(u); err != nil {
+				log.Printf("indexer: publish state: %v", err)
+				x.accounting = nil
+				return
+			}
+			x.ledger = x.accounting.Ledger()
+			x.dirty = u.Tip.ID != x.chain.Tip.ID
+			return
+		}
+		if !errors.Is(err, consensus.ErrLedgerReorg) {
+			log.Printf("indexer: prepare state: %v", err)
+			return
+		}
+	}
+	// Startup, every reorg (including deep ones), and changed DB bases use the
+	// existing complete replay as the reconciliation/correctness fallback.
+	path := x.chain.Path()
+	ledger := consensus.Build(path)
 	tip := x.chain.Tip
-	meta := map[string]string{
+	next, err := consensus.NewAccumulator(tip, ledger)
+	if err != nil {
+		log.Printf("indexer: ledger context: %v", err)
+		return
+	}
+	if err := x.store.ApplyState(ctx, path, ledger, x.ledgerMeta(tip, ledger)); err != nil {
+		log.Printf("indexer: apply state: %v", err)
+		return
+	}
+	x.accounting, x.ledger = next, next.Ledger()
+	x.dirty = false
+}
+
+func (x *Indexer) ledgerMeta(tip *consensus.Node, ledger *consensus.Ledger) map[string]string {
+	return map[string]string{
 		"tip":        hex.EncodeToString(tip.ID[:]),
 		"height":     fmt.Sprint(tip.Height),
 		"bits":       fmt.Sprint(tip.Msg.Share.Bits),
@@ -200,12 +259,6 @@ func (x *Indexer) flush(ctx context.Context) {
 		"network":    proto.NetworkName(),
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	}
-	if err := x.store.ApplyState(ctx, path, ledger, meta); err != nil {
-		log.Printf("indexer: apply state: %v", err)
-		return
-	}
-	x.ledger = ledger
-	x.dirty = false
 }
 
 func accountCheckBatch(addrs []proto.Hash, pos, limit int) ([]proto.Hash, int) {
