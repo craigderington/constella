@@ -127,15 +127,17 @@ A small executable does not imply fixed RAM usage. The node currently retains
 validated chain history in memory; account state, payloads and forks add cost.
 On October 24, testnet nodes around 400,000 shares used roughly 110–120 MiB of
 container memory. This is an observation, not a minimum requirement or ceiling.
-The Explorer retains history and still rebuilds its ledger from the full path;
-its memory/replay costs are an unresolved scaling issue. PostgreSQL has its own
+The local Explorer development tree uses disk-backed history, a 512-node cache
+and streamed ledger replay. Current accounts still grow in RAM, and full proof
+replay still runs at startup. These changes are not deployed or included in the
+frozen v0.1 release candidate; capacity remains unresolved. PostgreSQL has its own
 resource and storage budget.
 
 At the four-second target, one year adds about **7.9 million canonical shares**,
 before forks. There is no qualified one-year resource budget today. Increasing
-memory limits is temporary. Disk-backed history/state, bounded memory caches,
-incremental Explorer accounting and verified restart improvements need design,
-adversarial reorg tests and capacity qualification. [Capacity work](docs/capacity.md)
+memory limits is temporary. Node storage, disk-backed accounts and verified
+restart improvements still need implementation; the local Explorer changes need
+real-workload and capacity qualification. [Capacity work](docs/capacity.md)
 is a **mainnet blocker**, not a solved optimization.
 
 ## Testnet and mainnet

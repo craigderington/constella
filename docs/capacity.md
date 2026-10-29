@@ -11,12 +11,18 @@ disk. The C ledger already has incremental updates and bounded undo optimization
 its full history and account state are not thereby bounded. Deep reorganizations
 fall back to full replay rather than a consensus reorg cutoff.
 
-The Go Explorer retains chain objects and current accounts. The October 27 local
-change makes ordinary canonical extensions incremental and discards historical
-accounting outcomes after database commit. Startup, reorganizations and a changed
-database base still call `consensus.Build` on the full canonical path. Those
-replay peaks and the retained chain/account objects remain capacity blockers.
-The earlier SQL ranking fix did not address those allocations.
+The local Go Explorer development tree now uses disk-backed verified history
+with a 512-node LRU cache, plus incremental accounting for ordinary canonical
+extensions. Startup, reorganizations and a changed database base replay the whole
+canonical ledger in batches of at most 64 shares, without retaining the full
+path or historical accounting outcomes in Go. Current accounts and the SQL
+writer's account cache still grow in RAM. Full proof validation still runs at
+every startup; database disk use, replay cost and total host memory remain
+capacity blockers. The earlier SQL ranking fix did not address those allocations.
+
+These local changes are not deployed or part of the frozen `9a25c85` release
+candidate. The disk-history implementation was saved at checkpoint `617676b` on
+October 29; that checkpoint is development work, not a qualified release.
 
 Dated observations, not future guarantees:
 
@@ -75,6 +81,8 @@ In-memory state advances only after successful SQL commit. Failed writes retain
 the published ledger; an ambiguous successful commit or an external writer
 invalidates the base and requests full reconciliation. A reorg of **any depth**
 also falls back to full replay: the cache/batch size is not a consensus rule.
+At this first milestone, reconciliation used the full in-memory path. The next
+milestone below replaces that allocation in the executable's disk-backed mode.
 
 Startup now reads raw messages through an ordered repeatable-read database
 snapshot and validates each one, instead of first building an input list of all
@@ -82,6 +90,8 @@ raw messages. This removes that input list/preloading requirement, not the raw
 messages and chain nodes still retained by the validated chain. The read-only
 snapshot remains open during validation, so long-replay database/vacuum behavior
 also needs staging observation.
+The first milestone still retained the validated chain objects; the disk-history
+milestone removes that full-history object graph from the executable's Go heap.
 
 Synthetic accounting benchmark, native AMD64, Go 1.27.3, four miners, one block
 per 100 shares, 375,000-share history, maximum two claims per share:
@@ -94,8 +104,9 @@ per 100 shares, 375,000-share history, maximum two claims per share:
 
 These are **allocation and computation measurements**, excluding SQL/network,
 proof validation and commit. They are not process RSS, cloud latency, a measured
-RAM ceiling or a one-year history qualification. The full replay remains the
-test oracle and is still needed on startup/reorg. Reproduce with:
+RAM ceiling or a one-year history qualification. `consensus.Build` remains the
+independent test oracle; the newer disk mode streams its startup/reorg replay.
+Reproduce the accounting benchmarks with:
 
 ```sh
 cd explorer
@@ -127,18 +138,131 @@ failures, retry after a successful commit, change the DB base from another
 writer, compare append results to full replay SQL, and verify consistent streamed
 history and cancellation. Native ARM64 and production-scale staging remain
 separate qualification; no live services are changed by this milestone.
-During batch catch-up the indexer keeps its full-account cross-check held until
+During batch catch-up the indexer keeps its account cross-check held until
 its committed accounting tip reaches the validated chain tip. Reorganizations
 still derive the full ledger, while SQL changes only detached/attached rows and
 changed accounts when its owned cache base matches the committed database.
 
+## Disk-backed Explorer history — local checkpoint, October 29
+
+The executable now selects `indexer.NewDisk`. A dedicated PostgreSQL connection
+holds two private temporary tables: verified records (raw payload, validation
+metadata and ID index) and canonical heights. They are reconstructed from
+permanent raw shares through full proof validation at each startup, then dropped
+when the indexer closes. This is a reconstructible local index, not a durable
+restart checkpoint or a trusted remote snapshot. The permanent schema and
+consensus/network constants are unchanged.
+
+The chain keeps at most 512 cached nodes. An owned node reference carries a
+parent ID and resolves ancestry through the history interface, so retaining the
+tip does not retain every ancestor. Cold lookups decode payloads and check IDs,
+commitments and checksums over cached metadata. Local I/O or integrity errors
+hold further validation rather than treating stored data as invalid peer input.
+Checksums detect accidental cache corruption; they are not authentication against
+an attacker able to rewrite both data and checksums. The full in-memory chain
+remains the independent differential-test oracle. Disk-mode `Chain.Path` refuses
+to allocate a full-history slice.
+
+The post-reboot locator change uses canonical-height lookups for exponentially
+spaced peer-sync locator entries, avoiding a database lookup for every skipped
+ancestor. It preserves the in-memory/C locator's IDs and ordering, including its
+genesis behavior. Differential tests cover genesis, short forks, a 780-share
+history with a three-node cache and several output limits. Missing canonical
+history returns a local error and holds further validation.
+
+Genesis-to-tip accounting reconciliation uses 64-share canonical batches in one
+SQL transaction. It publishes the replacement accumulator only after commit;
+late failures roll back derived tables. Current accounts still remain in Go RAM.
+Any reorg depth can be replayed. The cache size never limits valid ancestry.
+Raw-persistence backpressure holds new input while a failed write is retried;
+it prevents an indefinitely growing retry slice. Account checks bind replies to
+the full local tip ID and clean accounting state, including same-height forks.
+
+Saved pre-reboot synthetic index-only measurements, native AMD64, Go 1.27.3, with a
+512 MiB / 0.5 CPU disposable PostgreSQL container:
+
+| Synthetic records | Cache entries | Go process RSS after forced GC (KiB) | Temporary indexes on disk (bytes) |
+| ---: | ---: | ---: | ---: |
+| 50,000 | 512 | 15,680 | 22,069,248 |
+| 375,000 | 512 | 17,204 | 161,923,072 |
+| 1,944,000 | 512 | 14,844 | 840,622,080 |
+| 7,884,000 | 512 | 16,964 | 3,406,651,392 |
+
+Live Go heap was 0.87–0.92 MB; PostgreSQL backend memory contexts were about
+10.6 MB. These records were bulk-seeded as already verified metadata, with no
+proof validation, transactions, claims or growing account set. The observations
+exclude full replay, peak RSS, shared PostgreSQL buffers, total backend RSS,
+permanent history/derived tables and WAL. The one-year-sized index sample is
+**not one-year workload qualification** or a 4 GB host resource budget.
+
+With the locator change, a new 375,000-record index-only run returned 28 locator
+entries in about 15 ms under the same PostgreSQL limits. Its cache remained at
+512 entries. This is one local synthetic sample, not real sync or cloud latency
+qualification.
+
+SQL/race tests compare real proof fixtures against the in-memory chain, exercise
+cold ancestry/locator lookups and cache eviction, detect corrupted metadata and
+injected index-write failures, and restart from authoritative raw history.
+A separate 780-share synthetic accounting/science fixture compares streamed
+rebuild accounts, totals and SQL against full replay and injects a late SQL
+failure. That fixture checks accounting equivalence, not proof validity.
+
+Run SQL tests only against a disposable database; they delete test tables.
+With its connection string assigned to `DISPOSABLE_EXPLORER_TEST_DB`:
+
+```sh
+cd explorer
+: "${DISPOSABLE_EXPLORER_TEST_DB:?Set this to an isolated disposable database}"
+EXPLORER_TEST_DB="$DISPOSABLE_EXPLORER_TEST_DB" \
+  go test -mod=vendor -tags protocolv5 -race -count=1 ./...
+EXPLORER_TEST_DB="$DISPOSABLE_EXPLORER_TEST_DB" CONSTELLA_HISTORY_SCALE=7884000 \
+  go test -mod=vendor -tags protocolv5 ./internal/store \
+  -run '^TestDiskHistoryScale$' -count=1 -v -timeout=30m
+```
+
+Native ARM execution, representative real history, recovery faults and
+matching-hardware staging remain open. Long read snapshots, one large rebuild
+transaction, temporary-table storage/cleanup, per-record SQL round trips and
+ancestry traversal must be measured alongside query latency and ledger lag.
+
+## C storage footprint feasibility — October 29
+
+The optional `tests/storage_probe.c` and `tools/storage-probe.py` measure library
+linkage and a transactional write/close/reopen/read. Default node targets do not
+compile the probe. These prototypes do not integrate a storage backend.
+
+Pinned Alpine 3.22 AMD64 static builds, with the existing node hardening flags:
+
+| Build | Bytes | Difference from 196,608-byte gate |
+| --- | ---: | ---: |
+| Unchanged node baseline | 186,680 | 9,928 below |
+| Node plus LMDB 0.9.33 API probe | 235,896 | 39,288 above |
+| Node plus SQLite 3.49.2 API probe | 1,742,904 | 1,546,296 above |
+
+Both probe binaries passed write/reopen/read and reported the expected v5
+identity. Alpine's LMDB package lacked a static archive; the tool built upstream
+0.9.33 with the exact SHA512 recorded by Alpine's 3.22-stable APKBUILD. It records
+the source checksum, installed versions and artifact hashes. SQLite used Alpine's
+static package. These are measured API-linkage footprints; a complete backend
+will add integration code, and different library/build options can change size.
+They do not establish security, crash recovery, capacity or native ARM support.
+Neither backend is selected, and the size gate remains unchanged.
+
+Reproduce in a unique output directory using the disposable, resource-limited
+builder (requires local Docker and downloads pinned LMDB source):
+
+```sh
+python3 tools/storage-probe.py --out /tmp/constella-storage-probe-results
+```
+
 ## Remaining storage work
 
-Next, replace history-owning `Parent` pointers / `chain_entry` borrowed-pointer
-access with explicit disk lookups and bounded, owned or pinned cache entries.
-Move both payloads **and ID/ancestry indexes** behind that interface; moving
-payloads alone would leave an index entry per share in RAM. Preserve arbitrary
-fork ancestry access and the original validated history files for recovery.
+The C node still needs replacement of history-owning `chain_entry`
+borrowed-pointer access with explicit disk lookups and bounded, owned or pinned
+cache entries. Move both payloads **and ID/ancestry indexes** behind that
+interface; moving payloads alone leaves an index entry per share in RAM.
+Preserve arbitrary fork ancestry access and the original validated history files
+for recovery.
 
 Current accounts also need disk-backed access with bounded caches, followed by
 integrity-checked durable local state/checkpoints. A cold process must be able to
