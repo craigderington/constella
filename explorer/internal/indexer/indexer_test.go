@@ -39,7 +39,7 @@ func TestFailedAppendKeepsPublishedAccountsAndContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	x := New(&store.Store{DB: db}, p2p.New("unused:7043"))
-	x.accounting, err = consensus.NewAccumulator(x.chain.Genesis, consensus.Build(x.chain.Path()))
+	x.accounting, err = consensus.NewAccumulator(x.chain.Genesis, consensus.Build(checkedPath(t, x.chain)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,26 +139,26 @@ func TestForkSyncCursorAdvancesWithoutCanonicalProgress(t *testing.T) {
 	first, _ := proto.ParseMsg(records[0])
 	side, _ := proto.ParseMsg(records[28])
 	x.onShare(context.Background(), records[0]) // known canonical record
-	if x.chain.Len() != count || x.locator()[0] != first.Share.ID() {
+	if x.chain.Len() != count || checkedLocator(t, x)[0] != first.Share.ID() {
 		t.Fatal("duplicate batch did not advance locator")
 	}
 	x.onShare(context.Background(), records[28]) // new, weaker fork
-	if x.chain.Tip.ID != tip || x.chain.Len() != count+1 || x.locator()[0] != side.Share.ID() {
+	if x.chain.Tip.ID != tip || x.chain.Len() != count+1 || checkedLocator(t, x)[0] != side.Share.ID() {
 		t.Fatal("weaker branch did not advance locator independently of tip")
 	}
 	if len(x.pendingShares) != 1 {
 		t.Fatal("failed insert did not retain validated share")
 	}
 	x.onShare(context.Background(), []byte{1, 2, 3})
-	if x.locator()[0] != side.Share.ID() {
+	if checkedLocator(t, x)[0] != side.Share.ID() {
 		t.Fatal("malformed input moved cursor")
 	}
-	loc := x.locator()
+	loc := checkedLocator(t, x)
 	if len(loc) > 32 || loc[len(loc)-1] != x.chain.Genesis.ID {
 		t.Fatal("locator lost its bounded canonical fallback")
 	}
 	x.resetPeer()
-	if x.locator()[0] != tip {
+	if checkedLocator(t, x)[0] != tip {
 		t.Fatal("reconnect retained old peer cursor")
 	}
 }
@@ -228,4 +228,21 @@ func TestReplayRejectsBadHistoryAndCancellation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func checkedPath(t *testing.T, c *consensus.Chain) []*consensus.Node {
+	t.Helper()
+	path, err := c.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+func checkedLocator(t *testing.T, x *Indexer) [][32]byte {
+	t.Helper()
+	loc, err := x.locator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loc
 }

@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"fmt"
 	"net/url"
 	"os"
@@ -18,6 +19,109 @@ import (
 	"github.com/craigderington/constella/explorer/internal/proto"
 	"github.com/craigderington/constella/explorer/internal/store"
 )
+
+func TestPendingAccountCheckRequiresSameTipAndPublishedState(t *testing.T) {
+	for _, dirty := range []bool{false, true} {
+		x := New(nil, nil)
+		x.chain.Tip = &consensus.Node{ID: proto.Hash{2}, Height: 1}
+		x.checkTip, x.checkH = proto.Hash{1}, 1
+		if dirty {
+			x.chain.Tip.ID = x.checkTip
+			x.dirty = true
+		}
+		addr := proto.Hash{7}
+		x.pending = []proto.Hash{addr}
+		x.ledger = &consensus.Ledger{Accounts: map[proto.Hash]*consensus.Account{addr: {Addr: addr, Balance: 7}}}
+		payload := make([]byte, 28)
+		binary.LittleEndian.PutUint64(payload, 7)
+		binary.LittleEndian.PutUint32(payload[24:], 1)
+		x.onAcct(t.Context(), payload)
+		if x.checkH != 0 || x.checkOK != 0 {
+			t.Fatal("old-tip or unpublished accounting check was accepted")
+		}
+	}
+}
+
+func TestDiskIndexerPersistenceBackpressureAndRestart(t *testing.T) {
+	s := indexerMemoryStore(t)
+	x, err := NewDisk(t.Context(), s, p2p.New("unused:7043"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = x.Close() })
+	if err := x.Load(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	oracle := consensus.NewChain()
+	assertState := func() {
+		t.Helper()
+		full := consensus.Build(checkedPath(t, oracle))
+		full.Payouts, full.SciPayouts, full.Applied, full.SciPayable = nil, nil, nil, nil
+		if x.dirty || x.chain.Tip.ID != oracle.Tip.ID || x.chain.Len() != oracle.Len() ||
+			!reflect.DeepEqual(x.ledger, full) || x.chain.CacheLen() > 512 {
+			t.Fatal("disk indexer differs from independent memory replay")
+		}
+	}
+	records := replayFixture(t)
+	addOracle := func(raw []byte) {
+		m, err := proto.ParseMsg(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := oracle.AddAt(m, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	x.onShare(t.Context(), records[0])
+	addOracle(records[0])
+	x.flush(t.Context())
+	assertState()
+	if _, err := s.DB.ExecContext(t.Context(), `CREATE FUNCTION reject_raw_share() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected raw persistence failure'; END $$;
+		CREATE TRIGGER reject_raw BEFORE INSERT ON shares FOR EACH ROW EXECUTE FUNCTION reject_raw_share()`); err != nil {
+		t.Fatal(err)
+	}
+	x.onShare(t.Context(), records[1])
+	held := x.chain.Len()
+	x.onShare(t.Context(), records[2])
+	if x.chain.Len() != held || len(x.pendingShares) != 1 || !x.dirty {
+		t.Fatal("raw outage did not bound held ingress")
+	}
+	if _, err := s.DB.ExecContext(t.Context(), `DROP TRIGGER reject_raw ON shares;DROP FUNCTION reject_raw_share()`); err != nil {
+		t.Fatal(err)
+	}
+	addOracle(records[1])
+	x.flush(t.Context())
+	assertState()
+	for _, raw := range records[2:] {
+		x.onShare(t.Context(), raw)
+		addOracle(raw)
+	}
+	x.flush(t.Context())
+	assertState()
+	other := &store.Store{DB: s.DB}
+	genesis := []*consensus.Node{oracle.Genesis}
+	if err := other.ApplyState(t.Context(), genesis, consensus.Build(genesis), map[string]string{"tip": fmt.Sprintf("%x", oracle.Genesis.ID), "height": "0"}); err != nil {
+		t.Fatal(err)
+	}
+	x.dirty = true
+	x.flush(t.Context())
+	x.flush(t.Context())
+	assertState()
+	if err := x.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewDisk(t.Context(), s, p2p.New("unused:7043"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if err := restarted.Load(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if restarted.dirty || restarted.chain.Tip.ID != oracle.Tip.ID || restarted.chain.Len() != oracle.Len() || !reflect.DeepEqual(restarted.ledger, x.ledger) {
+		t.Fatal("fresh disk index did not independently restore the same ledger")
+	}
+}
 
 func indexerMemoryStore(t *testing.T) *store.Store {
 	t.Helper()
@@ -70,7 +174,7 @@ func TestIndexerAppendPublicationAndReplayFallback(t *testing.T) {
 	}
 	assertLedger := func() {
 		t.Helper()
-		full := consensus.Build(x.chain.Path())
+		full := consensus.Build(checkedPath(t, x.chain))
 		full.Payouts, full.SciPayouts, full.Applied, full.SciPayable = nil, nil, nil, nil
 		if x.dirty || !reflect.DeepEqual(x.ledger, full) || x.accounting.Tip() != x.chain.Tip {
 			t.Fatal("published accounting differs from full replay")
@@ -105,7 +209,11 @@ func TestIndexerAppendPublicationAndReplayFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	x.chain.Tip, x.dirty = x.chain.Get(side.Share.ID()), true
+	x.chain.Tip, err = x.chain.Lookup(side.Share.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	x.dirty = true
 	x.flush(t.Context()) // force a valid alternate history through replay fallback
 	assertLedger()
 	x.chain.Tip, x.dirty = main, true

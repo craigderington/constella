@@ -88,21 +88,39 @@ func shareIDs(path []*consensus.Node) pq.ByteaArray {
 
 func applyDelta(ctx context.Context, tx *sql.Tx, old *stateCache, path []*consensus.Node, l *consensus.Ledger) error {
 	a, b := old.tip, path[len(path)-1]
+	var err error
 	for a != nil && b != nil && a.Height > b.Height {
-		a = a.Parent
+		a, err = a.ParentNode()
+		if err != nil {
+			return err
+		}
 	}
 	for a != nil && b != nil && b.Height > a.Height {
-		b = b.Parent
+		b, err = b.ParentNode()
+		if err != nil {
+			return err
+		}
 	}
 	for a != nil && b != nil && a.ID != b.ID {
-		a, b = a.Parent, b.Parent
+		a, err = a.ParentNode()
+		if err != nil {
+			return err
+		}
+		b, err = b.ParentNode()
+		if err != nil {
+			return err
+		}
 	}
 	if a == nil || b == nil {
 		return fmt.Errorf("derived state changed genesis")
 	}
 	var removedNodes []*consensus.Node
-	for n := old.tip; n.ID != a.ID; n = n.Parent {
+	for n := old.tip; n.ID != a.ID; {
 		removedNodes = append(removedNodes, n)
+		n, err = n.ParentNode()
+		if err != nil {
+			return err
+		}
 	}
 	common := int(a.Height) + 1
 	detached, attached := shareIDs(removedNodes), shareIDs(path[common:])

@@ -83,19 +83,19 @@ func TestNextBitsMirrorsRetarget(t *testing.T) {
 		return p
 	}
 
-	if got := NextBits(makeChain(384, 100)); got != 392 {
+	if got := checkedBits(t, makeChain(384, 100)); got != 392 {
 		t.Fatalf("fast retarget = %d, want 392", got)
 	}
-	if got := NextBits(makeChain(384, 300)); got != 352 {
+	if got := checkedBits(t, makeChain(384, 300)); got != 352 {
 		t.Fatalf("slow retarget = %d, want 352", got)
 	}
-	if got := NextBits(makeChain(70, 50)); got != 102 {
+	if got := checkedBits(t, makeChain(70, 50)); got != 102 {
 		t.Fatalf("retarget lower branch = %d, want 102", got)
 	}
-	if got := NextBits(makeChain(70, 300)); got != proto.BitsMin {
+	if got := checkedBits(t, makeChain(70, 300)); got != proto.BitsMin {
 		t.Fatalf("retarget lower clamp = %d, want %d", got, proto.BitsMin)
 	}
-	if got := NextBits(makeChain(1000, 50)); got != proto.BitsMax {
+	if got := checkedBits(t, makeChain(1000, 50)); got != proto.BitsMax {
 		t.Fatalf("retarget upper clamp = %d, want %d", got, proto.BitsMax)
 	}
 }
@@ -306,4 +306,13 @@ func TestApplyTxFeeRefundUsesPostDebitSenderBalance(t *testing.T) {
 	if l.Accounts[to].Balance != 1 {
 		t.Fatalf("recipient balance = %d, want 1", l.Accounts[to].Balance)
 	}
+}
+
+func checkedBits(t *testing.T, n *Node) uint16 {
+	t.Helper()
+	bits, err := NextBits(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bits
 }

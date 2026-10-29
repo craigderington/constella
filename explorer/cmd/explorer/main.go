@@ -91,7 +91,11 @@ func run(parent context.Context) error {
 	}
 	defer st.DB.Close()
 	peer := p2p.New(env("EXPLORER_NODE", "127.0.0.1:7043"))
-	ix := indexer.New(st, peer)
+	ix, err := indexer.NewDisk(ctx, st, peer)
+	if err != nil {
+		return fmt.Errorf("verified history: %w", err)
+	}
+	defer ix.Close()
 	if err := ix.LoadWithProgress(ctx, func(p indexer.LoadProgress) {
 		startup.Progress(p.Phase, p.Processed, p.Total, p.Height)
 	}); err != nil {
@@ -101,7 +105,9 @@ func run(parent context.Context) error {
 		return ctx.Err()
 	}
 	go peer.Run(ctx)
-	go ix.Run(ctx)
+	indexerDone := make(chan struct{})
+	go func() { defer close(indexerDone); ix.Run(ctx) }()
+	defer func() { cancel(); <-indexerDone }()
 	startup.Activate(web.NewWithUI(st, ui).Routes())
 	log.Printf("explorer: history loaded; http active, node %s (live health still requires peer/indexer freshness)", peer.Addr)
 	<-ctx.Done()

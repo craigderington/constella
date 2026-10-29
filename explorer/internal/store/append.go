@@ -25,7 +25,14 @@ func (s *Store) ApplyAppend(ctx context.Context, base proto.Hash, nodes []*conse
 	}
 	tip := base
 	for _, n := range nodes {
-		if n == nil || n.Parent == nil || n.Parent.ID != tip || n.Height != n.Parent.Height+1 {
+		if n == nil {
+			return errors.New("missing incremental ledger node")
+		}
+		parent, err := n.ParentNode()
+		if err != nil {
+			return err
+		}
+		if parent == nil || parent.ID != tip || n.Height != parent.Height+1 {
 			return errors.New("non-contiguous incremental ledger batch")
 		}
 		tip = n.ID
@@ -55,6 +62,29 @@ func (s *Store) ApplyAppend(ctx context.Context, base proto.Hash, nodes []*conse
 	if cache != nil && hex.EncodeToString(cache.tip.ID[:]) != actual {
 		cache = nil
 	}
+	if err := applyAppendRows(ctx, tx, nodes, l); err != nil {
+		return err
+	}
+	if err := setMeta(ctx, tx, meta); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		s.state = nil // ambiguous commit: force complete reconciliation
+		return fmt.Errorf("incremental ledger commit: %w", err)
+	}
+	if cache != nil {
+		for addr, account := range l.Accounts {
+			cache.accounts[addr] = *account
+		}
+		if len(nodes) > 0 {
+			cache.tip = nodes[len(nodes)-1]
+		}
+	}
+	s.state = cache
+	return nil
+}
+
+func applyAppendRows(ctx context.Context, tx *sql.Tx, nodes []*consensus.Node, l *consensus.Ledger) error {
 	if len(nodes) > 0 {
 		ids := shareIDs(nodes)
 		var applied, payable pq.ByteaArray
@@ -109,21 +139,5 @@ func (s *Store) ApplyAppend(ctx context.Context, base proto.Hash, nodes []*conse
 			}
 		}
 	}
-	if err := setMeta(ctx, tx, meta); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		s.state = nil // ambiguous commit: force complete reconciliation
-		return fmt.Errorf("incremental ledger commit: %w", err)
-	}
-	if cache != nil {
-		for addr, account := range l.Accounts {
-			cache.accounts[addr] = *account
-		}
-		if len(nodes) > 0 {
-			cache.tip = nodes[len(nodes)-1]
-		}
-	}
-	s.state = cache
 	return nil
 }

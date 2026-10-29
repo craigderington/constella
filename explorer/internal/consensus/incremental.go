@@ -67,7 +67,7 @@ func NewAccumulator(tip *Node, full *Ledger) (*Accumulator, error) {
 	a := &Accumulator{ledger: ledgerTotals(full, full.Accounts), tip: tip,
 		seen: map[scienceKey]bool{}, epoch: SciEpoch(tip.Height)}
 	window := max(proto.PPLNSN, proto.SciWindow)
-	for n := tip; n.Parent != nil && (len(a.window) < window || n.Height > a.epoch); n = n.Parent {
+	for n := tip; n.Height > 0 && (len(a.window) < window || n.Height > a.epoch); {
 		if len(n.Msg.Claims) > proto.MaxSci {
 			return nil, errors.New("oversized science payload in ledger context")
 		}
@@ -87,6 +87,14 @@ func NewAccumulator(tip *Node, full *Ledger) (*Accumulator, error) {
 				a.seen[scienceKey{n.Msg.Share.Miner, claim.K}] = true
 			}
 		}
+		var err error
+		n, err = n.ParentNode()
+		if err != nil {
+			return nil, err
+		}
+		if n == nil {
+			return nil, errors.New("incomplete ledger ancestry")
+		}
 	}
 	slices.Reverse(a.window)
 	return a, nil
@@ -104,7 +112,11 @@ func (a *Accumulator) Prepare(tip *Node) (*LedgerUpdate, error) {
 	}
 	target := tip
 	for uint64(target.Height) > uint64(a.tip.Height)+LedgerBatch {
-		target = target.Parent
+		var err error
+		target, err = target.ParentNode()
+		if err != nil {
+			return nil, err
+		}
 		if target == nil {
 			return nil, ErrLedgerReorg
 		}
@@ -112,11 +124,15 @@ func (a *Accumulator) Prepare(tip *Node) (*LedgerUpdate, error) {
 	var nodes []*Node
 	n := target
 	for n != nil && n.Height > a.tip.Height {
-		if n.Parent == nil || n.Parent.Height != n.Height-1 {
+		parent, err := n.ParentNode()
+		if err != nil {
+			return nil, err
+		}
+		if parent == nil || parent.Height != n.Height-1 {
 			return nil, ErrLedgerReorg
 		}
 		nodes = append(nodes, n)
-		n = n.Parent
+		n = parent
 	}
 	if n == nil || n.ID != a.tip.ID {
 		return nil, ErrLedgerReorg

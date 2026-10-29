@@ -39,11 +39,27 @@ type Indexer struct {
 	checkAll    int
 	checkPos    int
 	checkSample bool
+	checkTip    proto.Hash
 }
 
 func New(s *store.Store, peer *p2p.Client) *Indexer {
 	return &Indexer{chain: consensus.NewChain(), store: s, peer: peer}
 }
+
+func NewDisk(ctx context.Context, s *store.Store, peer *p2p.Client) (*Indexer, error) {
+	h, err := s.NewHistory(ctx)
+	if err != nil {
+		return nil, err
+	}
+	c, err := consensus.NewDiskChain(h, 512)
+	if err != nil {
+		_ = h.Close()
+		return nil, err
+	}
+	return &Indexer{chain: c, store: s, peer: peer}, nil
+}
+
+func (x *Indexer) Close() error { return x.chain.Close() }
 
 func (x *Indexer) Load(ctx context.Context) error {
 	return x.LoadWithProgress(ctx, nil)
@@ -133,13 +149,24 @@ func (x *Indexer) finishReplay(ctx context.Context, total int, progress func(Loa
 	}
 	log.Printf("indexer: loaded %d shares, height %d", total, x.chain.Tip.Height)
 	x.dirty = true
+	if x.chain.DiskBacked() {
+		progress(LoadProgress{Phase: "replaying_ledger", Processed: total, Total: total, Height: x.chain.Tip.Height})
+		if err := x.rebuild(ctx); err != nil {
+			return err
+		}
+	}
 	progress(LoadProgress{Phase: "history_loaded", Processed: total, Total: total, Height: x.chain.Tip.Height})
 	return nil
 }
 
-func (x *Indexer) locator() [][32]byte {
-	if x.chain.Get(x.syncCursor) != nil {
-		return append([][32]byte{x.syncCursor}, x.chain.Locator(31)...)
+func (x *Indexer) locator() ([][32]byte, error) {
+	n, err := x.chain.Lookup(x.syncCursor)
+	if err != nil {
+		return nil, err
+	}
+	if n != nil {
+		loc, err := x.chain.Locator(31)
+		return append([][32]byte{x.syncCursor}, loc...), err
 	}
 	return x.chain.Locator(32)
 }
@@ -154,7 +181,11 @@ func (x *Indexer) requestChain(force bool) {
 		return
 	}
 	x.lastReq = time.Now()
-	loc := x.locator()
+	loc, err := x.locator()
+	if err != nil {
+		log.Printf("indexer: history locator: %v", err)
+		return
+	}
 	buf := make([]byte, 0, len(loc)*32)
 	for _, id := range loc {
 		buf = append(buf, id[:]...)
@@ -163,23 +194,30 @@ func (x *Indexer) requestChain(force bool) {
 }
 
 func (x *Indexer) onShare(ctx context.Context, raw []byte) {
+	// Hold ingress while raw persistence is unavailable. Otherwise the retry
+	// slice can retain every new accepted message despite a bounded node cache.
+	if len(x.pendingShares) > 0 {
+		if err := x.store.InsertShares(ctx, x.pendingShares); err != nil {
+			log.Printf("indexer: raw persistence held: %v", err)
+			return
+		}
+		x.pendingShares = nil
+		x.requestChain(true)
+	}
 	m, err := proto.ParseMsg(raw)
 	if err != nil {
 		return
 	}
 	added, missing, err := x.chain.Add(m)
-	if err != nil {
-		id := m.Share.ID()
-		log.Printf("indexer: REJECTED share %x h=%d: %v (consensus divergence?)", id[:4], m.Share.Height, err)
-		return
-	}
 	if missing != nil {
 		x.requestChain(false)
 		return
 	}
 	// Duplicates and a still-weaker fork must advance pagination too. The
 	// canonical locator alone can request the same 500-share batch forever.
-	x.syncCursor = m.Share.ID()
+	if err == nil {
+		x.syncCursor = m.Share.ID()
+	}
 	if len(added) > 0 {
 		x.pendingShares = append(x.pendingShares, added...)
 		if err := x.store.InsertShares(ctx, x.pendingShares); err != nil {
@@ -189,10 +227,22 @@ func (x *Indexer) onShare(ctx context.Context, raw []byte) {
 		}
 		x.dirty = true
 	}
+	if err != nil {
+		id := m.Share.ID()
+		if errors.Is(err, consensus.ErrInvalid) {
+			log.Printf("indexer: REJECTED share %x h=%d: %v (consensus divergence?)", id[:4], m.Share.Height, err)
+		} else {
+			log.Printf("indexer: local history failure at %x: %v", id[:4], err)
+		}
+	}
 }
 
 func (x *Indexer) flush(ctx context.Context) {
 	if !x.dirty {
+		return
+	}
+	if err := x.chain.Err(); err != nil {
+		log.Printf("indexer: verified history unavailable: %v", err)
 		return
 	}
 	if len(x.pendingShares) > 0 {
@@ -201,6 +251,7 @@ func (x *Indexer) flush(ctx context.Context) {
 			return
 		}
 		x.pendingShares = nil
+		x.requestChain(true) // recover any frames held during the persistence outage
 	}
 	if x.accounting != nil {
 		u, err := x.accounting.Prepare(x.chain.Tip)
@@ -228,7 +279,17 @@ func (x *Indexer) flush(ctx context.Context) {
 	}
 	// Startup, every reorg (including deep ones), and changed DB bases use the
 	// existing complete replay as the reconciliation/correctness fallback.
-	path := x.chain.Path()
+	if x.chain.DiskBacked() {
+		if err := x.rebuild(ctx); err != nil {
+			log.Printf("indexer: bounded replay: %v", err)
+		}
+		return
+	}
+	path, err := x.chain.Path()
+	if err != nil {
+		log.Printf("indexer: history path: %v", err)
+		return
+	}
 	ledger := consensus.Build(path)
 	tip := x.chain.Tip
 	next, err := consensus.NewAccumulator(tip, ledger)
@@ -242,6 +303,22 @@ func (x *Indexer) flush(ctx context.Context) {
 	}
 	x.accounting, x.ledger = next, next.Ledger()
 	x.dirty = false
+}
+
+func (x *Indexer) rebuild(ctx context.Context) error {
+	tip := x.chain.Tip
+	next, err := x.store.Rebuild(ctx, x.chain, func(l *consensus.Ledger) map[string]string {
+		m := x.ledgerMeta(tip, l)
+		m["check"], m["check_at"], m["check_height"], m["check_count"] = "pending", "", "0", "0"
+		m["check_total"] = fmt.Sprint(len(l.Accounts))
+		return m
+	})
+	if err != nil {
+		return err
+	}
+	x.accounting, x.ledger = next, next.Ledger()
+	x.dirty = false
+	return nil
 }
 
 func (x *Indexer) ledgerMeta(tip *consensus.Node, ledger *consensus.Ledger) map[string]string {
@@ -289,6 +366,7 @@ func (x *Indexer) startCheck() {
 	x.checkSample = len(addrs) > 64
 	addrs, x.checkPos = accountCheckBatch(addrs, x.checkPos, 64)
 	x.checkH, x.checkOK, x.checkBad = x.chain.Tip.Height, 0, nil
+	x.checkTip = x.chain.Tip.ID
 	for _, a := range addrs {
 		x.pending = append(x.pending, a)
 		x.peer.Send(proto.MsgGetAcct, a[:])
@@ -303,7 +381,7 @@ func (x *Indexer) onAcct(ctx context.Context, p []byte) {
 	x.pending = x.pending[1:]
 	amt, nonce := binary.LittleEndian.Uint64(p), binary.LittleEndian.Uint64(p[8:])
 	h := binary.LittleEndian.Uint32(p[24:])
-	if h != x.checkH || x.chain.Tip.Height != x.checkH {
+	if x.dirty || h != x.checkH || x.chain.Tip.Height != x.checkH || x.chain.Tip.ID != x.checkTip {
 		x.checkH = 0 // chain moved during the check; result is inconclusive
 	} else if acc := x.ledger.Accounts[a]; acc != nil && acc.Balance == amt && acc.Nonce == nonce {
 		x.checkOK++
@@ -351,8 +429,13 @@ func (x *Indexer) Run(ctx context.Context) {
 				x.resetPeer()
 				x.requestChain(true)
 			case proto.MsgHello:
-				if len(f.Payload) == 32 && x.chain.Get(proto.Hash(f.Payload)) == nil {
-					x.requestChain(true)
+				if len(f.Payload) == 32 {
+					n, err := x.chain.Lookup(proto.Hash(f.Payload))
+					if err != nil {
+						log.Printf("indexer: history lookup: %v", err)
+					} else if n == nil {
+						x.requestChain(true)
+					}
 				}
 			case proto.MsgShare:
 				x.onShare(ctx, f.Payload)
