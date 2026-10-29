@@ -81,6 +81,12 @@ func TestDiskHistoryScale(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Tip = tip
+	locatorStarted := time.Now()
+	locator, err := c.Locator(32)
+	if err != nil || len(locator) < 2 || len(locator) > 32 || locator[0] != tip.ID || locator[len(locator)-1] != c.Genesis.ID {
+		t.Fatalf("large-history locator failed: %v", err)
+	}
+	locatorSeconds := time.Since(locatorStarted).Seconds()
 	// Repeat cold random-height and parent lookups across a history much larger
 	// than the LRU, keeping no per-record IDs or parent graph in this process.
 	for i := range 2048 {
@@ -116,6 +122,7 @@ func TestDiskHistoryScale(t *testing.T) {
 		}
 	}
 	record, err := json.Marshal(map[string]any{"records": count, "cache_nodes": c.CacheLen(), "go_heap_live_bytes": mem.HeapAlloc,
+		"locator_entries": len(locator), "locator_seconds": locatorSeconds,
 		"process_resident": rss, "temporary_index_disk_bytes": diskBytes, "postgres_backend_context_bytes": backendBytes,
 		"elapsed_seconds": time.Since(started).Seconds(), "scope": "synthetic no-proof storage/index probe after forced GC; excludes account/replay/WAL and shared Postgres buffers"})
 	if err != nil {

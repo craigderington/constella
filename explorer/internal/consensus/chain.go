@@ -440,14 +440,38 @@ func (c *Chain) Path() ([]*Node, error) {
 
 // Locator mirrors chain_locator(): dense near the tip, then exponential, ending at genesis.
 func (c *Chain) Locator(max int) ([][32]byte, error) {
+	if err := c.Err(); err != nil {
+		return nil, err
+	}
 	var out [][32]byte
-	step := 1
+	step := uint64(1)
 	for n := c.Tip; n != nil && len(out) < max-1; {
 		out = append(out, n.ID)
 		if len(out) >= 10 {
 			step *= 2
 		}
-		for k := 0; k < step && n != nil; k++ {
+		if c.history != nil {
+			// The tip is canonical. Jump through its height index instead of
+			// reading every intervening ancestor from disk. Preserve the same
+			// genesis entry (including duplicates) as the in-memory/C locator.
+			if len(out) == max-1 || step > uint64(n.Height) {
+				break
+			}
+			if step == uint64(n.Height) {
+				n = c.Genesis
+				continue
+			}
+			nodes, err := c.Canonical(n.Height-uint32(step), 1)
+			if err != nil {
+				return nil, err
+			}
+			if len(nodes) != 1 {
+				return nil, errors.New("incomplete locator ancestry")
+			}
+			n = nodes[0]
+			continue
+		}
+		for k := uint64(0); k < step && n != nil; k++ {
 			var err error
 			n, err = n.ParentNode()
 			if err != nil {

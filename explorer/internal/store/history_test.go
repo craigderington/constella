@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"os"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/craigderington/constella/explorer/internal/consensus"
@@ -63,10 +64,25 @@ func testHistoryChain(t *testing.T, s *Store, capacity int) (*consensus.Chain, *
 	return c, h.(*verifiedHistory)
 }
 
+func compareHistoryLocators(t *testing.T, disk, memory *consensus.Chain) {
+	t.Helper()
+	for _, limit := range []int{1, 2, 10, 11, 16, 32, 64} {
+		want, err := memory.Locator(limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := disk.Locator(limit)
+		if err != nil || !slices.Equal(got, want) {
+			t.Fatalf("locator differs at height %d, limit %d: %v", memory.Tip.Height, limit, err)
+		}
+	}
+}
+
 func TestDiskHistoryColdLookupMatchesValidatedMemoryChain(t *testing.T) {
 	s := memoryTestStore(t)
 	c, _ := testHistoryChain(t, s, 2)
 	oracle := consensus.NewChain()
+	compareHistoryLocators(t, c, oracle)
 	records := historyFixture(t)
 	// A child before its parent exercises orphan replay with cache eviction.
 	order := append([][]byte{records[1], records[0]}, records[2:]...)
@@ -91,6 +107,7 @@ func TestDiskHistoryColdLookupMatchesValidatedMemoryChain(t *testing.T) {
 		if c.CacheLen() > 2 {
 			t.Fatal("unbounded verified-node cache")
 		}
+		compareHistoryLocators(t, c, oracle)
 	}
 	for _, raw := range records {
 		m, _ := proto.ParseMsg(raw)
@@ -134,6 +151,32 @@ func TestDiskHistoryColdLookupMatchesValidatedMemoryChain(t *testing.T) {
 	}
 	if c.CacheLen() > 2 {
 		t.Fatal("range/locator defeated cache bound")
+	}
+}
+
+func TestDiskLocatorFailsClosedOnMissingCanonicalHistory(t *testing.T) {
+	s := memoryTestStore(t)
+	c, h := testHistoryChain(t, s, 2)
+	for _, raw := range historyFixture(t) {
+		m, err := proto.ParseMsg(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := c.AddAt(m, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c.Tip.Height < 2 {
+		t.Fatal("locator fixture needs at least two canonical records")
+	}
+	if _, err := h.conn.ExecContext(t.Context(), `DELETE FROM pg_temp.constella_canonical WHERE height=$1`, c.Tip.Height-1); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := c.Locator(32); err == nil || errors.Is(err, consensus.ErrInvalid) || len(got) != 0 {
+		t.Fatalf("missing local locator history did not fail closed: %v %v", got, err)
+	}
+	if c.Err() == nil {
+		t.Fatal("missing canonical history did not hold further validation")
 	}
 }
 
@@ -257,6 +300,9 @@ func TestBoundedDiskRebuildEqualsFullLedgerAndSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Tip = tip
+	oracle := consensus.NewChain()
+	oracle.Tip = path[len(path)-1]
+	compareHistoryLocators(t, c, oracle)
 	full := consensus.Build(path)
 	meta := func(*consensus.Ledger) map[string]string { return stateMeta(path) }
 	a, err := s.Rebuild(t.Context(), c, meta)
