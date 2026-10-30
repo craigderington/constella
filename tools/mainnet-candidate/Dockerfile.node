@@ -1,0 +1,34 @@
+# Experimental mainnet-v5 packaging for isolated qualification only.
+FROM alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f AS build
+ARG TARGETARCH
+RUN apk add --no-cache build-base
+WORKDIR /src
+COPY Makefile ./
+COPY src ./src
+COPY tests/replay_audit.c ./tests/replay_audit.c
+RUN --network=none if [ "$TARGETARCH" = arm64 ] || [ "$(uname -m)" = aarch64 ]; then \
+      export LDFLAGS="-Wl,-z,max-page-size=4096"; export OPT="-Os -fno-unwind-tables"; fi; \
+    make CC=cc constella-mainnet-v5 && \
+    test "$(stat -c %s constella-mainnet-v5)" -le 196608 && \
+    ./constella-mainnet-v5 --version | grep 'protocol=5 network=mainnet chain=e46fea4617869975'
+RUN --network=none cc -std=c11 -O2 -D_GNU_SOURCE -DCONSTELLA_NETWORK=4 -pthread -Isrc -static \
+      -o replay-audit src/blake2b.c src/bn.c src/share.c src/science.c src/sieve.c \
+      src/tx.c src/wallet.c src/chain.c src/ledger.c src/util.c src/vendor/monocypher.c tests/replay_audit.c -lm
+
+FROM scratch AS node
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.source="https://github.com/craigderington/constella" \
+      org.opencontainers.image.revision=$VCS_REF \
+      org.constella.profile="mainnet-v5-candidate" org.constella.release-approved="false"
+COPY --from=build /src/constella-mainnet-v5 /constella
+COPY LICENSE THIRD_PARTY_NOTICES.md /licenses/
+COPY src/vendor/MONOCYPHER-LICENCE.md /licenses/Monocypher/
+COPY third_party/runtime/musl /licenses/musl/
+COPY third_party/runtime/gcc /licenses/gcc/
+ENV CONSTELLA_DATA=/data CONSTELLA_MINE=0
+EXPOSE 7043
+ENTRYPOINT ["/constella"]
+
+FROM node AS audit
+COPY --from=build /src/replay-audit /audit
+ENTRYPOINT ["/audit"]
