@@ -4,6 +4,9 @@ Status: **not approved**. A testnet v0.1 release is not valuable-coin readiness.
 The internal November 5 target is conditional; neither a calendar month nor a
 release tag closes an unresolved security, capacity or custody requirement.
 
+The [October 30 cutover preparation record](mainnet-cutover-2026-10-30.md)
+lists current blockers, candidate identity and the operator approval packet.
+
 ## Separate networks, continuing testnet
 
 Testnet continues after mainnet launch. The current operator allocation retains
