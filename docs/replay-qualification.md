@@ -1,7 +1,11 @@
 # Real-history replay qualification
 
-Status recorded October 29 evening / October 30 UTC, 2026: **5,000-record pilot
-passed on AMD64 and native ARM64; the full 523,543-record audit is pending**.
+Status recorded October 30, 2026: **the separate-process full audit passed all
+523,543 records, complete C/Go state and all six SQL fingerprints**. The first
+combined attempt failed its Go memory limit before cold disk replay; that
+failure remains recorded below. The
+5,000-record pilot passed on AMD64 and native ARM64; the new separate-process
+pilot also passed on AMD64.
 This does not approve mainnet or establish a long-term resource budget.
 
 ## Procedure
@@ -11,12 +15,13 @@ This does not approve mainnet or establish a long-term resource budget.
 1. Checks input framing and records the frozen history's SHA256 and record count.
 2. Runs C proof validation and full ledger replay on a disposable copy. Checks
    that C accepted every record and did not repair or otherwise change its copy.
-3. Independently validates the same records with the in-memory Go chain and
+3. In an offline reference process, independently validates the same records with the in-memory Go chain and
    imports their actual metadata, transactions and claims into an isolated DB.
 4. Compares every C account's address, balance, nonce and share count, plus the
    full genesis/tip IDs, height, known count, blocks, transactions, science paid,
    science claims and escrow, against the Go full-path ledger.
-5. Creates a fresh disk-backed indexer and uses the production startup loader to
+5. Exits the reference process, then creates a fresh disk-backed indexer in a
+   separate process and uses the production startup loader to
    revalidate all raw records and rebuild accounting in bounded batches.
 6. Compares its complete C state and every row of shares, transactions, claims,
    accounts, payouts and science payouts against the full-path Go SQL result.
@@ -43,6 +48,28 @@ port. It does not accept a live database connection string. Normal and handled
 failure paths remove only the fixtures and anonymous volumes it created. Keep
 the output directory for failure investigation; abrupt host/process loss can
 require manual cleanup of those recorded fixture names.
+
+For a retry, completed **local C evidence** can be reused with `--c-cache`:
+
+```sh
+python3 tools/qualify-replay.py \
+  --history /absolute/path/to/frozen/shares.testnet-v5 \
+  --c-cache /absolute/path/to/original-local-c-evidence \
+  --out /tmp/constella-replay-retry
+```
+
+The driver verifies the completed C exit/OOM state, exact input and unmodified
+C copy, all C source hashes, rebuilt binary hash, and agreement between the C
+report and original stdout. A later Go failure does not invalidate that separate
+C result. The cache directory must contain an original C run, not only a reused
+reference. These checks detect stale/changed local evidence; they do not
+authenticate an externally supplied directory. Go still revalidates every raw
+record. No production process trusts this cache as a checkpoint.
+
+The two Go processes share a unique test schema and a hash-bound reference
+report. The disk process rejects a wrong report hash, mismatched C/input state
+and missing schema; the reference process refuses an existing schema. The
+driver records failures and cleanup separately.
 
 The C oracle is not a node or a storage backend and is excluded from normal
 node builds. No consensus constant, permanent schema, dependency or binary-size
@@ -89,8 +116,8 @@ or a cross-build. Native v5 vet and all-package SQL/race tests also passed.
 
 Samples follow forced GC in sequential modes in one process. They do **not**
 measure isolated peak RSS or total PostgreSQL/host memory. The pilot contains no
-transactions; transaction and nonce behavior has separate fixture tests, and
-full-history comparison remains required. The small pilot cannot establish a
+transactions; transaction and nonce behavior has separate fixture tests and the
+completed full-history comparison below. The small pilot cannot establish a
 safe startup time or one-year budget.
 
 The initial local fixture attempt failed because its root process, with all
@@ -106,11 +133,52 @@ validation or the database stage.
 
 ## Full run and remaining gates
 
-The full run uses the same method, with C capped at one CPU / 768 MiB, Go at one
-CPU / 1 GiB and PostgreSQL at half a CPU / 512 MiB. It records source hashes,
-input hashes, phase results, OOM/exit states and cleanup results. A local observer
-records CPU/memory, available disk and replay progress. The complete result must
-pass before claiming agreement for the full captured snapshot.
+The first full attempt validated all 523,543 records in C in 3,302 seconds,
+reaching height 511,990 with five accounts, 5,509 blocks and four applied
+transactions. Its Go process was OOM-killed at the 1 GiB container limit after
+logging more than 520,000 imported records. Cold disk replay had not started.
+The last allocation site was not captured; the memory spike near full legacy
+reconciliation is an inference, not a demonstrated failure of the disk path.
+All fixtures and anonymous volumes were removed. The failed result is retained.
+
+The revised driver gives the offline full-path reference its own bounded
+2 GiB process. The **production disk check stays at the original 1 GiB limit**,
+one CPU, with no reference chain in that process. PostgreSQL remains half a CPU
+/ 512 MiB; a fresh C run remains one CPU / 768 MiB. This changes the audit's
+reference budget, not any deployed service or production memory requirement.
+A new 5,000-record pilot passed both processes and all SQL comparisons; five
+C-cache integrity tests and three report/schema refusal checks also passed.
+
+The full retry **passed**, finishing October 30 at 16:19 UTC. The original C
+component was reused only after all 48 C source files, rebuilt binary, complete
+original output and unmodified captured copy passed the checks above. Both Go
+processes independently validated all records; no process was OOM-killed, the
+source/input hash checks passed and every fixture cleanup returned zero.
+
+| Full-snapshot observation | Result |
+| --- | ---: |
+| Height / known records | 511,990 / 523,543 |
+| Accounts / blocks / applied transactions | 5 / 5,509 / 4 |
+| Offline full-path reference process | 6,508.08 s |
+| Separate disk process, including comparison | 3,542.43 s |
+| Cold disk validation and ledger rebuild | 3,479.31 s |
+| Retained chain cache | 512 nodes |
+| Disk process live heap after forced GC | 1,259,592 bytes |
+| Disk process RSS after forced GC | 15,324 KiB |
+
+The complete tip was
+`f8168fbbbbc35e5a1d2af815c87dd03b874c1c5c83caaf5b040a22169e24453c`.
+Every account balance, nonce and share count matched C, as did escrow,
+science paid/claims, blocks and transactions. Ordered SQL fingerprints matched
+for 523,543 shares, 1,047,075 claims, five accounts, four transactions, 15,138
+payouts and 15,138 science payouts. This covers every row, not a sample.
+
+The final heap/RSS readings are post-GC samples, not peak memory. The observer's
+largest sampled database size was 2,352,086,039 bytes and sampled WAL directory
+size was 1,073,741,824 bytes. The fixture included both legacy reference data and
+temporary replay indexes; these measurements do not define steady-state disk or
+retention budgets. This was a bounded local AMD64 functional run, not a dedicated
+4 GiB / 2-vCPU staging qualification or a combined service-memory measurement.
 
 Matching staging hardware, native full-history capacity, representative 90-day
 and one-year workloads, query/ledger lag, PostgreSQL disk/WAL and peak memory,

@@ -221,8 +221,14 @@ EXPLORER_TEST_DB="$DISPOSABLE_EXPLORER_TEST_DB" CONSTELLA_HISTORY_SCALE=7884000 
 ```
 
 Native ARM64 v5 vet, SQL/race and a 5,000-record real-history C/Go/SQL pilot have
-now passed. The full 523,543-record snapshot audit is running; it has no complete
-PASS result yet. See the [replay qualification procedure](replay-qualification.md)
+now passed. The first 523,543-record attempt passed C validation but the legacy
+in-memory Go audit process exceeded its 1 GiB limit before cold disk replay.
+A retry separated the offline reference (2 GiB) from the production disk check
+(unchanged 1 GiB). The full retry passed all 523,543 records: complete C/Go
+accounts and totals plus all six SQL table fingerprints, cache 512, no OOM and
+successful cleanup. Cold disk validation/accounting took 3,479 seconds; the
+post-GC 15,324 KiB RSS sample is not peak memory or a combined hosting budget.
+See the [replay qualification procedure](replay-qualification.md)
 for input hashes, measurements and exact scope. Native full-history capacity,
 recovery faults and matching-hardware staging remain open. Long read snapshots,
 one large rebuild
