@@ -220,8 +220,12 @@ EXPLORER_TEST_DB="$DISPOSABLE_EXPLORER_TEST_DB" CONSTELLA_HISTORY_SCALE=7884000 
   -run '^TestDiskHistoryScale$' -count=1 -v -timeout=30m
 ```
 
-Native ARM execution, representative real history, recovery faults and
-matching-hardware staging remain open. Long read snapshots, one large rebuild
+Native ARM64 v5 vet, SQL/race and a 5,000-record real-history C/Go/SQL pilot have
+now passed. The full 523,543-record snapshot audit is running; it has no complete
+PASS result yet. See the [replay qualification procedure](replay-qualification.md)
+for input hashes, measurements and exact scope. Native full-history capacity,
+recovery faults and matching-hardware staging remain open. Long read snapshots,
+one large rebuild
 transaction, temporary-table storage/cleanup, per-record SQL round trips and
 ancestry traversal must be measured alongside query latency and ledger lag.
 
